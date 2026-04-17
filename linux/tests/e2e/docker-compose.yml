@@ -1,0 +1,10 @@
+services:
+  testbed:
+    build:
+      context: ../../..
+      dockerfile: linux/tests/e2e/Dockerfile.testbed
+    container_name: reflex-testbed
+    hostname: testbed
+    privileged: true
+    volumes:
+      - ../../..:/reflex:ro
