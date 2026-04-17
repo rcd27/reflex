@@ -1,7 +1,7 @@
 mod capture;
 mod inject;
-#[cfg(feature = "xdp")]
-pub mod xdp;
+#[cfg(feature = "tc")]
+pub mod tc;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -51,34 +51,40 @@ impl AfPacketBackend {
     }
 }
 
-// --- XDP + AF_PACKET backend: CanObserve + CanInject + CanDrop + CanModify ---
+// --- TC-BPF + AF_PACKET backend: CanObserve + CanInject + CanDrop + CanModify ---
 
-#[cfg(feature = "xdp")]
-pub struct XdpAfPacketBackend {
+#[cfg(feature = "tc")]
+pub struct TcAfPacketBackend {
     capture: Capture,
     injector: Injector,
-    xdp: xdp::XdpProgram,
+    tc: tc::TcProgram,
 }
 
-#[cfg(feature = "xdp")]
-impl CanObserve for XdpAfPacketBackend {}
-#[cfg(feature = "xdp")]
-impl CanInject for XdpAfPacketBackend {}
-#[cfg(feature = "xdp")]
-impl CanDrop for XdpAfPacketBackend {}
-#[cfg(feature = "xdp")]
-impl CanModify for XdpAfPacketBackend {}
+#[cfg(feature = "tc")]
+impl CanObserve for TcAfPacketBackend {}
+#[cfg(feature = "tc")]
+impl CanInject for TcAfPacketBackend {}
+#[cfg(feature = "tc")]
+impl CanDrop for TcAfPacketBackend {}
+#[cfg(feature = "tc")]
+impl CanModify for TcAfPacketBackend {}
 
-#[cfg(feature = "xdp")]
-impl XdpAfPacketBackend {
-    pub fn open(interface: &str, snaplen: usize, bpf_bytes: &[u8]) -> Result<Self, String> {
-        let capture = Capture::open(interface, snaplen, true)?;
-        let injector = Injector::open(interface)?;
-        let xdp = xdp::XdpProgram::attach(interface, bpf_bytes)?;
+#[cfg(feature = "tc")]
+impl TcAfPacketBackend {
+    /// Open AF_PACKET on `capture_iface` (br0), attach TC-BPF on `tc_iface` (veth-rt-br egress).
+    pub fn open(
+        capture_iface: &str,
+        tc_iface: &str,
+        snaplen: usize,
+        bpf_bytes: &[u8],
+    ) -> Result<Self, String> {
+        let capture = Capture::open(capture_iface, snaplen, true)?;
+        let injector = Injector::open(capture_iface)?;
+        let tc = tc::TcProgram::attach(tc_iface, bpf_bytes)?;
         Ok(Self {
             capture,
             injector,
-            xdp,
+            tc,
         })
     }
 
@@ -92,27 +98,27 @@ impl XdpAfPacketBackend {
         self.injector.send(data)
     }
 
-    /// Set flow action in XDP BPF map (drop, copy+drop, pass).
+    /// Set flow action in TC BPF map (drop or pass).
     pub fn set_flow_action(
         &mut self,
         flow_hash: u32,
         action: reflex_linux_common::FlowAction,
     ) -> Result<(), String> {
-        self.xdp.set_flow_action(flow_hash, action)
+        self.tc.set_flow_action(flow_hash, action)
     }
 
-    /// Clear flow action (revert to XDP_PASS).
+    /// Clear flow action (revert to TC_ACT_OK / pass).
     pub fn clear_flow_action(&mut self, flow_hash: u32) -> Result<(), String> {
-        self.xdp.clear_flow_action(flow_hash)
+        self.tc.clear_flow_action(flow_hash)
     }
 
-    pub fn split(self) -> (CaptureStream, Injector, xdp::XdpProgram) {
+    pub fn split(self) -> (CaptureStream, Injector, tc::TcProgram) {
         (
             CaptureStream {
                 capture: self.capture,
             },
             self.injector,
-            self.xdp,
+            self.tc,
         )
     }
 }

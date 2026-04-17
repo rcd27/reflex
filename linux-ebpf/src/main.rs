@@ -2,117 +2,122 @@
 #![no_main]
 
 use aya_ebpf::{
-    bindings::xdp_action,
-    macros::{map, xdp},
-    maps::{HashMap, PerfEventArray},
-    programs::XdpContext,
+    macros::{classifier, map},
+    maps::HashMap,
+    programs::TcContext,
 };
-use aya_log_ebpf::info;
 use reflex_linux_common::FlowAction;
 
-/// Action table: flow hash → FlowAction
-/// Written by userspace, read by XDP program.
+const TC_ACT_OK: i32 = 0;    // pass
+const TC_ACT_SHOT: i32 = 2;  // drop
+const MARKER_IP_ID: u16 = 0xDEAD; // injected packets marker
+
 #[map]
 static ACTION_TABLE: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 
-/// Perf event ring: copies of intercepted packets sent to userspace.
-#[map]
-static EVENTS: PerfEventArray<[u8; 0]> = PerfEventArray::new(0);
-
-#[xdp]
-pub fn reflex_xdp(ctx: XdpContext) -> u32 {
+#[classifier]
+pub fn reflex_tc(ctx: TcContext) -> i32 {
     match unsafe { try_classify(&ctx) } {
         Ok(action) => action,
-        Err(_) => xdp_action::XDP_PASS,
+        Err(_) => TC_ACT_OK,
     }
 }
 
-unsafe fn try_classify(ctx: &XdpContext) -> Result<u32, ()> {
-    let data = ctx.data();
-    let data_end = ctx.data_end();
-    let len = data_end - data;
+#[inline(always)]
+unsafe fn try_classify(ctx: &TcContext) -> Result<i32, ()> {
+    let data = ctx.data() as *const u8;
+    let data_end = ctx.data_end() as *const u8;
 
-    // need at least ethernet(14) + ip(20) + tcp(20) = 54 bytes
-    if len < 54 {
-        return Ok(xdp_action::XDP_PASS);
+    // ethernet(14) + ip(20) + tcp(4) minimum
+    let eth_end = data.add(14);
+    if eth_end as usize > data_end as usize {
+        return Ok(TC_ACT_OK);
     }
 
-    let eth_ptr = data as *const u8;
-
-    // check ethertype = IPv4 (0x0800)
-    let ethertype = u16::from_be_bytes([*eth_ptr.add(12), *eth_ptr.add(13)]);
-    if ethertype != 0x0800 {
-        return Ok(xdp_action::XDP_PASS);
+    // ethertype IPv4?
+    if *data.add(12) != 0x08 || *data.add(13) != 0x00 {
+        return Ok(TC_ACT_OK);
     }
 
-    // check IP protocol = TCP (6)
-    let ip_start = 14;
-    let ip_protocol = *eth_ptr.add(ip_start + 9);
-    if ip_protocol != 6 {
-        return Ok(xdp_action::XDP_PASS);
+    // IP header
+    let ip_start = data.add(14);
+    let ip_end = ip_start.add(20);
+    if ip_end as usize > data_end as usize {
+        return Ok(TC_ACT_OK);
     }
 
-    let ip_ihl = (*eth_ptr.add(ip_start) & 0x0f) as usize * 4;
-    let tcp_start = ip_start + ip_ihl;
-
-    // bounds check
-    if data + tcp_start + 20 > data_end {
-        return Ok(xdp_action::XDP_PASS);
+    // check marker: if IP ID == 0xDEAD, this is our injected packet — pass
+    let ip_id = u16::from_be_bytes([*ip_start.add(4), *ip_start.add(5)]);
+    if ip_id == MARKER_IP_ID {
+        return Ok(TC_ACT_OK);
     }
 
-    // compute flow hash from 5-tuple
-    let src_ip = u32::from_be_bytes([
-        *eth_ptr.add(ip_start + 12),
-        *eth_ptr.add(ip_start + 13),
-        *eth_ptr.add(ip_start + 14),
-        *eth_ptr.add(ip_start + 15),
+    // protocol TCP?
+    if *ip_start.add(9) != 6 {
+        return Ok(TC_ACT_OK);
+    }
+
+    let ihl = ((*ip_start) & 0x0f) as usize * 4;
+    if ihl < 20 {
+        return Ok(TC_ACT_OK);
+    }
+
+    // TCP header
+    let tcp_start = ip_start.add(ihl);
+    let tcp_min = tcp_start.add(4);
+    if tcp_min as usize > data_end as usize {
+        return Ok(TC_ACT_OK);
+    }
+
+    let src_ip = u32::from_ne_bytes([
+        *ip_start.add(12), *ip_start.add(13),
+        *ip_start.add(14), *ip_start.add(15),
     ]);
-    let dst_ip = u32::from_be_bytes([
-        *eth_ptr.add(ip_start + 16),
-        *eth_ptr.add(ip_start + 17),
-        *eth_ptr.add(ip_start + 18),
-        *eth_ptr.add(ip_start + 19),
+    let dst_ip = u32::from_ne_bytes([
+        *ip_start.add(16), *ip_start.add(17),
+        *ip_start.add(18), *ip_start.add(19),
     ]);
-    let src_port = u16::from_be_bytes([*eth_ptr.add(tcp_start), *eth_ptr.add(tcp_start + 1)]);
-    let dst_port =
-        u16::from_be_bytes([*eth_ptr.add(tcp_start + 2), *eth_ptr.add(tcp_start + 3)]);
+    let src_port = u16::from_be_bytes([*tcp_start, *tcp_start.add(1)]);
+    let dst_port = u16::from_be_bytes([*tcp_start.add(2), *tcp_start.add(3)]);
 
-    let flow_hash = hash_5tuple(src_ip, dst_ip, src_port, dst_port, ip_protocol);
+    let flow_hash = hash_5tuple(src_ip, dst_ip, src_port, dst_port, 6);
 
-    // lookup action table
     if let Some(action_val) = ACTION_TABLE.get(&flow_hash) {
         let action = *action_val;
-        if action == FlowAction::Drop as u8 {
-            return Ok(xdp_action::XDP_DROP);
+        if action == FlowAction::Drop as u8 || action == FlowAction::CopyAndDrop as u8 {
+            return Ok(TC_ACT_SHOT);
         }
-        if action == FlowAction::CopyAndDrop as u8 {
-            // copy full packet to userspace, then drop
-            EVENTS.output(ctx, &[], 0);
-            return Ok(xdp_action::XDP_DROP);
-        }
-        // FlowAction::Pass → fall through
     }
 
-    // default: pass everything
-    Ok(xdp_action::XDP_PASS)
+    Ok(TC_ACT_OK)
 }
 
-/// Simple hash of 5-tuple. Not cryptographic, just for map lookup.
+#[inline(always)]
 fn hash_5tuple(src_ip: u32, dst_ip: u32, src_port: u16, dst_port: u16, protocol: u8) -> u32 {
-    let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
-    let prime: u32 = 0x0100_0193;
+    const P: u32 = 0x0100_0193;
+    let mut h: u32 = 0x811c_9dc5;
 
-    for byte in src_ip.to_ne_bytes()
-        .iter()
-        .chain(dst_ip.to_ne_bytes().iter())
-        .chain(src_port.to_ne_bytes().iter())
-        .chain(dst_port.to_ne_bytes().iter())
-        .chain(core::slice::from_ref(&protocol).iter())
-    {
-        h ^= *byte as u32;
-        h = h.wrapping_mul(prime);
-    }
+    let s = src_ip.to_ne_bytes();
+    h = (h ^ s[0] as u32).wrapping_mul(P);
+    h = (h ^ s[1] as u32).wrapping_mul(P);
+    h = (h ^ s[2] as u32).wrapping_mul(P);
+    h = (h ^ s[3] as u32).wrapping_mul(P);
 
+    let d = dst_ip.to_ne_bytes();
+    h = (h ^ d[0] as u32).wrapping_mul(P);
+    h = (h ^ d[1] as u32).wrapping_mul(P);
+    h = (h ^ d[2] as u32).wrapping_mul(P);
+    h = (h ^ d[3] as u32).wrapping_mul(P);
+
+    let sp = src_port.to_ne_bytes();
+    h = (h ^ sp[0] as u32).wrapping_mul(P);
+    h = (h ^ sp[1] as u32).wrapping_mul(P);
+
+    let dp = dst_port.to_ne_bytes();
+    h = (h ^ dp[0] as u32).wrapping_mul(P);
+    h = (h ^ dp[1] as u32).wrapping_mul(P);
+
+    h = (h ^ protocol as u32).wrapping_mul(P);
     h
 }
 

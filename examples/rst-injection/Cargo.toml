@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = []
-xdp = ["reflex-linux/xdp", "dep:reflex-linux-common"]
+tc = ["reflex-linux/tc", "dep:reflex-linux-common"]
 
 [dependencies]
 reflex-core = { path = "../../core" }
@@ -40,6 +40,6 @@ name = "e2e_geneva_live"
 path = "geneva_live.rs"
 
 [[bin]]
-name = "e2e_xdp_drop"
-path = "xdp_drop.rs"
-required-features = ["xdp"]
+name = "e2e_geneva_tc"
+path = "geneva_tc.rs"
+required-features = ["tc"]

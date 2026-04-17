@@ -2,12 +2,12 @@
 name = "reflex-linux"
 version = "0.0.1"
 edition = "2021"
-description = "AF_PACKET and XDP backends for reflex"
+description = "AF_PACKET and TC-BPF backends for reflex"
 license = "GPL-3.0-only"
 
 [features]
 default = []
-xdp = ["dep:aya", "dep:reflex-linux-common"]
+tc = ["dep:aya", "dep:reflex-linux-common"]
 
 [dependencies]
 reflex-core = { path = "../core" }

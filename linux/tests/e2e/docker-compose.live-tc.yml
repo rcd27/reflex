@@ -1,0 +1,8 @@
+services:
+  live-tc:
+    build:
+      context: ../../..
+      dockerfile: linux/tests/e2e/Dockerfile.live-tc
+    container_name: reflex-live-tc
+    hostname: reflex-live-tc
+    privileged: true
