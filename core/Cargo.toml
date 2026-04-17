@@ -1,6 +1,6 @@
 [package]
 name = "reflex-core"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 description = "Categorical framework for reactive network stream processing"
 license = "GPL-3.0-only"

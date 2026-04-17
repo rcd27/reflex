@@ -1,15 +1,21 @@
 [package]
 name = "reflex-linux"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-description = "AF_PACKET backend for reflex"
+description = "AF_PACKET and XDP backends for reflex"
 license = "GPL-3.0-only"
+
+[features]
+default = []
+xdp = ["dep:aya", "dep:reflex-linux-common"]
 
 [dependencies]
 reflex-core = { path = "../core" }
 futures = "0.3"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread"] }
 libc = "0.2"
+aya = { version = "0.13", optional = true }
+reflex-linux-common = { path = "../linux-common", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros", "test-util"] }

@@ -1,0 +1,11 @@
+[package]
+name = "reflex-linux-common"
+version = "0.0.1"
+edition = "2021"
+description = "Shared types between reflex XDP eBPF program and userspace"
+license = "GPL-3.0-only"
+
+[features]
+default = []
+
+[dependencies]

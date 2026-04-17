@@ -1,12 +1,17 @@
 [package]
 name = "example-rst-injection"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 publish = false
+
+[features]
+default = []
+xdp = ["reflex-linux/xdp", "dep:reflex-linux-common"]
 
 [dependencies]
 reflex-core = { path = "../../core" }
 reflex-linux = { path = "../../linux" }
+reflex-linux-common = { path = "../../linux-common", optional = true }
 futures = "0.3"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros"] }
 
@@ -29,3 +34,8 @@ path = "strategy.rs"
 [[bin]]
 name = "e2e_feedback_loop"
 path = "feedback_loop.rs"
+
+[[bin]]
+name = "e2e_xdp_drop"
+path = "xdp_drop.rs"
+required-features = ["xdp"]

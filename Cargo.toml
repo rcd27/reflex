@@ -3,5 +3,7 @@ resolver = "2"
 members = [
     "core",
     "linux",
+    "linux-common",
     "examples/rst-injection",
 ]
+# linux-ebpf is NOT a workspace member — it compiles to BPF target separately

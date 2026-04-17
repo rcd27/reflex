@@ -1,0 +1,18 @@
+[package]
+name = "reflex-linux-ebpf"
+version = "0.0.1"
+edition = "2021"
+description = "XDP eBPF classifier for reflex"
+license = "GPL-3.0-only"
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+reflex-linux-common = { path = "../linux-common" }
+
+[[bin]]
+name = "reflex-xdp"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
