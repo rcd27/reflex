@@ -6,8 +6,9 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY core/ core/
 COPY linux/ linux/
+COPY examples/ examples/
 
-RUN cargo build --release --examples
+RUN cargo build --release
 
 FROM alpine:3.21
 
@@ -29,7 +30,9 @@ RUN mkdir -p /etc/nginx/ssl && \
     -out /etc/nginx/ssl/server.crt \
     -subj "/CN=testserver.local"
 
-COPY --from=builder /build/target/release/examples/e2e_capture /usr/local/bin/e2e_capture
+COPY --from=builder /build/target/release/e2e_capture /usr/local/bin/e2e_capture
+COPY --from=builder /build/target/release/e2e_rst_emulator /usr/local/bin/e2e_rst_emulator
+COPY --from=builder /build/target/release/e2e_rst_detector /usr/local/bin/e2e_rst_detector
 COPY linux/tests/e2e/nginx.conf /etc/nginx/nginx.conf
 COPY linux/tests/e2e/setup-topology.sh /usr/local/bin/setup-topology.sh
 RUN chmod +x /usr/local/bin/setup-topology.sh

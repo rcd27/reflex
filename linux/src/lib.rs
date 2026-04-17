@@ -34,6 +34,12 @@ impl AfPacketBackend {
     pub fn inject(&self, data: &[u8]) -> Result<(), String> {
         self.injector.send(data)
     }
+
+    /// Split into separate capture stream and injector.
+    /// Allows simultaneous read + write without borrow conflicts.
+    pub fn split(self) -> (CaptureStream, Injector) {
+        (CaptureStream { capture: self.capture }, self.injector)
+    }
 }
 
 pub struct PacketStream<'a> {
@@ -43,10 +49,33 @@ pub struct PacketStream<'a> {
 impl<'a> Stream for PacketStream<'a> {
     type Item = Vec<u8>;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.capture.next_packet() {
             Some(data) => Poll::Ready(Some(data.to_vec())),
-            None => Poll::Pending,
+            None => {
+                // no packet right now — schedule immediate re-poll
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+}
+
+/// Owned capture stream — for use after `split()`.
+pub struct CaptureStream {
+    capture: Capture,
+}
+
+impl Stream for CaptureStream {
+    type Item = Vec<u8>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.capture.next_packet() {
+            Some(data) => Poll::Ready(Some(data.to_vec())),
+            None => {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         }
     }
 }
