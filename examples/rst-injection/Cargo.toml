@@ -21,3 +21,7 @@ path = "emulator.rs"
 [[bin]]
 name = "e2e_rst_detector"
 path = "detector.rs"
+
+[[bin]]
+name = "e2e_multi_disorder"
+path = "strategy.rs"

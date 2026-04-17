@@ -87,6 +87,22 @@ run_test "rst_detector_e2e" bash -c '
     exit $DET_EXIT
 '
 
+# --- Test 4: multi-disorder strategy ---
+run_test "multi_disorder_strategy" bash -c '
+    # start multi-disorder strategy (listens for ClientHello to testserver.local)
+    docker exec reflex-testbed e2e_multi_disorder br0 6 &
+    STRAT_PID=$!
+    sleep 0.5
+
+    # generate TLS traffic with SNI=testserver.local — strategy should inject fakes
+    docker exec reflex-testbed ip netns exec client curl -sk --resolve testserver.local:443:10.77.0.20 --max-time 2 https://testserver.local > /dev/null 2>&1 || true
+    sleep 1
+    docker exec reflex-testbed ip netns exec client curl -sk --resolve testserver.local:443:10.77.0.20 --max-time 2 https://testserver.local > /dev/null 2>&1 || true
+    sleep 1
+
+    wait $STRAT_PID
+'
+
 # --- Summary ---
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
