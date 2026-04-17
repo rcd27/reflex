@@ -25,3 +25,7 @@ path = "detector.rs"
 [[bin]]
 name = "e2e_multi_disorder"
 path = "strategy.rs"
+
+[[bin]]
+name = "e2e_feedback_loop"
+path = "feedback_loop.rs"

@@ -103,6 +103,34 @@ run_test "multi_disorder_strategy" bash -c '
     wait $STRAT_PID
 '
 
+# --- Test 5: Geneva feedback loop ---
+run_test "geneva_feedback_loop" bash -c '
+    # start RST emulator (simulates ТСПУ)
+    docker exec reflex-testbed e2e_rst_emulator br0 12 &
+    EMU_PID=$!
+    sleep 0.5
+
+    # start Geneva feedback loop
+    docker exec reflex-testbed e2e_feedback_loop br0 10 &
+    GENEVA_PID=$!
+    sleep 0.5
+
+    # generate TLS traffic — Geneva should detect, apply strategy, observe result
+    for i in 1 2 3 4; do
+        docker exec reflex-testbed ip netns exec client curl -sk --resolve testserver.local:443:10.77.0.20 --max-time 2 https://testserver.local > /dev/null 2>&1 || true
+        sleep 1
+    done
+
+    # wait for Geneva to finish
+    wait $GENEVA_PID
+    GENEVA_EXIT=$?
+
+    kill $EMU_PID 2>/dev/null || true
+    wait $EMU_PID 2>/dev/null || true
+
+    exit $GENEVA_EXIT
+'
+
 # --- Summary ---
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
