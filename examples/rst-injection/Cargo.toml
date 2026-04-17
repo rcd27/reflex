@@ -36,6 +36,10 @@ name = "e2e_feedback_loop"
 path = "feedback_loop.rs"
 
 [[bin]]
+name = "e2e_geneva_live"
+path = "geneva_live.rs"
+
+[[bin]]
 name = "e2e_xdp_drop"
 path = "xdp_drop.rs"
 required-features = ["xdp"]

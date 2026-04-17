@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -15,22 +16,52 @@ struct Packet {
     dst_port: u16,
     ttl: u8,
     tcp_flags: u8,
-    seq: u32,
-    ack: u32,
+    has_timestamps: bool,
+    window: u16,
     is_syn_ack: bool,
     is_rst: bool,
     is_client_hello: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct RstSignal {
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    dst_port: u16,
-    ttl_expected: u8,
-    ttl_actual: u8,
-    ttl_delta: i16,
-    window_zero: bool,
+    evidence: Vec<Evidence>,
+    confidence: f32,
+    server_ttl: u8,
+    rst_ttl: u8,
+    rtt_ms: Option<f64>,
+    rst_after_hello_ms: Option<f64>,
+    rst_window: u16,
+    rst_has_timestamps: bool,
+    server_has_timestamps: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Evidence {
+    TtlAnomaly { delta: i16 },
+    TimingAnomaly { rst_ms: f64, rtt_ms: f64 },
+    MissingTimestamps,
+    WindowZero,
+}
+
+// --- per-flow state ---
+
+#[derive(Debug, Clone)]
+struct FlowState {
+    syn_sent_at: Option<Instant>,
+    syn_ack_at: Option<Instant>,
+    client_hello_at: Option<Instant>,
+    server_ttl: Option<u8>,
+    server_has_timestamps: bool,
+    rtt: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct FlowKey {
+    client_ip: [u8; 4],
+    server_ip: [u8; 4],
+    client_port: u16,
+    server_port: u16,
 }
 
 // --- parser ---
@@ -50,7 +81,6 @@ fn parse_packet(raw: Vec<u8>) -> Option<Packet> {
 
     let ip_ihl = (raw[ip_start] & 0x0f) as usize * 4;
     let tcp_start = ip_start + ip_ihl;
-
     if raw.len() < tcp_start + 20 {
         return None;
     }
@@ -61,15 +91,16 @@ fn parse_packet(raw: Vec<u8>) -> Option<Packet> {
 
     let src_port = u16::from_be_bytes([raw[tcp_start], raw[tcp_start + 1]]);
     let dst_port = u16::from_be_bytes([raw[tcp_start + 2], raw[tcp_start + 3]]);
-    let seq = u32::from_be_bytes(raw[tcp_start + 4..tcp_start + 8].try_into().ok()?);
-    let ack = u32::from_be_bytes(raw[tcp_start + 8..tcp_start + 12].try_into().ok()?);
     let tcp_flags = raw[tcp_start + 13];
+    let window = u16::from_be_bytes([raw[tcp_start + 14], raw[tcp_start + 15]]);
 
     let is_syn_ack = tcp_flags & 0x12 == 0x12;
     let is_rst = tcp_flags & 0x04 != 0;
 
-    // check for ClientHello
+    // check TCP options for timestamps (kind=8)
     let tcp_data_offset = (raw[tcp_start + 12] >> 4) as usize * 4;
+    let has_timestamps = has_tcp_timestamp(&raw[tcp_start + 20..tcp_start + tcp_data_offset.min(raw.len() - tcp_start)]);
+
     let payload_start = tcp_start + tcp_data_offset;
     let is_client_hello = if raw.len() > payload_start + 6 {
         raw[payload_start] == 0x16 && raw[payload_start + 5] == 0x01
@@ -85,23 +116,69 @@ fn parse_packet(raw: Vec<u8>) -> Option<Packet> {
         dst_port,
         ttl,
         tcp_flags,
-        seq,
-        ack,
+        has_timestamps,
+        window,
         is_syn_ack,
         is_rst,
         is_client_hello,
     })
 }
 
+fn has_tcp_timestamp(options: &[u8]) -> bool {
+    let mut pos = 0;
+    while pos < options.len() {
+        let kind = options[pos];
+        if kind == 0 {
+            break; // end of options
+        }
+        if kind == 1 {
+            pos += 1; // NOP
+            continue;
+        }
+        if pos + 1 >= options.len() {
+            break;
+        }
+        let len = options[pos + 1] as usize;
+        if kind == 8 {
+            return true; // timestamp option
+        }
+        if len < 2 {
+            break;
+        }
+        pos += len;
+    }
+    false
+}
+
 // --- detector ---
 
 struct RstDetector {
-    server_ttl: Option<u8>,
+    flows: HashMap<FlowKey, FlowState>,
 }
 
 impl RstDetector {
     fn new() -> Self {
-        Self { server_ttl: None }
+        Self {
+            flows: HashMap::new(),
+        }
+    }
+
+    fn flow_key_from_client(pkt: &Packet) -> FlowKey {
+        FlowKey {
+            client_ip: pkt.src_ip,
+            server_ip: pkt.dst_ip,
+            client_port: pkt.src_port,
+            server_port: pkt.dst_port,
+        }
+    }
+
+    fn flow_key_from_server(pkt: &Packet) -> FlowKey {
+        FlowKey {
+            client_ip: pkt.dst_ip,
+            server_ip: pkt.src_ip,
+            client_port: pkt.dst_port,
+            server_port: pkt.src_port,
+        }
     }
 }
 
@@ -110,45 +187,124 @@ impl Detector for RstDetector {
     type Signal = RstSignal;
 
     fn on_packet(&mut self, pkt: Packet, emit: &mut dyn FnMut(Self::Signal)) {
-        // learn server TTL from SYN+ACK
-        if pkt.is_syn_ack && pkt.src_port == 443 {
-            self.server_ttl = Some(pkt.ttl);
-            eprintln!(
-                "[detector] SYN+ACK from server, TTL baseline = {}",
-                pkt.ttl
-            );
+        let now = Instant::now();
+
+        // SYN from client (flags = 0x02, only SYN set)
+        if pkt.tcp_flags & 0x3f == 0x02 && pkt.dst_port == 443 {
+            let key = Self::flow_key_from_client(&pkt);
+            self.flows.insert(key, FlowState {
+                syn_sent_at: Some(now),
+                syn_ack_at: None,
+                client_hello_at: None,
+                server_ttl: None,
+                server_has_timestamps: false,
+                rtt: None,
+            });
         }
 
-        // detect RST with anomalous TTL
-        if pkt.is_rst && pkt.src_port == 443 {
-            let window = u16::from_be_bytes([
-                pkt.raw[14 + 20 + 14],
-                pkt.raw[14 + 20 + 15],
-            ]);
-
-            if let Some(server_ttl) = self.server_ttl {
-                let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
+        // SYN+ACK from server
+        if pkt.is_syn_ack && pkt.src_port == 443 {
+            let key = Self::flow_key_from_server(&pkt);
+            if let Some(flow) = self.flows.get_mut(&key) {
+                flow.syn_ack_at = Some(now);
+                flow.server_ttl = Some(pkt.ttl);
+                flow.server_has_timestamps = pkt.has_timestamps;
+                if let Some(syn_at) = flow.syn_sent_at {
+                    flow.rtt = Some(now.duration_since(syn_at));
+                }
                 eprintln!(
-                    "[detector] RST from :443, TTL={}, baseline={}, delta={}, window={}",
-                    pkt.ttl, server_ttl, ttl_delta, window
+                    "[detector] SYN+ACK: TTL={}, timestamps={}, RTT={:.1}ms",
+                    pkt.ttl,
+                    pkt.has_timestamps,
+                    flow.rtt.map(|r| r.as_secs_f64() * 1000.0).unwrap_or(0.0)
+                );
+            }
+        }
+
+        // ClientHello
+        if pkt.is_client_hello && pkt.dst_port == 443 {
+            let key = Self::flow_key_from_client(&pkt);
+            if let Some(flow) = self.flows.get_mut(&key) {
+                flow.client_hello_at = Some(now);
+            }
+        }
+
+        // RST from server direction
+        if pkt.is_rst && pkt.src_port == 443 {
+            let key = Self::flow_key_from_server(&pkt);
+            if let Some(flow) = self.flows.get(&key) {
+                let server_ttl = flow.server_ttl.unwrap_or(0);
+                let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
+
+                let rst_after_hello_ms = flow.client_hello_at
+                    .map(|t| now.duration_since(t).as_secs_f64() * 1000.0);
+
+                let rtt_ms = flow.rtt
+                    .map(|r| r.as_secs_f64() * 1000.0);
+
+                // collect evidence
+                let mut evidence = Vec::new();
+                let mut confidence: f32 = 0.0;
+
+                // evidence 1: TTL anomaly
+                if ttl_delta.abs() > 3 {
+                    evidence.push(Evidence::TtlAnomaly { delta: ttl_delta });
+                    confidence += 0.4;
+                }
+
+                // evidence 2: timing — RST faster than half RTT
+                if let (Some(rst_ms), Some(rtt)) = (rst_after_hello_ms, rtt_ms) {
+                    if rtt > 0.0 && rst_ms < rtt * 0.5 {
+                        evidence.push(Evidence::TimingAnomaly { rst_ms, rtt_ms: rtt });
+                        confidence += 0.5;
+                    }
+                }
+
+                // evidence 3: RST missing timestamps but server had them
+                if flow.server_has_timestamps && !pkt.has_timestamps {
+                    evidence.push(Evidence::MissingTimestamps);
+                    confidence += 0.3;
+                }
+
+                // evidence 4: window zero
+                if pkt.window == 0 {
+                    evidence.push(Evidence::WindowZero);
+                    confidence += 0.2;
+                }
+
+                eprintln!(
+                    "[detector] RST: TTL={} (server={}), window={}, timestamps={}, \
+                     rst_after_hello={:.1?}ms, rtt={:.1?}ms, evidence={}, confidence={:.2}",
+                    pkt.ttl, server_ttl, pkt.window, pkt.has_timestamps,
+                    rst_after_hello_ms, rtt_ms,
+                    evidence.len(), confidence
                 );
 
-                if ttl_delta.abs() > 3 {
+                if !evidence.is_empty() {
                     emit(RstSignal {
-                        src_ip: pkt.src_ip,
-                        dst_ip: pkt.dst_ip,
-                        dst_port: pkt.dst_port,
-                        ttl_expected: server_ttl,
-                        ttl_actual: pkt.ttl,
-                        ttl_delta,
-                        window_zero: window == 0,
+                        evidence,
+                        confidence: confidence.min(1.0),
+                        server_ttl,
+                        rst_ttl: pkt.ttl,
+                        rtt_ms,
+                        rst_after_hello_ms,
+                        rst_window: pkt.window,
+                        rst_has_timestamps: pkt.has_timestamps,
+                        server_has_timestamps: flow.server_has_timestamps,
                     });
                 }
             }
         }
     }
 
-    fn on_tick(&mut self, _now: Instant, _emit: &mut dyn FnMut(Self::Signal)) {}
+    fn on_tick(&mut self, now: Instant, _emit: &mut dyn FnMut(Self::Signal)) {
+        // cleanup flows older than 30s
+        self.flows.retain(|_, f| {
+            f.syn_sent_at
+                .map(|t| now.duration_since(t) < Duration::from_secs(30))
+                .unwrap_or(false)
+        });
+    }
 }
 
 // --- main ---
@@ -173,7 +329,6 @@ async fn main() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
 
-    // Floor 1: detect RST injection
     let signals: Vec<RstSignal> = backend
         .packets()
         .filter_map(|raw| async move { parse_packet(raw) })
@@ -186,12 +341,8 @@ async fn main() {
 
     for (i, sig) in signals.iter().enumerate() {
         eprintln!(
-            "[rst-det] signal #{}: TTL expected={} actual={} delta={} window_zero={}",
-            i + 1,
-            sig.ttl_expected,
-            sig.ttl_actual,
-            sig.ttl_delta,
-            sig.window_zero
+            "[rst-det] signal #{}: confidence={:.2} evidence={:?}",
+            i + 1, sig.confidence, sig.evidence
         );
     }
 
@@ -199,18 +350,10 @@ async fn main() {
         println!("FAIL: no RST injection detected");
         std::process::exit(1);
     } else {
-        let all_anomalous = signals.iter().all(|s| s.ttl_delta.abs() > 3);
-        let any_window_zero = signals.iter().any(|s| s.window_zero);
-
-        if all_anomalous {
-            println!(
-                "PASS: detected {} RST injection(s), TTL anomaly confirmed, window_zero={}",
-                signals.len(),
-                any_window_zero
-            );
-        } else {
-            println!("FAIL: RST detected but TTL not anomalous");
-            std::process::exit(1);
-        }
+        println!(
+            "PASS: detected {} RST injection(s), max confidence={:.2}",
+            signals.len(),
+            signals.iter().map(|s| s.confidence).fold(0.0f32, f32::max)
+        );
     }
 }

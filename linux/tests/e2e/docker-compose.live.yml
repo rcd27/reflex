@@ -1,0 +1,8 @@
+services:
+  live:
+    build:
+      context: ../../..
+      dockerfile: linux/tests/e2e/Dockerfile.live
+    container_name: reflex-live
+    hostname: reflex-live
+    privileged: true
