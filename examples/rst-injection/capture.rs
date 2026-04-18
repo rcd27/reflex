@@ -5,9 +5,7 @@ use reflex_linux::AfPacketBackend;
 
 #[tokio::main]
 async fn main() {
-    let iface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "br0".to_string());
+    let iface = std::env::args().nth(1).unwrap_or_else(|| "br0".to_string());
 
     let timeout_secs: u64 = std::env::args()
         .nth(2)

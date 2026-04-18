@@ -7,9 +7,7 @@ use reflex_linux::AfPacketBackend;
 /// injects a spoofed RST packet with anomalous TTL (like TSPU does).
 #[tokio::main]
 async fn main() {
-    let iface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "br0".to_string());
+    let iface = std::env::args().nth(1).unwrap_or_else(|| "br0".to_string());
 
     let timeout_secs: u64 = std::env::args()
         .nth(2)
@@ -34,11 +32,14 @@ async fn main() {
             break;
         }
 
-        let pkt = match tokio::time::timeout(Duration::from_millis(100), StreamExt::next(&mut stream)).await {
-            Ok(Some(p)) => p,
-            Ok(None) => break,
-            Err(_) => continue,
-        };
+        let pkt =
+            match tokio::time::timeout(Duration::from_millis(100), StreamExt::next(&mut stream))
+                .await
+            {
+                Ok(Some(p)) => p,
+                Ok(None) => break,
+                Err(_) => continue,
+            };
 
         // need at least: ethernet(14) + ip(20) + tcp(20) = 54 bytes
         if pkt.len() < 54 {
@@ -167,7 +168,7 @@ fn build_rst_packet(original: &[u8], ip_start: usize, tcp_start: usize) -> Vec<u
     // data offset = 5 (20 bytes, no options), flags = RST+ACK (0x14)
     pkt[tcp_out + 12] = 0x50;
     pkt[tcp_out + 13] = 0x14; // RST + ACK
-    // window = 0 (characteristic of DPI-injected RST)
+                              // window = 0 (characteristic of DPI-injected RST)
     pkt[tcp_out + 14..tcp_out + 16].copy_from_slice(&[0, 0]);
 
     // TCP checksum (pseudo-header + TCP)

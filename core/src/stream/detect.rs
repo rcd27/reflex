@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::Stream;
 use pin_project_lite::pin_project;
 use tokio::time::{self, Interval};
 
-use crate::Detector;
+use crate::detector::{Detector, DetectorEvent};
 
 pin_project! {
     pub struct DetectStream<S, D>
@@ -16,7 +16,7 @@ pin_project! {
     {
         #[pin]
         source: S,
-        detector: D,
+        detector: Option<D>,
         buffer: VecDeque<D::Signal>,
         #[pin]
         tick: Interval,
@@ -30,7 +30,7 @@ where
     pub fn new(source: S, detector: D, tick_interval: Duration) -> Self {
         Self {
             source,
-            detector,
+            detector: Some(detector),
             buffer: VecDeque::new(),
             tick: time::interval(tick_interval),
         }
@@ -47,28 +47,38 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // drain buffered signals first
+        // 1. Drain buffered signals first
         if let Some(signal) = this.buffer.pop_front() {
             return Poll::Ready(Some(signal));
         }
 
-        // try tick
-        if this.tick.as_mut().poll_tick(cx).is_ready() {
-            let now = Instant::now();
-            this.detector.on_tick(now, &mut |signal| {
-                this.buffer.push_back(signal);
-            });
-            if let Some(signal) = this.buffer.pop_front() {
-                return Poll::Ready(Some(signal));
+        // 2. Try tick
+        if let Some(detector) = this.detector.take() {
+            if this.tick.as_mut().poll_tick(cx).is_ready() {
+                let now = std::time::Instant::now();
+                let (new_detector, signals) = detector.step(DetectorEvent::Tick(now));
+                *this.detector = Some(new_detector);
+                for signal in signals {
+                    this.buffer.push_back(signal);
+                }
+                if let Some(signal) = this.buffer.pop_front() {
+                    return Poll::Ready(Some(signal));
+                }
+            } else {
+                *this.detector = Some(detector);
             }
         }
 
-        // try source
+        // 3. Poll source
         match this.source.as_mut().poll_next(cx) {
             Poll::Ready(Some(input)) => {
-                this.detector.on_packet(input, &mut |signal| {
-                    this.buffer.push_back(signal);
-                });
+                if let Some(detector) = this.detector.take() {
+                    let (new_detector, signals) = detector.step(DetectorEvent::Packet(input));
+                    *this.detector = Some(new_detector);
+                    for signal in signals {
+                        this.buffer.push_back(signal);
+                    }
+                }
                 if let Some(signal) = this.buffer.pop_front() {
                     Poll::Ready(Some(signal))
                 } else {

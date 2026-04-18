@@ -1,7 +1,6 @@
-use std::time::{Duration, Instant};
-
 use futures::StreamExt;
-use reflex_core::{Detector, ReflexExt};
+use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use smallvec::SmallVec;
 
 // --- domain types (application level, not framework) ---
 
@@ -63,32 +62,39 @@ impl Detector for RstDetector {
     type Input = Packet;
     type Signal = RstSignal;
 
-    fn on_packet(&mut self, pkt: Packet, emit: &mut dyn FnMut(Self::Signal)) {
-        if pkt.is_syn_ack {
-            self.server_ttl = Some(pkt.ttl);
-        }
+    fn step(mut self, event: DetectorEvent<Packet>) -> (Self, SmallVec<[RstSignal; 2]>) {
+        let mut signals = SmallVec::new();
 
-        if pkt.sni.is_some() {
-            self.current_sni = pkt.sni;
-        }
+        match event {
+            DetectorEvent::Packet(pkt) => {
+                if pkt.is_syn_ack {
+                    self.server_ttl = Some(pkt.ttl);
+                }
 
-        if pkt.is_rst {
-            self.rst_count += 1;
-            if let (Some(server_ttl), Some(ref domain)) = (self.server_ttl, &self.current_sni) {
-                let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
-                if ttl_delta.abs() > 5 {
-                    emit(RstSignal {
-                        domain: domain.clone(),
-                        ttl_delta,
-                        rst_count: self.rst_count,
-                    });
+                if pkt.sni.is_some() {
+                    self.current_sni = pkt.sni;
+                }
+
+                if pkt.is_rst {
+                    self.rst_count += 1;
+                    if let (Some(server_ttl), Some(ref domain)) =
+                        (self.server_ttl, &self.current_sni)
+                    {
+                        let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
+                        if ttl_delta.abs() > 5 {
+                            signals.push(RstSignal {
+                                domain: domain.clone(),
+                                ttl_delta,
+                                rst_count: self.rst_count,
+                            });
+                        }
+                    }
                 }
             }
+            DetectorEvent::Tick(_) => {}
         }
-    }
 
-    fn on_tick(&mut self, _now: Instant, _emit: &mut dyn FnMut(Self::Signal)) {
-        // cleanup would go here
+        (self, signals)
     }
 }
 

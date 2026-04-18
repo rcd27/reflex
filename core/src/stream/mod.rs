@@ -1,11 +1,11 @@
-mod detect;
 mod debounce;
+mod detect;
+mod scan;
 mod switch_map;
 mod with_latest_from;
-mod scan;
 
-pub use detect::DetectStream;
 pub use debounce::DebounceStream;
+pub use detect::DetectStream;
+pub use scan::ScanStream;
 pub use switch_map::SwitchMapStream;
 pub use with_latest_from::WithLatestFromStream;
-pub use scan::ScanStream;

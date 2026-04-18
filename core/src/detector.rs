@@ -1,23 +1,30 @@
+use smallvec::SmallVec;
 use std::time::Instant;
 
-/// A stateful observer that processes packets and emits typed signals.
+/// Событие для детектора: пакет или tick от scheduler'а.
+#[derive(Debug, Clone)]
+pub enum DetectorEvent<T> {
+    /// Входящий пакет.
+    Packet(T),
+    /// Периодический tick от scheduler'а.
+    Tick(Instant),
+}
+
+/// Stateful detector как чистая state machine.
 ///
-/// Detectors are the building blocks of Floor 1 (detection) in the reflex
-/// pipeline. Each detector maintains its own internal state (flow tables,
-/// counters, windows) and emits signals through the `emit` callback.
+/// `(State, Event) → (State, Signals)` — DDD паттерн.
+/// Нет &mut self, нет side effects. Фреймворк управляет state.
 ///
 /// # Contract
 ///
-/// - `on_packet` is called for every incoming packet. The detector updates
-///   its internal state and calls `emit` zero or more times.
-/// - `on_tick` is called periodically by the scheduler. Used by window-based
-///   (throttle) and timeout-based (blackhole, silent drop) detectors.
-/// - Cross-flow correlation is internal state — not a separate stream.
-pub trait Detector {
+/// - `step` вызывается для каждого пакета (DetectorEvent::Packet)
+///   и периодически (DetectorEvent::Tick).
+/// - Возвращает новый state и SmallVec сигналов (stack-allocated до 2).
+/// - type Input определяет уровень стека (TcpSegment, UdpDatagram, etc.)
+///   и проверяется compile-time через type narrowing в pipeline.
+pub trait Detector: Sized {
     type Input;
     type Signal;
 
-    fn on_packet(&mut self, input: Self::Input, emit: &mut dyn FnMut(Self::Signal));
-
-    fn on_tick(&mut self, now: Instant, emit: &mut dyn FnMut(Self::Signal));
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>);
 }

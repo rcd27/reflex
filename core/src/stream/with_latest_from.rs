@@ -44,13 +44,8 @@ where
         let mut this = self.project();
 
         // always drain updates from `other` to keep `latest` fresh
-        loop {
-            match this.other.as_mut().poll_next(cx) {
-                Poll::Ready(Some(item)) => {
-                    *this.latest = Some(item);
-                }
-                Poll::Ready(None) | Poll::Pending => break,
-            }
+        while let Poll::Ready(Some(item)) = this.other.as_mut().poll_next(cx) {
+            *this.latest = Some(item);
         }
 
         // poll source

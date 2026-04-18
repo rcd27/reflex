@@ -73,10 +73,7 @@ async fn debounce_synchronous_stream() {
     // debounce keeps only the last
     let items = futures::stream::iter(vec![1, 2, 3, 4, 5]);
 
-    let result: Vec<i32> = items
-        .debounce(Duration::from_secs(1))
-        .collect()
-        .await;
+    let result: Vec<i32> = items.debounce(Duration::from_secs(1)).collect().await;
 
     // source completes immediately, pending item is flushed
     assert_eq!(result, vec![5]);

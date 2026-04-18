@@ -122,7 +122,10 @@ impl Capture {
         };
         if ring == MAP_FAILED {
             unsafe { close(fd) };
-            return Err(format!("mmap() failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "mmap() failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         // Bind
@@ -143,7 +146,10 @@ impl Capture {
                 munmap(ring, ring_size);
                 close(fd);
             }
-            return Err(format!("bind() failed: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "bind() failed: {}",
+                std::io::Error::last_os_error()
+            ));
         }
 
         // Promiscuous mode

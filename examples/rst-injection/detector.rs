@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use reflex_core::{Detector, ReflexExt};
+use reflex_core::{Detector, DetectorEvent, ReflexExt};
 use reflex_linux::AfPacketBackend;
+use smallvec::SmallVec;
 
 // --- domain types ---
 
@@ -99,7 +100,9 @@ fn parse_packet(raw: Vec<u8>) -> Option<Packet> {
 
     // check TCP options for timestamps (kind=8)
     let tcp_data_offset = (raw[tcp_start + 12] >> 4) as usize * 4;
-    let has_timestamps = has_tcp_timestamp(&raw[tcp_start + 20..tcp_start + tcp_data_offset.min(raw.len() - tcp_start)]);
+    let has_timestamps = has_tcp_timestamp(
+        &raw[tcp_start + 20..tcp_start + tcp_data_offset.min(raw.len() - tcp_start)],
+    );
 
     let payload_start = tcp_start + tcp_data_offset;
     let is_client_hello = if raw.len() > payload_start + 6 {
@@ -186,124 +189,142 @@ impl Detector for RstDetector {
     type Input = Packet;
     type Signal = RstSignal;
 
-    fn on_packet(&mut self, pkt: Packet, emit: &mut dyn FnMut(Self::Signal)) {
-        let now = Instant::now();
+    fn step(mut self, event: DetectorEvent<Packet>) -> (Self, SmallVec<[RstSignal; 2]>) {
+        let mut signals = SmallVec::new();
 
-        // SYN from client (flags = 0x02, only SYN set)
-        if pkt.tcp_flags & 0x3f == 0x02 && pkt.dst_port == 443 {
-            let key = Self::flow_key_from_client(&pkt);
-            self.flows.insert(key, FlowState {
-                syn_sent_at: Some(now),
-                syn_ack_at: None,
-                client_hello_at: None,
-                server_ttl: None,
-                server_has_timestamps: false,
-                rtt: None,
-            });
-        }
+        match event {
+            DetectorEvent::Packet(pkt) => {
+                let now = Instant::now();
 
-        // SYN+ACK from server
-        if pkt.is_syn_ack && pkt.src_port == 443 {
-            let key = Self::flow_key_from_server(&pkt);
-            if let Some(flow) = self.flows.get_mut(&key) {
-                flow.syn_ack_at = Some(now);
-                flow.server_ttl = Some(pkt.ttl);
-                flow.server_has_timestamps = pkt.has_timestamps;
-                if let Some(syn_at) = flow.syn_sent_at {
-                    flow.rtt = Some(now.duration_since(syn_at));
-                }
-                eprintln!(
-                    "[detector] SYN+ACK: TTL={}, timestamps={}, RTT={:.1}ms",
-                    pkt.ttl,
-                    pkt.has_timestamps,
-                    flow.rtt.map(|r| r.as_secs_f64() * 1000.0).unwrap_or(0.0)
-                );
-            }
-        }
-
-        // ClientHello
-        if pkt.is_client_hello && pkt.dst_port == 443 {
-            let key = Self::flow_key_from_client(&pkt);
-            if let Some(flow) = self.flows.get_mut(&key) {
-                flow.client_hello_at = Some(now);
-            }
-        }
-
-        // RST from server direction
-        if pkt.is_rst && pkt.src_port == 443 {
-            let key = Self::flow_key_from_server(&pkt);
-            if let Some(flow) = self.flows.get(&key) {
-                let server_ttl = flow.server_ttl.unwrap_or(0);
-                let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
-
-                let rst_after_hello_ms = flow.client_hello_at
-                    .map(|t| now.duration_since(t).as_secs_f64() * 1000.0);
-
-                let rtt_ms = flow.rtt
-                    .map(|r| r.as_secs_f64() * 1000.0);
-
-                // collect evidence
-                let mut evidence = Vec::new();
-                let mut confidence: f32 = 0.0;
-
-                // evidence 1: TTL anomaly
-                if ttl_delta.abs() > 3 {
-                    evidence.push(Evidence::TtlAnomaly { delta: ttl_delta });
-                    confidence += 0.4;
+                // SYN from client (flags = 0x02, only SYN set)
+                if pkt.tcp_flags & 0x3f == 0x02 && pkt.dst_port == 443 {
+                    let key = Self::flow_key_from_client(&pkt);
+                    self.flows.insert(
+                        key,
+                        FlowState {
+                            syn_sent_at: Some(now),
+                            syn_ack_at: None,
+                            client_hello_at: None,
+                            server_ttl: None,
+                            server_has_timestamps: false,
+                            rtt: None,
+                        },
+                    );
                 }
 
-                // evidence 2: timing — RST faster than half RTT
-                if let (Some(rst_ms), Some(rtt)) = (rst_after_hello_ms, rtt_ms) {
-                    if rtt > 0.0 && rst_ms < rtt * 0.5 {
-                        evidence.push(Evidence::TimingAnomaly { rst_ms, rtt_ms: rtt });
-                        confidence += 0.5;
+                // SYN+ACK from server
+                if pkt.is_syn_ack && pkt.src_port == 443 {
+                    let key = Self::flow_key_from_server(&pkt);
+                    if let Some(flow) = self.flows.get_mut(&key) {
+                        flow.syn_ack_at = Some(now);
+                        flow.server_ttl = Some(pkt.ttl);
+                        flow.server_has_timestamps = pkt.has_timestamps;
+                        if let Some(syn_at) = flow.syn_sent_at {
+                            flow.rtt = Some(now.duration_since(syn_at));
+                        }
+                        eprintln!(
+                            "[detector] SYN+ACK: TTL={}, timestamps={}, RTT={:.1}ms",
+                            pkt.ttl,
+                            pkt.has_timestamps,
+                            flow.rtt.map(|r| r.as_secs_f64() * 1000.0).unwrap_or(0.0)
+                        );
                     }
                 }
 
-                // evidence 3: RST missing timestamps but server had them
-                if flow.server_has_timestamps && !pkt.has_timestamps {
-                    evidence.push(Evidence::MissingTimestamps);
-                    confidence += 0.3;
+                // ClientHello
+                if pkt.is_client_hello && pkt.dst_port == 443 {
+                    let key = Self::flow_key_from_client(&pkt);
+                    if let Some(flow) = self.flows.get_mut(&key) {
+                        flow.client_hello_at = Some(now);
+                    }
                 }
 
-                // evidence 4: window zero
-                if pkt.window == 0 {
-                    evidence.push(Evidence::WindowZero);
-                    confidence += 0.2;
-                }
+                // RST from server direction
+                if pkt.is_rst && pkt.src_port == 443 {
+                    let key = Self::flow_key_from_server(&pkt);
+                    if let Some(flow) = self.flows.get(&key) {
+                        let server_ttl = flow.server_ttl.unwrap_or(0);
+                        let ttl_delta = pkt.ttl as i16 - server_ttl as i16;
 
-                eprintln!(
-                    "[detector] RST: TTL={} (server={}), window={}, timestamps={}, \
-                     rst_after_hello={:.1?}ms, rtt={:.1?}ms, evidence={}, confidence={:.2}",
-                    pkt.ttl, server_ttl, pkt.window, pkt.has_timestamps,
-                    rst_after_hello_ms, rtt_ms,
-                    evidence.len(), confidence
-                );
+                        let rst_after_hello_ms = flow
+                            .client_hello_at
+                            .map(|t| now.duration_since(t).as_secs_f64() * 1000.0);
 
-                if !evidence.is_empty() {
-                    emit(RstSignal {
-                        evidence,
-                        confidence: confidence.min(1.0),
-                        server_ttl,
-                        rst_ttl: pkt.ttl,
-                        rtt_ms,
-                        rst_after_hello_ms,
-                        rst_window: pkt.window,
-                        rst_has_timestamps: pkt.has_timestamps,
-                        server_has_timestamps: flow.server_has_timestamps,
-                    });
+                        let rtt_ms = flow.rtt.map(|r| r.as_secs_f64() * 1000.0);
+
+                        // collect evidence
+                        let mut evidence = Vec::new();
+                        let mut confidence: f32 = 0.0;
+
+                        // evidence 1: TTL anomaly
+                        if ttl_delta.abs() > 3 {
+                            evidence.push(Evidence::TtlAnomaly { delta: ttl_delta });
+                            confidence += 0.4;
+                        }
+
+                        // evidence 2: timing — RST faster than half RTT
+                        if let (Some(rst_ms), Some(rtt)) = (rst_after_hello_ms, rtt_ms) {
+                            if rtt > 0.0 && rst_ms < rtt * 0.5 {
+                                evidence.push(Evidence::TimingAnomaly {
+                                    rst_ms,
+                                    rtt_ms: rtt,
+                                });
+                                confidence += 0.5;
+                            }
+                        }
+
+                        // evidence 3: RST missing timestamps but server had them
+                        if flow.server_has_timestamps && !pkt.has_timestamps {
+                            evidence.push(Evidence::MissingTimestamps);
+                            confidence += 0.3;
+                        }
+
+                        // evidence 4: window zero
+                        if pkt.window == 0 {
+                            evidence.push(Evidence::WindowZero);
+                            confidence += 0.2;
+                        }
+
+                        eprintln!(
+                            "[detector] RST: TTL={} (server={}), window={}, timestamps={}, \
+                             rst_after_hello={:.1?}ms, rtt={:.1?}ms, evidence={}, confidence={:.2}",
+                            pkt.ttl,
+                            server_ttl,
+                            pkt.window,
+                            pkt.has_timestamps,
+                            rst_after_hello_ms,
+                            rtt_ms,
+                            evidence.len(),
+                            confidence
+                        );
+
+                        if !evidence.is_empty() {
+                            signals.push(RstSignal {
+                                evidence,
+                                confidence: confidence.min(1.0),
+                                server_ttl,
+                                rst_ttl: pkt.ttl,
+                                rtt_ms,
+                                rst_after_hello_ms,
+                                rst_window: pkt.window,
+                                rst_has_timestamps: pkt.has_timestamps,
+                                server_has_timestamps: flow.server_has_timestamps,
+                            });
+                        }
+                    }
                 }
             }
+            DetectorEvent::Tick(now) => {
+                // cleanup flows older than 30s
+                self.flows.retain(|_, f| {
+                    f.syn_sent_at
+                        .map(|t| now.duration_since(t) < Duration::from_secs(30))
+                        .unwrap_or(false)
+                });
+            }
         }
-    }
 
-    fn on_tick(&mut self, now: Instant, _emit: &mut dyn FnMut(Self::Signal)) {
-        // cleanup flows older than 30s
-        self.flows.retain(|_, f| {
-            f.syn_sent_at
-                .map(|t| now.duration_since(t) < Duration::from_secs(30))
-                .unwrap_or(false)
-        });
+        (self, signals)
     }
 }
 
@@ -311,9 +332,7 @@ impl Detector for RstDetector {
 
 #[tokio::main]
 async fn main() {
-    let iface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "br0".to_string());
+    let iface = std::env::args().nth(1).unwrap_or_else(|| "br0".to_string());
 
     let timeout_secs: u64 = std::env::args()
         .nth(2)
@@ -342,7 +361,9 @@ async fn main() {
     for (i, sig) in signals.iter().enumerate() {
         eprintln!(
             "[rst-det] signal #{}: confidence={:.2} evidence={:?}",
-            i + 1, sig.confidence, sig.evidence
+            i + 1,
+            sig.confidence,
+            sig.evidence
         );
     }
 

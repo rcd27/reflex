@@ -52,9 +52,7 @@ impl<S: Stream> Stream for DebounceStream<S> {
                 match this.source.as_mut().poll_next(cx) {
                     Poll::Ready(Some(item)) => {
                         *this.pending = Some(item);
-                        this.delay
-                            .as_mut()
-                            .set(Some(time::sleep(*this.duration)));
+                        this.delay.as_mut().set(Some(time::sleep(*this.duration)));
                     }
                     Poll::Ready(None) => {
                         *this.source_done = true;

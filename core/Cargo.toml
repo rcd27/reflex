@@ -1,14 +1,21 @@
 [package]
 name = "reflex-core"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "Categorical framework for reactive network stream processing"
 license = "GPL-3.0-only"
+
+[features]
+default = []
+tls = []
+dns = []
 
 [dependencies]
 futures = "0.3"
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 pin-project-lite = "0.2"
+smallvec = "1"
+bitflags = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "sync", "rt", "macros", "test-util"] }
