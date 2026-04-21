@@ -4,6 +4,7 @@ pub mod checksum;
 pub mod command;
 pub mod detector;
 pub mod ext;
+pub mod geneva;
 pub mod parse;
 pub mod stream;
 pub mod types;
@@ -14,6 +15,6 @@ pub mod dns;
 pub mod tls;
 
 pub use capability::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
-pub use command::{Command, InjectablePacket};
+pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{Detector, DetectorEvent};
 pub use ext::ReflexExt;

@@ -13,6 +13,7 @@ reflex-core = { path = "../../core" }
 reflex-linux = { path = "../../linux" }
 reflex-linux-common = { path = "../../linux-common", optional = true }
 futures = "0.3"
+rand = "0.10"
 smallvec = "1"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros"] }
 
@@ -27,4 +28,12 @@ path = "emulator.rs"
 [[bin]]
 name = "e2e_rst_detector"
 path = "detector.rs"
+
+[[bin]]
+name = "e2e_multi_disorder"
+path = "multi_disorder.rs"
+
+[[bin]]
+name = "e2e_feedback_loop"
+path = "feedback_loop.rs"
 

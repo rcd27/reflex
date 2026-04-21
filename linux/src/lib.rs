@@ -1,5 +1,7 @@
 mod capture;
 mod inject;
+#[cfg(feature = "nfqueue")]
+pub mod nfqueue;
 #[cfg(feature = "tc")]
 pub mod tc;
 
@@ -147,7 +149,7 @@ impl<'a> Stream for PacketStream<'a> {
 
 /// Owned capture stream — for use after `split()`.
 pub struct CaptureStream {
-    capture: Capture,
+    pub(crate) capture: Capture,
 }
 
 impl Stream for CaptureStream {

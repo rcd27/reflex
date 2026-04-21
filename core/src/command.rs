@@ -3,12 +3,18 @@ use crate::types::Flow;
 
 /// Типизированная команда — терминальный морфизм категории.
 pub enum Command {
-    /// Инжектировать пакет в сеть.
+    /// Инжектировать пакет в сеть (CanInject).
     Inject(InjectablePacket),
-    /// Дропнуть flow через backend (TC-BPF / XDP).
+    /// Дропнуть flow через backend (CanDrop).
     DropFlow(Flow),
     /// Снять drop с flow.
     ClearFlow(Flow),
+    /// Задержать пакет pending verdict (CanHold).
+    Hold(Flow),
+    /// Модифицировать оригинальный пакет и пропустить (CanModify).
+    Modify(ModifyPacket),
+    /// Принять/отпустить задержанный пакет.
+    Accept(Flow),
 }
 
 /// Пакет, готовый к инжекции. Фреймворк сериализует в байты.
@@ -29,4 +35,10 @@ impl InjectablePacket {
             InjectablePacket::Raw(bytes) => bytes.clone(),
         }
     }
+}
+
+/// Описание модификации оригинального пакета.
+pub struct ModifyPacket {
+    pub flow: Flow,
+    pub new_data: Vec<u8>,
 }

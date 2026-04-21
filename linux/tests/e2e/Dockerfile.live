@@ -25,7 +25,7 @@ COPY --from=builder /build/target/release/e2e_capture /usr/local/bin/e2e_capture
 COPY --from=builder /build/target/release/e2e_feedback_loop /usr/local/bin/e2e_feedback_loop
 COPY --from=builder /build/target/release/e2e_multi_disorder /usr/local/bin/e2e_multi_disorder
 COPY --from=builder /build/target/release/e2e_rst_detector /usr/local/bin/e2e_rst_detector
-COPY --from=builder /build/target/release/e2e_geneva_live /usr/local/bin/e2e_geneva_live
+COPY --from=builder /build/target/release/e2e_rst_emulator /usr/local/bin/e2e_rst_emulator
 COPY linux/tests/e2e/setup-live.sh /usr/local/bin/setup-live.sh
 RUN chmod +x /usr/local/bin/setup-live.sh
 
