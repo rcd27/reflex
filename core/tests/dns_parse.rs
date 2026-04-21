@@ -1,3 +1,5 @@
+#![cfg(feature = "dns")]
+
 use reflex_core::dns::{DnsDirection, DnsMessage};
 
 #[test]

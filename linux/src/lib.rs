@@ -7,7 +7,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::Stream;
-use reflex_core::{CanDrop, CanInject, CanModify, CanObserve};
+#[cfg(feature = "tc")]
+use reflex_core::{CanDrop, CanModify};
+use reflex_core::{CanInject, CanObserve};
 
 pub use capture::Capture;
 pub use inject::Injector;

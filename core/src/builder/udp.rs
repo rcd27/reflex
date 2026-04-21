@@ -1,4 +1,5 @@
-use crate::types::Flow;
+use crate::checksum;
+use crate::types::{Flow, Mac};
 use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone)]
@@ -9,6 +10,8 @@ pub struct BuiltUdpPacket {
     dst_port: u16,
     ttl: u8,
     payload: Vec<u8>,
+    src_mac: Mac,
+    dst_mac: Mac,
 }
 
 impl BuiltUdpPacket {
@@ -19,8 +22,8 @@ impl BuiltUdpPacket {
         let mut buf = Vec::with_capacity(eth_total);
 
         // Ethernet
-        buf.extend_from_slice(&[0xFF; 6]);
-        buf.extend_from_slice(&[0x00; 6]);
+        buf.extend_from_slice(&self.dst_mac.0);
+        buf.extend_from_slice(&self.src_mac.0);
         buf.extend_from_slice(&0x0800u16.to_be_bytes());
 
         // IPv4
@@ -41,6 +44,18 @@ impl BuiltUdpPacket {
         buf.extend_from_slice(&[0x00; 2]); // checksum
 
         buf.extend_from_slice(&self.payload);
+
+        // Compute and write IP checksum
+        let ip_csum = checksum::ip_checksum(&buf[14..34]);
+        buf[24] = (ip_csum >> 8) as u8;
+        buf[25] = (ip_csum & 0xFF) as u8;
+
+        // Compute and write UDP checksum
+        let udp_csum =
+            checksum::udp_checksum(&self.src_ip.octets(), &self.dst_ip.octets(), &buf[34..]);
+        buf[40] = (udp_csum >> 8) as u8;
+        buf[41] = (udp_csum & 0xFF) as u8;
+
         buf
     }
 }
@@ -53,6 +68,8 @@ pub struct UdpBuilder {
     dst_port: Option<u16>,
     ttl: u8,
     payload: Vec<u8>,
+    src_mac: Mac,
+    dst_mac: Mac,
 }
 
 impl Default for UdpBuilder {
@@ -70,6 +87,8 @@ impl UdpBuilder {
             dst_port: None,
             ttl: 64,
             payload: Vec::new(),
+            src_mac: Mac([0x00; 6]),
+            dst_mac: Mac([0xFF; 6]),
         }
     }
 
@@ -95,6 +114,16 @@ impl UdpBuilder {
         self
     }
 
+    pub fn src_mac(mut self, mac: Mac) -> Self {
+        self.src_mac = mac;
+        self
+    }
+
+    pub fn dst_mac(mut self, mac: Mac) -> Self {
+        self.dst_mac = mac;
+        self
+    }
+
     pub fn build(self) -> BuiltUdpPacket {
         BuiltUdpPacket {
             src_ip: self.src_ip.expect("flow must be set"),
@@ -103,6 +132,8 @@ impl UdpBuilder {
             dst_port: self.dst_port.expect("flow must be set"),
             ttl: self.ttl,
             payload: self.payload,
+            src_mac: self.src_mac,
+            dst_mac: self.dst_mac,
         }
     }
 }

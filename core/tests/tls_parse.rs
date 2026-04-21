@@ -1,3 +1,5 @@
+#![cfg(feature = "tls")]
+
 use reflex_core::tls::{TlsContentType, TlsFragment, TlsRecord};
 
 #[test]

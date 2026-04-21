@@ -1,4 +1,5 @@
-use crate::types::{Flow, TcpFlags};
+use crate::checksum;
+use crate::types::{Flow, Mac, TcpFlags};
 use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone)]
@@ -13,6 +14,8 @@ pub struct BuiltTcpPacket {
     ttl: u8,
     window: u16,
     payload: Vec<u8>,
+    src_mac: Mac,
+    dst_mac: Mac,
 }
 
 impl BuiltTcpPacket {
@@ -24,8 +27,8 @@ impl BuiltTcpPacket {
         let mut buf = Vec::with_capacity(eth_total);
 
         // Ethernet header
-        buf.extend_from_slice(&[0xFF; 6]); // dst mac broadcast
-        buf.extend_from_slice(&[0x00; 6]); // src mac zero
+        buf.extend_from_slice(&self.dst_mac.0);
+        buf.extend_from_slice(&self.src_mac.0);
         buf.extend_from_slice(&0x0800u16.to_be_bytes());
 
         // IPv4 header
@@ -52,6 +55,18 @@ impl BuiltTcpPacket {
         buf.extend_from_slice(&[0x00, 0x00]); // urgent
 
         buf.extend_from_slice(&self.payload);
+
+        // Compute and write IP checksum
+        let ip_csum = checksum::ip_checksum(&buf[14..34]);
+        buf[24] = (ip_csum >> 8) as u8;
+        buf[25] = (ip_csum & 0xFF) as u8;
+
+        // Compute and write TCP checksum
+        let tcp_csum =
+            checksum::tcp_checksum(&self.src_ip.octets(), &self.dst_ip.octets(), &buf[34..]);
+        buf[50] = (tcp_csum >> 8) as u8;
+        buf[51] = (tcp_csum & 0xFF) as u8;
+
         buf
     }
 }
@@ -68,6 +83,8 @@ pub struct TcpBuilder {
     ttl: u8,
     window: u16,
     payload: Vec<u8>,
+    src_mac: Mac,
+    dst_mac: Mac,
 }
 
 impl Default for TcpBuilder {
@@ -89,6 +106,8 @@ impl TcpBuilder {
             ttl: 64,
             window: 29200,
             payload: Vec::new(),
+            src_mac: Mac([0x00; 6]),
+            dst_mac: Mac([0xFF; 6]),
         }
     }
 
@@ -134,6 +153,16 @@ impl TcpBuilder {
         self
     }
 
+    pub fn src_mac(mut self, mac: Mac) -> Self {
+        self.src_mac = mac;
+        self
+    }
+
+    pub fn dst_mac(mut self, mac: Mac) -> Self {
+        self.dst_mac = mac;
+        self
+    }
+
     pub fn build(self) -> BuiltTcpPacket {
         BuiltTcpPacket {
             src_ip: self.src_ip.expect("flow must be set"),
@@ -146,6 +175,8 @@ impl TcpBuilder {
             ttl: self.ttl,
             window: self.window,
             payload: self.payload,
+            src_mac: self.src_mac,
+            dst_mac: self.dst_mac,
         }
     }
 }

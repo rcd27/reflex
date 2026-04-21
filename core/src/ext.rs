@@ -1,11 +1,14 @@
+use std::hash::Hash;
 use std::time::Duration;
 
 use futures::Stream;
 
 use crate::detector::Detector;
 use crate::stream::{
-    DebounceStream, DetectStream, ScanStream, SwitchMapStream, WithLatestFromStream,
+    DebounceStream, DetectStream, FlowConfig, GroupByFlowStream, GroupByStream, ScanStream,
+    SwitchMapStream, WithLatestFromStream,
 };
+use crate::types::HasFlow;
 
 pub trait ReflexExt: Stream + Sized {
     fn detect<D>(self, detector: D) -> DetectStream<Self, D>
@@ -52,6 +55,37 @@ pub trait ReflexExt: Stream + Sized {
         F: FnMut(Self::Item, &Other::Item) -> R,
     {
         WithLatestFromStream::new(self, other, f)
+    }
+
+    /// Group items by an arbitrary key, with per-group state.
+    fn group_by<K, State, KeyFn, Init, Step, R>(
+        self,
+        key_fn: KeyFn,
+        init: Init,
+        step: Step,
+    ) -> GroupByStream<Self, K, State, KeyFn, Init, Step, R>
+    where
+        K: Hash + Eq + Clone,
+        KeyFn: Fn(&Self::Item) -> K,
+        Init: Fn() -> State,
+        Step: FnMut(&mut State, Self::Item) -> Option<R>,
+    {
+        GroupByStream::new(self, key_fn, init, step)
+    }
+
+    /// Group items by Flow (5-tuple), with per-flow state and lifecycle management.
+    fn group_by_flow<State, Init, Step, R>(
+        self,
+        config: FlowConfig,
+        init: Init,
+        step: Step,
+    ) -> GroupByFlowStream<Self, State, Init, Step, R>
+    where
+        Self::Item: HasFlow,
+        Init: Fn() -> State,
+        Step: FnMut(&mut State, Self::Item) -> Option<R>,
+    {
+        GroupByFlowStream::new(self, config, init, step)
     }
 }
 

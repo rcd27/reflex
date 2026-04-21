@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod capability;
+pub mod checksum;
 pub mod command;
 pub mod detector;
 pub mod ext;

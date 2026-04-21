@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use futures::StreamExt;
+use reflex_core::checksum;
 use reflex_linux::AfPacketBackend;
 
 /// RST injection emulator: watches for TLS ClientHello on br0,
@@ -150,7 +151,7 @@ fn build_rst_packet(original: &[u8], ip_start: usize, tcp_start: usize) -> Vec<u
     pkt[ip_out + 16..ip_out + 20].copy_from_slice(&original[ip_start + 12..ip_start + 16]);
 
     // IP checksum
-    let ip_csum = ip_checksum(&pkt[ip_out..ip_out + 20]);
+    let ip_csum = checksum::ip_checksum(&pkt[ip_out..ip_out + 20]);
     pkt[ip_out + 10..ip_out + 12].copy_from_slice(&ip_csum.to_be_bytes());
 
     // --- TCP header ---
@@ -172,57 +173,12 @@ fn build_rst_packet(original: &[u8], ip_start: usize, tcp_start: usize) -> Vec<u
     pkt[tcp_out + 14..tcp_out + 16].copy_from_slice(&[0, 0]);
 
     // TCP checksum (pseudo-header + TCP)
-    let tcp_csum = tcp_checksum(
-        &pkt[ip_out + 12..ip_out + 16], // src IP
-        &pkt[ip_out + 16..ip_out + 20], // dst IP
+    let tcp_csum = checksum::tcp_checksum(
+        pkt[ip_out + 12..ip_out + 16].try_into().unwrap(), // src IP
+        pkt[ip_out + 16..ip_out + 20].try_into().unwrap(), // dst IP
         &pkt[tcp_out..tcp_out + 20],
     );
     pkt[tcp_out + 16..tcp_out + 18].copy_from_slice(&tcp_csum.to_be_bytes());
 
     pkt
-}
-
-fn ip_checksum(header: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    for chunk in header.chunks(2) {
-        let word = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]])
-        } else {
-            u16::from_be_bytes([chunk[0], 0])
-        };
-        sum += word as u32;
-    }
-    while sum >> 16 != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-fn tcp_checksum(src_ip: &[u8], dst_ip: &[u8], tcp_segment: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-
-    // pseudo-header
-    for chunk in src_ip.chunks(2) {
-        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-    }
-    for chunk in dst_ip.chunks(2) {
-        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
-    }
-    sum += 6u32; // protocol TCP
-    sum += tcp_segment.len() as u32;
-
-    // TCP segment
-    for chunk in tcp_segment.chunks(2) {
-        let word = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]])
-        } else {
-            u16::from_be_bytes([chunk[0], 0])
-        };
-        sum += word as u32;
-    }
-
-    while sum >> 16 != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
 }
