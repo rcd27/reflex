@@ -58,6 +58,35 @@ impl Population {
         }
     }
 
+    /// Create population seeded with known-effective strategies, rest random.
+    pub fn seeded(config: GaConfig, rng: &mut impl Rng) -> Self {
+        use crate::geneva::random_strategy::seed_strategies;
+        let seeds = seed_strategies();
+        let gen = RandomStrategyGen { max_depth: 3 };
+
+        let mut individuals: Vec<Individual> = seeds
+            .into_iter()
+            .map(|strategy| Individual { strategy, fitness: 0.0 })
+            .collect();
+
+        // Fill rest with random
+        while individuals.len() < config.population_size {
+            individuals.push(Individual {
+                strategy: gen.generate(rng),
+                fitness: 0.0,
+            });
+        }
+
+        // Truncate if seeds > population_size
+        individuals.truncate(config.population_size);
+
+        Population {
+            individuals,
+            generation: 0,
+            config,
+        }
+    }
+
     pub fn tournament_select(&self, rng: &mut impl Rng) -> &Individual {
         let size = self.config.tournament_size.min(self.individuals.len());
         let mut best: Option<&Individual> = None;

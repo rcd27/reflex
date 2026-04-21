@@ -89,5 +89,8 @@ echo "  docker exec reflex-live e2e_capture br0 5"
 echo "  docker exec reflex-live e2e_feedback_loop br0 30"
 echo "  docker exec reflex-live e2e_rst_detector br0 10"
 echo ""
+echo "NFQUEUE Geneva:"
+echo "  docker exec reflex-live bash -c 'nft add table bridge filter && nft add chain bridge filter forward { type filter hook forward priority 0 \\; } && nft add rule bridge filter forward tcp dport 443 queue num 0 && e2e_geneva_nfq br0 0 30'"
+echo ""
 
 exec sleep infinity

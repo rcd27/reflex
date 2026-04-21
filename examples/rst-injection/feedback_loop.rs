@@ -7,21 +7,22 @@ use rand::SeedableRng;
 use reflex_core::geneva::domain::{DomainMode, DomainState, DomainTransition};
 use reflex_core::geneva::executor::execute;
 use reflex_core::geneva::ga::GaConfig;
-use reflex_core::types::{Flow, Mac, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::Command;
+use reflex_core::geneva::tspu::{BlockageSignal, TspuConfig, TspuDetector};
+use reflex_core::parse::{ParseEthernetExt, ParseIpv4Ext, ParseTcpExt};
+use reflex_core::types::{Flow, Mac, TcpSegment};
+use reflex_core::{Command, Detector};
+use reflex_core::detector::DetectorEvent;
 use reflex_linux::AfPacketBackend;
-use std::net::{Ipv4Addr, SocketAddr};
 
 /// A trial: we applied strategy #N to a flow and are watching the result.
 struct Trial {
     strategy_index: usize,
     domain: String,
-    flow_key: (u16, u16), // (client_port, server_port=443)
     applied_at: Instant,
-    rst_seen: bool,
+    signal_seen: bool,
 }
 
-const TRIAL_OBSERVE_WINDOW: Duration = Duration::from_secs(2);
+const TRIAL_OBSERVE_WINDOW: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() {
@@ -38,7 +39,7 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let (mut stream, injector) = backend.split();
+    let (stream, injector) = backend.split();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
 
     let ga_config = GaConfig {
@@ -51,21 +52,43 @@ async fn main() {
         fitness_threshold: 0.7,
     };
 
+    let tspu_config = TspuConfig {
+        post_hello_timeout: Duration::from_secs(5), // Faster for testing
+        ..TspuConfig::default()
+    };
+
     let mut rng = SmallRng::seed_from_u64(42);
     let mut domains: HashMap<String, DomainState> = HashMap::new();
-    let mut rst_count = 0u32;
+    let mut signal_count = 0u32;
     let mut strategies_found = 0u32;
     let mut packets_injected = 0u32;
     let mut trials_completed = 0u32;
-
-    // Track server TTLs: (client_port, server_port) -> TTL
-    let mut server_ttls: HashMap<(u16, u16), u8> = HashMap::new();
-    // Map flow to domain (learned from ClientHello SNI)
-    let mut flow_to_domain: HashMap<(u16, u16), String> = HashMap::new();
-    // Active trials
     let mut active_trials: Vec<Trial> = Vec::new();
-    // Round-robin strategy index per domain
     let mut next_strategy_index: HashMap<String, usize> = HashMap::new();
+
+    // --- Reactive pipeline ---
+    // We can't use the full .group_by_flow().detect() pipeline here because:
+    // 1. We need a single TspuDetector per client_flow, but we don't know client_flow upfront
+    // 2. We need to inject + evolve GA as side effects
+    //
+    // So we use TspuDetector::step() manually, but still parse through the reactive chain.
+    // The pipeline: raw → ethernet → ipv4 → tcp (reactive parsing)
+    // Then: per-flow TspuDetector::step() + domain state + GA (imperative side effects)
+
+    let mut detectors: HashMap<Flow, TspuDetector> = HashMap::new();
+
+    // Raw → Ethernet → IPv4 → TCP (fully reactive parsing pipeline)
+    let mut tcp_stream = Box::pin(
+        stream
+            .filter(|pkt| {
+                let big_enough = pkt.len() >= 14 + 20 + 20;
+                let not_injected = pkt.len() < 23 || pkt[22] > 1; // TTL > 1
+                futures::future::ready(big_enough && not_injected)
+            })
+            .parse_ethernet()
+            .parse_ipv4()
+            .parse_tcp(),
+    );
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -78,27 +101,26 @@ async fn main() {
         let mut completed: Vec<(String, usize, bool)> = Vec::new();
         active_trials.retain(|trial| {
             if now.duration_since(trial.applied_at) >= TRIAL_OBSERVE_WINDOW {
-                completed.push((trial.domain.clone(), trial.strategy_index, trial.rst_seen));
+                completed.push((trial.domain.clone(), trial.strategy_index, trial.signal_seen));
                 false
             } else {
                 true
             }
         });
 
-        // Apply fitness from completed trials
-        for (domain, strategy_idx, rst_seen) in &completed {
+        for (domain, strategy_idx, signal_seen) in &completed {
             if let Some(state) = domains.get_mut(domain) {
-                let fitness = if *rst_seen { 0.1 } else { 0.9 };
+                let fitness = if *signal_seen { 0.1 } else { 0.9 };
                 state.set_individual_fitness(*strategy_idx, fitness);
                 trials_completed += 1;
                 eprintln!(
-                    "[geneva] trial #{trials_completed}: {domain} strategy[{strategy_idx}] \
-                     fitness={fitness} (rst_seen={rst_seen})"
+                    "[geneva] trial #{trials_completed}: {domain}[{strategy_idx}] \
+                     fitness={fitness} (blocked={signal_seen})"
                 );
             }
         }
 
-        // Evolve domains that have completed trials
+        // Evolve domains with completed trials
         for (domain, _, _) in &completed {
             if let Some(state) = domains.get_mut(domain) {
                 if matches!(state.mode(), DomainMode::Blackhole) {
@@ -115,324 +137,256 @@ async fn main() {
             }
         }
 
-        let pkt =
-            match tokio::time::timeout(Duration::from_millis(50), StreamExt::next(&mut stream))
-                .await
-            {
-                Ok(Some(p)) => p,
-                Ok(None) => break,
-                Err(_) => continue,
-            };
+        // Poll next TCP segment from reactive pipeline
+        let seg = match tokio::time::timeout(
+            Duration::from_millis(100),
+            tcp_stream.next(),
+        )
+        .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => break,
+            Err(_) => {
+                // Timeout — run Tick on all detectors
+                let now_instant = Instant::now();
+                let mut tick_signals = Vec::new();
+                // Take all detectors out, step Tick, collect back
+                let entries: Vec<(Flow, TspuDetector)> = detectors.drain().collect();
+                for (flow, detector) in entries {
+                    let (new_detector, sigs) = detector.step(DetectorEvent::Tick(now_instant));
+                    for sig in sigs.iter() {
+                        tick_signals.push(sig.clone());
+                    }
+                    detectors.insert(flow, new_detector);
+                }
+                for sig in tick_signals {
+                    process_signal(
+                        &sig, &mut domains, &ga_config, &mut active_trials,
+                        &mut signal_count, &mut next_strategy_index,
+                    );
+                }
+                continue;
+            }
+        };
 
-        // Parse: ethernet(14) + ip(20) + tcp(20) = 54 min
-        if pkt.len() < 54 {
-            continue;
+        // Get or create per-flow detector
+        let client_flow = normalize_flow(&seg.flow);
+        let detector = detectors
+            .remove(&client_flow)
+            .unwrap_or_else(|| TspuDetector::new(tspu_config.clone(), client_flow.clone()));
+
+        // Step detector with packet
+        let (new_detector, signals) = detector.step(DetectorEvent::Packet(seg.clone()));
+        detectors.insert(client_flow.clone(), new_detector);
+
+        // Process signals
+        for sig in signals.iter() {
+            process_signal(
+                sig, &mut domains, &ga_config, &mut active_trials,
+                &mut signal_count, &mut next_strategy_index,
+            );
         }
-        if pkt[12] != 0x08 || pkt[13] != 0x00 {
-            continue;
-        }
-        let ip_start = 14;
-        if pkt[ip_start + 9] != 6 {
-            continue;
-        }
-        // Skip our own injected packets (TTL <= 1)
-        if pkt[ip_start + 8] <= 1 {
-            continue;
-        }
 
-        let ip_ihl = (pkt[ip_start] & 0x0f) as usize * 4;
-        let tcp_start = ip_start + ip_ihl;
-        if pkt.len() < tcp_start + 20 {
-            continue;
-        }
-
-        let src_port = u16::from_be_bytes([pkt[tcp_start], pkt[tcp_start + 1]]);
-        let dst_port = u16::from_be_bytes([pkt[tcp_start + 2], pkt[tcp_start + 3]]);
-        let tcp_flags = pkt[tcp_start + 13];
-        let ttl = pkt[ip_start + 8];
-        let tcp_data_offset = (pkt[tcp_start + 12] >> 4) as usize * 4;
-        let payload_start = tcp_start + tcp_data_offset;
-
-        let is_syn_ack = tcp_flags & 0x12 == 0x12 && tcp_flags & 0x04 == 0;
-        let is_rst = tcp_flags & 0x04 != 0;
-
-        // Track server TTL from SYN+ACK (from port 443)
-        if is_syn_ack && src_port == 443 {
-            server_ttls.insert((dst_port, src_port), ttl);
-        }
-
-        // On ClientHello: extract SNI, map flow → domain
-        if dst_port == 443 && tcp_flags & 0x18 == 0x18 && pkt.len() > payload_start + 6 {
-            if pkt[payload_start] == 0x16 && pkt[payload_start + 5] == 0x01 {
-                let sni = extract_sni(&pkt[payload_start..]);
-                if let Some(domain) = sni {
-                    eprintln!("[geneva] ClientHello → {domain} (flow {src_port}→{dst_port})");
-                    flow_to_domain.insert((src_port, dst_port), domain.clone());
-
-                    // If domain in Blackhole or Desync → apply strategy
-                    let strategy_to_apply = if let Some(state) = domains.get(&domain) {
-                        match state.mode() {
-                            DomainMode::Blackhole => {
-                                let pop_size = state.population_size();
-                                if pop_size > 0 {
-                                    let idx_ref = next_strategy_index.entry(domain.clone()).or_insert(0);
-                                    let idx = *idx_ref % pop_size;
-                                    *idx_ref += 1;
-                                    state.strategy_at(idx).cloned()
-                                } else {
-                                    None
-                                }
-                            }
-                            DomainMode::Desync => state.active_strategy().cloned(),
-                            DomainMode::Clean => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Some(strategy) = strategy_to_apply {
-                        let seg = parse_tcp_segment(&pkt, ip_start, tcp_start, payload_start);
-                        let src_mac = Mac([pkt[6], pkt[7], pkt[8], pkt[9], pkt[10], pkt[11]]);
-                        let dst_mac = Mac([pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5]]);
-                        let commands = execute(&strategy, &seg, &src_mac, &dst_mac);
-
-                        let mut injected_this = 0u32;
-                        for cmd in &commands {
-                            if let Command::Inject(injectable) = cmd {
-                                let bytes = injectable.serialize();
-                                if let Err(e) = injector.send(&bytes) {
-                                    eprintln!("[geneva] inject failed: {e}");
-                                } else {
-                                    packets_injected += 1;
-                                    injected_this += 1;
-                                }
+        // If domain in Blackhole/Desync and this is ClientHello → apply strategy
+        if is_client_hello(&seg) {
+            let domain = extract_domain_from_signal_or_seg(&domains, &seg);
+            if let Some(domain) = domain {
+                let strategy = if let Some(state) = domains.get(&domain) {
+                    match state.mode() {
+                        DomainMode::Blackhole => {
+                            let pop_size = state.population_size();
+                            if pop_size > 0 {
+                                let idx = next_strategy_index.entry(domain.clone()).or_insert(0);
+                                let i = *idx % pop_size;
+                                *idx += 1;
+                                state.strategy_at(i).cloned()
+                            } else {
+                                None
                             }
                         }
+                        DomainMode::Desync => state.active_strategy().cloned(),
+                        DomainMode::Clean => None,
+                    }
+                } else {
+                    None
+                };
 
-                        if injected_this > 0 {
-                            eprintln!(
-                                "[geneva] applied strategy to {domain}: \
-                                 {injected_this} packets injected"
-                            );
+                if let Some(strategy) = strategy {
+                    let src_mac = Mac([0; 6]); // Bridge fills MACs
+                    let dst_mac = Mac([0; 6]);
+                    let commands = execute(&strategy, &seg, &src_mac, &dst_mac);
+
+                    let mut injected_this = 0u32;
+                    for cmd in &commands {
+                        if let Command::Inject(injectable) = cmd {
+                            let bytes = injectable.serialize();
+                            if let Err(e) = injector.send(&bytes) {
+                                eprintln!("[geneva] inject failed: {e}");
+                            } else {
+                                packets_injected += 1;
+                                injected_this += 1;
+                            }
                         }
+                    }
 
-                        // Record trial
-                        let idx = next_strategy_index
-                            .get(&domain)
-                            .copied()
-                            .unwrap_or(1)
-                            .wrapping_sub(1)
-                            % 10;
+                    if injected_this > 0 {
+                        eprintln!(
+                            "[geneva] applied strategy to {domain}: {injected_this} injected"
+                        );
+                        let idx = next_strategy_index.get(&domain).copied().unwrap_or(1) - 1;
                         active_trials.push(Trial {
-                            strategy_index: idx,
+                            strategy_index: idx % 10,
                             domain,
-                            flow_key: (src_port, dst_port),
                             applied_at: Instant::now(),
-                            rst_seen: false,
+                            signal_seen: false,
                         });
                     }
                 }
             }
         }
-
-        // Detect RST injection: RST from port 443 with anomalous TTL
-        if is_rst && src_port == 443 {
-            let flow_key = (dst_port, src_port);
-            let server_ttl = server_ttls.get(&flow_key).copied();
-            let is_anomalous = match server_ttl {
-                Some(srv_ttl) => {
-                    let delta = (ttl as i16 - srv_ttl as i16).abs();
-                    delta > 3
-                }
-                None => ttl > 100,
-            };
-
-            if is_anomalous {
-                rst_count += 1;
-                let domain = flow_to_domain
-                    .get(&flow_key)
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string());
-                eprintln!(
-                    "[geneva] RST injection #{rst_count} on {domain} (TTL={ttl})"
-                );
-
-                // Mark RST on active trials for this flow
-                for trial in &mut active_trials {
-                    if trial.flow_key == flow_key || trial.domain == domain {
-                        trial.rst_seen = true;
-                    }
-                }
-
-                // Transition domain to Blackhole
-                let state = domains
-                    .entry(domain.clone())
-                    .or_insert_with(|| DomainState::new(domain, ga_config.clone()));
-                let flow = parse_flow(&pkt, ip_start, src_port, dst_port);
-                let transition = state.on_rst_detected(&flow);
-                match transition {
-                    DomainTransition::ActivateBlackhole(_) => {
-                        eprintln!("[geneva] → Blackhole activated");
-                    }
-                    DomainTransition::DesyncFailed => {
-                        eprintln!("[geneva] → Desync failed, back to Blackhole");
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // Evaluate remaining trials
-    for trial in &active_trials {
-        let fitness = if trial.rst_seen { 0.1 } else { 0.9 };
-        if let Some(state) = domains.get_mut(&trial.domain) {
-            state.set_individual_fitness(trial.strategy_index, fitness);
-            trials_completed += 1;
-        }
     }
 
     eprintln!(
-        "[geneva] done: rst={rst_count}, trials={trials_completed}, \
+        "[geneva] done: signals={signal_count}, trials={trials_completed}, \
          strategies={strategies_found}, injected={packets_injected}"
     );
 
-    // Print per-domain summary
     for (domain, state) in &domains {
-        eprintln!(
-            "[geneva] {domain}: mode={:?}",
-            state.mode()
-        );
+        eprintln!("[geneva] {domain}: mode={:?}", state.mode());
     }
 
-    if rst_count > 0 {
+    if signal_count > 0 {
         println!(
-            "PASS: rst={rst_count}, trials={trials_completed}, \
+            "PASS: signals={signal_count}, trials={trials_completed}, \
              strategies={strategies_found}, injected={packets_injected}"
         );
     } else {
-        println!("FAIL: no RST injection detected");
+        println!("FAIL: no blockage signals detected");
         std::process::exit(1);
     }
 }
 
-/// Extract SNI from TLS ClientHello payload.
+fn process_signal(
+    sig: &BlockageSignal,
+    domains: &mut HashMap<String, DomainState>,
+    ga_config: &GaConfig,
+    active_trials: &mut Vec<Trial>,
+    signal_count: &mut u32,
+    _next_strategy_index: &mut HashMap<String, usize>,
+) {
+    let (domain, flow) = match sig {
+        BlockageSignal::RstInjection { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::SilentDrop { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::IpBlackhole { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::FinInjection { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::WindowManipulation { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::ThrottleCliff { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::ThrottleProbabilistic { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+        BlockageSignal::AckDrop { flow, sni, .. } => {
+            (sni.clone().unwrap_or_else(|| "unknown".to_string()), flow)
+        }
+    };
+
+    *signal_count += 1;
+    eprintln!("[geneva] signal #{signal_count}: {domain} — {:?}", std::mem::discriminant(sig));
+
+    // Mark active trials
+    for trial in active_trials.iter_mut() {
+        if trial.domain == domain {
+            trial.signal_seen = true;
+        }
+    }
+
+    // Domain state transition
+    let state = domains
+        .entry(domain.clone())
+        .or_insert_with(|| DomainState::new(domain.clone(), ga_config.clone()));
+    let transition = state.on_rst_detected(flow);
+    match transition {
+        DomainTransition::ActivateBlackhole(_) => {
+            eprintln!("[geneva] → {domain}: Blackhole activated");
+        }
+        DomainTransition::DesyncFailed => {
+            eprintln!("[geneva] → {domain}: Desync failed, back to Blackhole");
+        }
+        _ => {}
+    }
+}
+
+/// Normalize flow to client→server direction (client port > 1024, server port <= 1024 or 443)
+fn normalize_flow(flow: &Flow) -> Flow {
+    if flow.dst.port() < 1024 || flow.dst.port() == 443 {
+        flow.clone()
+    } else {
+        flow.reversed()
+    }
+}
+
+fn is_client_hello(seg: &TcpSegment) -> bool {
+    seg.flags.is_psh_ack()
+        && seg.payload.len() >= 6
+        && seg.payload[0] == 0x16
+        && seg.payload[5] == 0x01
+}
+
+fn extract_domain_from_signal_or_seg(
+    domains: &HashMap<String, DomainState>,
+    seg: &TcpSegment,
+) -> Option<String> {
+    // Try to find domain from existing domain states by flow
+    for (domain, _state) in domains {
+        return Some(domain.clone());
+    }
+    // Fallback: extract SNI from payload
+    extract_sni(&seg.payload)
+}
+
 fn extract_sni(tls_data: &[u8]) -> Option<String> {
-    // TLS record: type(1) + version(2) + length(2) + handshake_type(1) + length(3)
-    //           + client_version(2) + random(32) + session_id_len(1) + ...
     if tls_data.len() < 43 {
         return None;
     }
-    // Skip: record header(5) + handshake type(1) + handshake length(3)
-    //      + client version(2) + random(32) = 43
     let mut pos = 43;
-
-    // Session ID
-    if pos >= tls_data.len() {
-        return None;
-    }
+    if pos >= tls_data.len() { return None; }
     let session_id_len = tls_data[pos] as usize;
     pos += 1 + session_id_len;
-
-    // Cipher suites
-    if pos + 2 > tls_data.len() {
-        return None;
-    }
-    let cipher_suites_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
-    pos += 2 + cipher_suites_len;
-
-    // Compression methods
-    if pos >= tls_data.len() {
-        return None;
-    }
-    let comp_methods_len = tls_data[pos] as usize;
-    pos += 1 + comp_methods_len;
-
-    // Extensions length
-    if pos + 2 > tls_data.len() {
-        return None;
-    }
-    let extensions_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
+    if pos + 2 > tls_data.len() { return None; }
+    let cs_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
+    pos += 2 + cs_len;
+    if pos >= tls_data.len() { return None; }
+    let comp_len = tls_data[pos] as usize;
+    pos += 1 + comp_len;
+    if pos + 2 > tls_data.len() { return None; }
+    let ext_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
     pos += 2;
-
-    let extensions_end = (pos + extensions_len).min(tls_data.len());
-
-    // Walk extensions, find SNI (type 0x0000)
-    while pos + 4 <= extensions_end {
+    let ext_end = (pos + ext_len).min(tls_data.len());
+    while pos + 4 <= ext_end {
         let ext_type = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]);
-        let ext_len = u16::from_be_bytes([tls_data[pos + 2], tls_data[pos + 3]]) as usize;
+        let this_len = u16::from_be_bytes([tls_data[pos + 2], tls_data[pos + 3]]) as usize;
         pos += 4;
-
-        if ext_type == 0x0000 && ext_len >= 5 && pos + ext_len <= extensions_end {
-            let sni_data = &tls_data[pos..pos + ext_len];
-            if sni_data.len() >= 5 {
-                let name_type = sni_data[2];
-                let name_len = u16::from_be_bytes([sni_data[3], sni_data[4]]) as usize;
-                if name_type == 0 && 5 + name_len <= sni_data.len() {
-                    return String::from_utf8(sni_data[5..5 + name_len].to_vec()).ok();
+        if ext_type == 0x0000 && this_len >= 5 && pos + this_len <= ext_end {
+            let d = &tls_data[pos..pos + this_len];
+            if d.len() >= 5 && d[2] == 0 {
+                let name_len = u16::from_be_bytes([d[3], d[4]]) as usize;
+                if 5 + name_len <= d.len() {
+                    return String::from_utf8(d[5..5 + name_len].to_vec()).ok();
                 }
             }
         }
-
-        pos += ext_len;
+        pos += this_len;
     }
-
     None
-}
-
-fn parse_flow(pkt: &[u8], ip_start: usize, src_port: u16, dst_port: u16) -> Flow {
-    Flow {
-        src: SocketAddr::new(
-            Ipv4Addr::new(
-                pkt[ip_start + 12],
-                pkt[ip_start + 13],
-                pkt[ip_start + 14],
-                pkt[ip_start + 15],
-            )
-            .into(),
-            src_port,
-        ),
-        dst: SocketAddr::new(
-            Ipv4Addr::new(
-                pkt[ip_start + 16],
-                pkt[ip_start + 17],
-                pkt[ip_start + 18],
-                pkt[ip_start + 19],
-            )
-            .into(),
-            dst_port,
-        ),
-        protocol: Protocol::Tcp,
-    }
-}
-
-fn parse_tcp_segment(
-    pkt: &[u8],
-    ip_start: usize,
-    tcp_start: usize,
-    payload_start: usize,
-) -> TcpSegment {
-    let src_port = u16::from_be_bytes([pkt[tcp_start], pkt[tcp_start + 1]]);
-    let dst_port = u16::from_be_bytes([pkt[tcp_start + 2], pkt[tcp_start + 3]]);
-
-    TcpSegment {
-        flow: parse_flow(pkt, ip_start, src_port, dst_port),
-        seq: u32::from_be_bytes([
-            pkt[tcp_start + 4],
-            pkt[tcp_start + 5],
-            pkt[tcp_start + 6],
-            pkt[tcp_start + 7],
-        ]),
-        ack: u32::from_be_bytes([
-            pkt[tcp_start + 8],
-            pkt[tcp_start + 9],
-            pkt[tcp_start + 10],
-            pkt[tcp_start + 11],
-        ]),
-        flags: TcpFlags::from_bits_truncate(pkt[tcp_start + 13]),
-        window: u16::from_be_bytes([pkt[tcp_start + 14], pkt[tcp_start + 15]]),
-        options: TcpOptions::default(),
-        ttl: pkt[ip_start + 8],
-        payload: pkt[payload_start..].to_vec(),
-    }
 }

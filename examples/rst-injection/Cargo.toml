@@ -7,6 +7,7 @@ publish = false
 [features]
 default = []
 tc = ["reflex-linux/tc", "dep:reflex-linux-common"]
+nfqueue = ["reflex-linux/nfqueue"]
 
 [dependencies]
 reflex-core = { path = "../../core" }
@@ -15,6 +16,7 @@ reflex-linux-common = { path = "../../linux-common", optional = true }
 futures = "0.3"
 rand = "0.10"
 smallvec = "1"
+libc = "0.2"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros"] }
 
 [[bin]]
@@ -36,4 +38,9 @@ path = "multi_disorder.rs"
 [[bin]]
 name = "e2e_feedback_loop"
 path = "feedback_loop.rs"
+
+[[bin]]
+name = "e2e_geneva_nfq"
+path = "geneva_nfq.rs"
+required-features = ["nfqueue"]
 

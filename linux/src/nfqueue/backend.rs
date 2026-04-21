@@ -17,6 +17,7 @@ impl NfqueueBackend {
         queue
             .bind(queue_num)
             .map_err(|e| format!("failed to bind queue {queue_num}: {e}"))?;
+        queue.set_nonblocking(true);
         Ok(Self { queue })
     }
 

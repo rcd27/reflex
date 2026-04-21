@@ -4,6 +4,105 @@ use crate::geneva::action::{FragProtocol, GenevaAction, PacketField, TamperOp};
 use crate::geneva::strategy::{GenevaStrategy, StrategyNode, Trigger};
 use crate::types::{Protocol, TcpFlags};
 
+/// Known-effective strategies against Russian TSPU.
+pub fn seed_strategies() -> Vec<GenevaStrategy> {
+    let tls_trigger = Trigger {
+        protocol: Protocol::Tcp,
+        flags: Some(TcpFlags::PSH | TcpFlags::ACK),
+        has_tls_hello: true,
+    };
+
+    vec![
+        // 1. Split ClientHello at byte 1 (in order) — SNI разрезан, ТСПУ не видит
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Fragment {
+                    protocol: FragProtocol::Tcp,
+                    offset: 1,
+                    in_order: true,
+                },
+                then: vec![],
+            },
+        },
+        // 2. Split ClientHello at byte 3 (in order)
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Fragment {
+                    protocol: FragProtocol::Tcp,
+                    offset: 3,
+                    in_order: true,
+                },
+                then: vec![],
+            },
+        },
+        // 3. Split ClientHello at byte 5 (disorder — second part first)
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Fragment {
+                    protocol: FragProtocol::Tcp,
+                    offset: 5,
+                    in_order: false,
+                },
+                then: vec![],
+            },
+        },
+        // 4. Fake + TTL1: duplicate, modify copy TTL=1, send before original
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Duplicate {
+                    modify: Some(Box::new(GenevaAction::Tamper {
+                        field: PacketField::IpTtl,
+                        op: TamperOp::Replace(vec![1]),
+                    })),
+                },
+                then: vec![StrategyNode::Send, StrategyNode::Send],
+            },
+        },
+        // 5. Fake + TTL3: duplicate, TTL=3 (survives a few hops, dies before DPI)
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Duplicate {
+                    modify: Some(Box::new(GenevaAction::Tamper {
+                        field: PacketField::IpTtl,
+                        op: TamperOp::Replace(vec![3]),
+                    })),
+                },
+                then: vec![StrategyNode::Send, StrategyNode::Send],
+            },
+        },
+        // 6. Fake with corrupted checksum + original
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Duplicate {
+                    modify: Some(Box::new(GenevaAction::Tamper {
+                        field: PacketField::TcpChecksum,
+                        op: TamperOp::Corrupt,
+                    })),
+                },
+                then: vec![StrategyNode::Send, StrategyNode::Send],
+            },
+        },
+        // 7. Split at byte 2 (disorder)
+        GenevaStrategy {
+            trigger: tls_trigger.clone(),
+            tree: StrategyNode::Action {
+                action: GenevaAction::Fragment {
+                    protocol: FragProtocol::Tcp,
+                    offset: 2,
+                    in_order: false,
+                },
+                then: vec![],
+            },
+        },
+    ]
+}
+
 pub struct RandomStrategyGen {
     pub max_depth: usize,
 }

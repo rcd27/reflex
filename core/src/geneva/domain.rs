@@ -60,10 +60,7 @@ impl DomainState {
 
     /// Get strategy by population index (for trial evaluation in Blackhole mode).
     pub fn strategy_at(&self, index: usize) -> Option<&GenevaStrategy> {
-        self.population
-            .individuals
-            .get(index)
-            .map(|i| &i.strategy)
+        self.population.individuals.get(index).map(|i| &i.strategy)
     }
 
     pub fn population_size(&self) -> usize {
@@ -122,7 +119,7 @@ impl DomainState {
     fn init_population_if_empty(&mut self) {
         if self.population.individuals.is_empty() {
             let mut rng = rand::rng();
-            self.population = Population::random(self.population.config.clone(), &mut rng);
+            self.population = Population::seeded(self.population.config.clone(), &mut rng);
         }
     }
 }
