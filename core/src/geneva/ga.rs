@@ -66,7 +66,10 @@ impl Population {
 
         let mut individuals: Vec<Individual> = seeds
             .into_iter()
-            .map(|strategy| Individual { strategy, fitness: 0.0 })
+            .map(|strategy| Individual {
+                strategy,
+                fitness: 0.0,
+            })
             .collect();
 
         // Fill rest with random

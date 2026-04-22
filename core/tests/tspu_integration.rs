@@ -4,7 +4,6 @@ use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::Detector;
 use std::net::{Ipv4Addr, SocketAddr};
 
-
 fn client_flow() -> Flow {
     Flow {
         src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 12345),

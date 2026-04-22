@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use reflex_core::detector::DetectorEvent;
 use reflex_core::geneva::domain::{DomainMode, DomainState, DomainTransition};
 use reflex_core::geneva::executor::execute;
 use reflex_core::geneva::ga::GaConfig;
@@ -11,7 +12,6 @@ use reflex_core::geneva::tspu::{BlockageSignal, TspuConfig, TspuDetector};
 use reflex_core::parse::{ParseEthernetExt, ParseIpv4Ext, ParseTcpExt};
 use reflex_core::types::{Flow, Mac, TcpSegment};
 use reflex_core::{Command, Detector};
-use reflex_core::detector::DetectorEvent;
 use reflex_linux::AfPacketBackend;
 
 /// A trial: we applied strategy #N to a flow and are watching the result.
@@ -101,7 +101,11 @@ async fn main() {
         let mut completed: Vec<(String, usize, bool)> = Vec::new();
         active_trials.retain(|trial| {
             if now.duration_since(trial.applied_at) >= TRIAL_OBSERVE_WINDOW {
-                completed.push((trial.domain.clone(), trial.strategy_index, trial.signal_seen));
+                completed.push((
+                    trial.domain.clone(),
+                    trial.strategy_index,
+                    trial.signal_seen,
+                ));
                 false
             } else {
                 true
@@ -138,12 +142,7 @@ async fn main() {
         }
 
         // Poll next TCP segment from reactive pipeline
-        let seg = match tokio::time::timeout(
-            Duration::from_millis(100),
-            tcp_stream.next(),
-        )
-        .await
-        {
+        let seg = match tokio::time::timeout(Duration::from_millis(100), tcp_stream.next()).await {
             Ok(Some(s)) => s,
             Ok(None) => break,
             Err(_) => {
@@ -161,8 +160,12 @@ async fn main() {
                 }
                 for sig in tick_signals {
                     process_signal(
-                        &sig, &mut domains, &ga_config, &mut active_trials,
-                        &mut signal_count, &mut next_strategy_index,
+                        &sig,
+                        &mut domains,
+                        &ga_config,
+                        &mut active_trials,
+                        &mut signal_count,
+                        &mut next_strategy_index,
                     );
                 }
                 continue;
@@ -182,8 +185,12 @@ async fn main() {
         // Process signals
         for sig in signals.iter() {
             process_signal(
-                sig, &mut domains, &ga_config, &mut active_trials,
-                &mut signal_count, &mut next_strategy_index,
+                sig,
+                &mut domains,
+                &ga_config,
+                &mut active_trials,
+                &mut signal_count,
+                &mut next_strategy_index,
             );
         }
 
@@ -302,7 +309,10 @@ fn process_signal(
     };
 
     *signal_count += 1;
-    eprintln!("[geneva] signal #{signal_count}: {domain} — {:?}", std::mem::discriminant(sig));
+    eprintln!(
+        "[geneva] signal #{signal_count}: {domain} — {:?}",
+        std::mem::discriminant(sig)
+    );
 
     // Mark active trials
     for trial in active_trials.iter_mut() {
@@ -360,16 +370,24 @@ fn extract_sni(tls_data: &[u8]) -> Option<String> {
         return None;
     }
     let mut pos = 43;
-    if pos >= tls_data.len() { return None; }
+    if pos >= tls_data.len() {
+        return None;
+    }
     let session_id_len = tls_data[pos] as usize;
     pos += 1 + session_id_len;
-    if pos + 2 > tls_data.len() { return None; }
+    if pos + 2 > tls_data.len() {
+        return None;
+    }
     let cs_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
     pos += 2 + cs_len;
-    if pos >= tls_data.len() { return None; }
+    if pos >= tls_data.len() {
+        return None;
+    }
     let comp_len = tls_data[pos] as usize;
     pos += 1 + comp_len;
-    if pos + 2 > tls_data.len() { return None; }
+    if pos + 2 > tls_data.len() {
+        return None;
+    }
     let ext_len = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
     pos += 2;
     let ext_end = (pos + ext_len).min(tls_data.len());

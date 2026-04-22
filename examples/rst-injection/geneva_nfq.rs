@@ -4,12 +4,12 @@ use std::time::{Duration, Instant};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use reflex_core::checksum;
+use reflex_core::detector::DetectorEvent;
 use reflex_core::geneva::domain::{DomainMode, DomainState, DomainTransition};
 use reflex_core::geneva::ga::GaConfig;
 use reflex_core::geneva::tspu::{BlockageSignal, TspuConfig, TspuDetector};
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::Detector;
-use reflex_core::detector::DetectorEvent;
 use reflex_linux::nfqueue::NfqueueBackend;
 use reflex_linux::{AfPacketBackend, Injector};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -99,7 +99,9 @@ fn main() {
                 let fitness = if *blocked { 0.1 } else { 0.9 };
                 state.set_individual_fitness(*idx, fitness);
                 trials_completed += 1;
-                eprintln!("[geneva-nfq] trial #{trials_completed}: {domain}[{idx}] fitness={fitness}");
+                eprintln!(
+                    "[geneva-nfq] trial #{trials_completed}: {domain}[{idx}] fitness={fitness}"
+                );
             }
         }
         for (domain, _, _) in &completed {
@@ -107,7 +109,10 @@ fn main() {
                 if matches!(state.mode(), DomainMode::Blackhole) {
                     if let DomainTransition::SwitchToDesync(ref s) = state.evolve_step(&mut rng) {
                         strategies_found += 1;
-                        eprintln!("[geneva-nfq] GA found strategy for {domain}! depth={}", s.tree.depth());
+                        eprintln!(
+                            "[geneva-nfq] GA found strategy for {domain}! depth={}",
+                            s.tree.depth()
+                        );
                     }
                 }
             }
@@ -125,7 +130,10 @@ fn main() {
             Err(e) => {
                 // EAGAIN/EWOULDBLOCK expected in non-blocking mode
                 let err_str = e.to_string();
-                if err_str.contains("temporarily") || err_str.contains("again") || err_str.contains("11") {
+                if err_str.contains("temporarily")
+                    || err_str.contains("again")
+                    || err_str.contains("11")
+                {
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -259,7 +267,9 @@ fn apply_strategy_nfq(
 
     match &strategy.tree {
         StrategyNode::Action { action, .. } => match action {
-            GenevaAction::Fragment { offset, in_order, .. } => {
+            GenevaAction::Fragment {
+                offset, in_order, ..
+            } => {
                 // TCP segmentation: split ClientHello at offset
                 // We need to build two Ethernet+IP+TCP packets from the original
                 let split_at = (*offset).min(seg.payload.len());
@@ -268,8 +278,20 @@ fn apply_strategy_nfq(
                     return;
                 }
 
-                let first = build_fragment_packet(raw_ip_payload, seg, &seg.payload[..split_at], seg.seq, false);
-                let second = build_fragment_packet(raw_ip_payload, seg, &seg.payload[split_at..], seg.seq + split_at as u32, true);
+                let first = build_fragment_packet(
+                    raw_ip_payload,
+                    seg,
+                    &seg.payload[..split_at],
+                    seg.seq,
+                    false,
+                );
+                let second = build_fragment_packet(
+                    raw_ip_payload,
+                    seg,
+                    &seg.payload[split_at..],
+                    seg.seq + split_at as u32,
+                    true,
+                );
 
                 let (a, b) = if *in_order {
                     (first, second)
@@ -377,14 +399,14 @@ fn build_fragment_packet(
     // src port, dst port from original
     pkt.extend_from_slice(&raw_ip[orig_tcp_start..orig_tcp_start + 2]); // src port
     pkt.extend_from_slice(&raw_ip[orig_tcp_start + 2..orig_tcp_start + 4]); // dst port
-    // seq
+                                                                            // seq
     pkt.extend_from_slice(&seq.to_be_bytes());
     // ack from original
     pkt.extend_from_slice(&raw_ip[orig_tcp_start + 8..orig_tcp_start + 12]);
     // data offset (5 = 20 bytes) + flags from original
     pkt.push(0x50); // data offset = 5
     pkt.push(raw_ip[orig_tcp_start + 13]); // flags
-    // window from original
+                                           // window from original
     pkt.extend_from_slice(&raw_ip[orig_tcp_start + 14..orig_tcp_start + 16]);
     // checksum placeholder
     pkt.extend_from_slice(&[0, 0]);
@@ -623,29 +645,39 @@ fn signal_flow(sig: &BlockageSignal) -> &Flow {
 }
 
 fn extract_sni(tls_data: &[u8]) -> Option<String> {
-    if tls_data.len() < 43 { return None; }
+    if tls_data.len() < 43 {
+        return None;
+    }
     let mut pos = 43;
-    if pos >= tls_data.len() { return None; }
+    if pos >= tls_data.len() {
+        return None;
+    }
     pos += 1 + tls_data[pos] as usize;
-    if pos + 2 > tls_data.len() { return None; }
-    let cs = u16::from_be_bytes([tls_data[pos], tls_data[pos+1]]) as usize;
+    if pos + 2 > tls_data.len() {
+        return None;
+    }
+    let cs = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
     pos += 2 + cs;
-    if pos >= tls_data.len() { return None; }
+    if pos >= tls_data.len() {
+        return None;
+    }
     pos += 1 + tls_data[pos] as usize;
-    if pos + 2 > tls_data.len() { return None; }
-    let ext = u16::from_be_bytes([tls_data[pos], tls_data[pos+1]]) as usize;
+    if pos + 2 > tls_data.len() {
+        return None;
+    }
+    let ext = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]) as usize;
     pos += 2;
     let end = (pos + ext).min(tls_data.len());
     while pos + 4 <= end {
-        let t = u16::from_be_bytes([tls_data[pos], tls_data[pos+1]]);
-        let l = u16::from_be_bytes([tls_data[pos+2], tls_data[pos+3]]) as usize;
+        let t = u16::from_be_bytes([tls_data[pos], tls_data[pos + 1]]);
+        let l = u16::from_be_bytes([tls_data[pos + 2], tls_data[pos + 3]]) as usize;
         pos += 4;
         if t == 0 && l >= 5 && pos + l <= end {
-            let d = &tls_data[pos..pos+l];
+            let d = &tls_data[pos..pos + l];
             if d[2] == 0 {
                 let nl = u16::from_be_bytes([d[3], d[4]]) as usize;
                 if 5 + nl <= d.len() {
-                    return String::from_utf8(d[5..5+nl].to_vec()).ok();
+                    return String::from_utf8(d[5..5 + nl].to_vec()).ok();
                 }
             }
         }
