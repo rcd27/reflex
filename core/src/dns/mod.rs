@@ -1,5 +1,7 @@
+pub mod cache;
 mod parse;
 
+pub use cache::DnsCache;
 pub use parse::ParseDnsExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
