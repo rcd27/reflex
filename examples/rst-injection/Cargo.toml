@@ -35,12 +35,4 @@ path = "detector.rs"
 name = "e2e_multi_disorder"
 path = "multi_disorder.rs"
 
-[[bin]]
-name = "e2e_feedback_loop"
-path = "feedback_loop.rs"
-
-[[bin]]
-name = "e2e_geneva_nfq"
-path = "geneva_nfq.rs"
-required-features = ["nfqueue"]
 

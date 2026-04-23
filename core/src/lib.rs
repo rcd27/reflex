@@ -4,7 +4,6 @@ pub mod checksum;
 pub mod command;
 pub mod detector;
 pub mod ext;
-pub mod geneva;
 pub mod parse;
 pub mod stream;
 pub mod types;

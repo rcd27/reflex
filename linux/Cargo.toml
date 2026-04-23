@@ -34,8 +34,3 @@ required-features = ["nfqueue"]
 name = "nfq-fragment"
 path = "examples/nfq-fragment.rs"
 required-features = ["nfqueue"]
-
-[[example]]
-name = "nfq-trial"
-path = "examples/nfq-trial.rs"
-required-features = ["nfqueue"]
