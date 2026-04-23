@@ -2,6 +2,7 @@ mod capture;
 mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
+pub mod rawsend;
 #[cfg(feature = "tc")]
 pub mod tc;
 
@@ -15,6 +16,7 @@ use reflex_core::{CanInject, CanObserve};
 
 pub use capture::Capture;
 pub use inject::Injector;
+pub use rawsend::RawSender;
 
 // --- AF_PACKET backend: CanObserve + CanInject ---
 

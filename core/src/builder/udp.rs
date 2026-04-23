@@ -15,6 +15,11 @@ pub struct BuiltUdpPacket {
 }
 
 impl BuiltUdpPacket {
+    /// Serialize as IP packet (no ethernet header). For raw socket injection.
+    pub fn serialize_ip(&self) -> Vec<u8> {
+        todo!("UDP serialize_ip not yet implemented")
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let udp_total = 8 + self.payload.len();
         let ip_total = 20 + udp_total;

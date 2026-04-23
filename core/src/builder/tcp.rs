@@ -19,6 +19,52 @@ pub struct BuiltTcpPacket {
 }
 
 impl BuiltTcpPacket {
+    /// Serialize as IP packet (no ethernet header). For raw socket injection.
+    pub fn serialize_ip(&self) -> Vec<u8> {
+        let tcp_header_len = 20usize;
+        let tcp_total = tcp_header_len + self.payload.len();
+        let ip_total = 20 + tcp_total;
+        let mut buf = Vec::with_capacity(ip_total);
+
+        // IPv4 header
+        buf.push(0x45);
+        buf.push(0x00);
+        buf.extend_from_slice(&(ip_total as u16).to_be_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]); // identification
+        buf.extend_from_slice(&[0x40, 0x00]); // DF
+        buf.push(self.ttl);
+        buf.push(6); // TCP
+        buf.extend_from_slice(&[0x00, 0x00]); // checksum placeholder
+        buf.extend_from_slice(&self.src_ip.octets());
+        buf.extend_from_slice(&self.dst_ip.octets());
+
+        // TCP header
+        buf.extend_from_slice(&self.src_port.to_be_bytes());
+        buf.extend_from_slice(&self.dst_port.to_be_bytes());
+        buf.extend_from_slice(&self.seq.to_be_bytes());
+        buf.extend_from_slice(&self.ack.to_be_bytes());
+        buf.push(0x50);
+        buf.push(self.flags.bits());
+        buf.extend_from_slice(&self.window.to_be_bytes());
+        buf.extend_from_slice(&[0x00, 0x00]); // checksum placeholder
+        buf.extend_from_slice(&[0x00, 0x00]); // urgent
+
+        buf.extend_from_slice(&self.payload);
+
+        // IP checksum
+        let ip_csum = checksum::ip_checksum(&buf[..20]);
+        buf[10] = (ip_csum >> 8) as u8;
+        buf[11] = (ip_csum & 0xFF) as u8;
+
+        // TCP checksum
+        let tcp_csum =
+            checksum::tcp_checksum(&self.src_ip.octets(), &self.dst_ip.octets(), &buf[20..]);
+        buf[36] = (tcp_csum >> 8) as u8;
+        buf[37] = (tcp_csum & 0xFF) as u8;
+
+        buf
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let tcp_header_len = 20usize;
         let tcp_total = tcp_header_len + self.payload.len();

@@ -1,5 +1,7 @@
+mod hello;
 mod parse;
 
+pub use hello::build_client_hello;
 pub use parse::ParseTlsExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

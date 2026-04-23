@@ -5,6 +5,38 @@ use reflex_core::types::{
 use std::net::{Ipv4Addr, SocketAddr};
 
 #[test]
+fn serialize_ip_produces_valid_ip_packet_without_ethernet() {
+    let flow = Flow {
+        src: "10.0.0.1:12345".parse::<SocketAddr>().unwrap(),
+        dst: "93.184.216.34:443".parse::<SocketAddr>().unwrap(),
+        protocol: Protocol::Tcp,
+    };
+
+    let pkt = TcpBuilder::new()
+        .flow(&flow)
+        .seq(1000)
+        .ack(0)
+        .flags(TcpFlags::SYN)
+        .ttl(64)
+        .build();
+
+    let ip_bytes = pkt.serialize_ip();
+
+    // No ethernet header — starts with IP version
+    assert_eq!(ip_bytes[0] >> 4, 4, "IP version must be 4");
+    assert_eq!(ip_bytes[0] & 0x0F, 5, "IHL must be 5");
+    // Total length = 20 (IP) + 20 (TCP) = 40
+    let total_len = u16::from_be_bytes([ip_bytes[2], ip_bytes[3]]);
+    assert_eq!(total_len, 40);
+    // TTL
+    assert_eq!(ip_bytes[8], 64);
+    // Protocol = TCP
+    assert_eq!(ip_bytes[9], 6);
+    // Dst IP
+    assert_eq!(&ip_bytes[16..20], &[93, 184, 216, 34]);
+}
+
+#[test]
 fn tcp_builder_rst_packet() {
     let flow = Flow {
         src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 443),

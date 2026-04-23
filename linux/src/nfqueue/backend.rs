@@ -18,6 +18,9 @@ impl NfqueueBackend {
             .bind(queue_num)
             .map_err(|e| format!("failed to bind queue {queue_num}: {e}"))?;
         queue.set_nonblocking(true);
+        queue
+            .set_copy_range(queue_num, 0xFFFF)
+            .map_err(|e| format!("failed to set copy range: {e}"))?;
         Ok(Self { queue })
     }
 

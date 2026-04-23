@@ -35,6 +35,15 @@ impl InjectablePacket {
             InjectablePacket::Raw(bytes) => bytes.clone(),
         }
     }
+
+    /// Serialize without ethernet header — for raw socket injection.
+    pub fn serialize_ip(&self) -> Vec<u8> {
+        match self {
+            InjectablePacket::Tcp(pkt) => pkt.serialize_ip(),
+            InjectablePacket::Udp(pkt) => pkt.serialize_ip(),
+            InjectablePacket::Raw(bytes) => bytes.clone(),
+        }
+    }
 }
 
 /// Описание модификации оригинального пакета.
