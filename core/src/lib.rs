@@ -4,6 +4,7 @@ pub mod checksum;
 pub mod command;
 pub mod detector;
 pub mod ext;
+pub mod flow_table;
 pub mod parse;
 pub mod stream;
 pub mod types;
