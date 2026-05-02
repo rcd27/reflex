@@ -9,6 +9,7 @@ license = "GPL-3.0-only"
 default = []
 tls = []
 dns = []
+serde = ["dep:serde", "bitflags/serde"]
 
 [dependencies]
 futures = "0.3"
@@ -17,6 +18,7 @@ pin-project-lite = "0.2"
 smallvec = "1"
 bitflags = "2"
 rand = "0.10"
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "sync", "rt", "macros", "test-util"] }

@@ -2,6 +2,7 @@ use bitflags::bitflags;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct TcpFlags: u8 {
         const FIN = 0x01;
         const SYN = 0x02;
