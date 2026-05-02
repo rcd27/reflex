@@ -5,10 +5,10 @@ use futures::Stream;
 
 use crate::detector::Detector;
 use crate::stream::{
-    DebounceStream, DetectStream, FlowConfig, GroupByFlowStream, GroupByStream, ScanStream,
-    SwitchMapStream, WithLatestFromStream,
+    DebounceStream, DetectStream, FlowConfig, GroupByDomainStream, GroupByFlowStream, GroupByStream,
+    ScanStream, SwitchMapStream, WithLatestFromStream,
 };
-use crate::types::HasFlow;
+use crate::types::{HasFlow, TcpSegment};
 
 pub trait ReflexExt: Stream + Sized {
     fn detect<D>(self, detector: D) -> DetectStream<Self, D>
@@ -71,6 +71,25 @@ pub trait ReflexExt: Stream + Sized {
         Step: FnMut(&mut State, Self::Item) -> Option<R>,
     {
         GroupByStream::new(self, key_fn, init, step)
+    }
+
+    /// Group TCP segments by domain name, with per-domain state.
+    ///
+    /// Domain is resolved via `resolver`. Packets returning `None` are silently skipped.
+    /// Domains live forever (no expiry). Output is `(String, R)`.
+    fn group_by_domain<State, Resolver, Init, Step, R>(
+        self,
+        resolver: Resolver,
+        init: Init,
+        step: Step,
+    ) -> GroupByDomainStream<Self, State, Resolver, Init, Step, R>
+    where
+        Self: Stream<Item = TcpSegment>,
+        Resolver: Fn(&TcpSegment) -> Option<String>,
+        Init: Fn() -> State,
+        Step: FnMut(&mut State, TcpSegment) -> Option<R>,
+    {
+        GroupByDomainStream::new(self, resolver, init, step)
     }
 
     /// Group items by Flow (5-tuple), with per-flow state and lifecycle management.

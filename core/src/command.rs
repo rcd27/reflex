@@ -18,6 +18,7 @@ pub enum Command {
 }
 
 /// Пакет, готовый к инжекции. Фреймворк сериализует в байты.
+#[derive(Debug)]
 pub enum InjectablePacket {
     /// Типизированный TCP-пакет с вычисленными чексуммами.
     Tcp(BuiltTcpPacket),
