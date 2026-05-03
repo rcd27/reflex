@@ -5,10 +5,10 @@ use futures::Stream;
 
 use crate::detector::Detector;
 use crate::stream::{
-    DebounceStream, DetectStream, FlowConfig, GroupByDomainStream, GroupByFlowStream, GroupByStream,
-    ScanStream, SwitchMapStream, WithLatestFromStream,
+    DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByDomainStream,
+    GroupByFlowStream, GroupByStream, ScanStream, SwitchMapStream, WithLatestFromStream,
 };
-use crate::types::{HasFlow, TcpSegment};
+use crate::types::{ConnectionId, HasConnectionId, HasFlow, TcpSegment};
 
 pub trait ReflexExt: Stream + Sized {
     fn detect<D>(self, detector: D) -> DetectStream<Self, D>
@@ -105,6 +105,24 @@ pub trait ReflexExt: Stream + Sized {
         Step: FnMut(&mut State, Self::Item) -> Option<R>,
     {
         GroupByFlowStream::new(self, config, init, step)
+    }
+
+    /// Group items by ConnectionId (bidirectional), with per-connection state and lifecycle.
+    ///
+    /// Both directions of a TCP connection share the same state.
+    /// The `init` callback receives `ConnectionId` so the state knows its connection.
+    fn group_by_connection<State, Init, Step, R>(
+        self,
+        config: FlowConfig,
+        init: Init,
+        step: Step,
+    ) -> GroupByConnectionStream<Self, State, Init, Step, R>
+    where
+        Self::Item: HasConnectionId,
+        Init: Fn(ConnectionId) -> State,
+        Step: FnMut(&mut State, Self::Item) -> Option<R>,
+    {
+        GroupByConnectionStream::new(self, config, init, step)
     }
 }
 

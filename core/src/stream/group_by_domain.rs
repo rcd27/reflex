@@ -27,9 +27,7 @@ pin_project! {
     }
 }
 
-impl<S, State, Resolver, Init, Step, R>
-    GroupByDomainStream<S, State, Resolver, Init, Step, R>
-{
+impl<S, State, Resolver, Init, Step, R> GroupByDomainStream<S, State, Resolver, Init, Step, R> {
     pub fn new(source: S, resolver: Resolver, init: Init, step: Step) -> Self {
         Self {
             source,
@@ -65,7 +63,10 @@ where
                     }
                 };
 
-                let state = this.domains.entry(domain.clone()).or_insert_with(&*this.init);
+                let state = this
+                    .domains
+                    .entry(domain.clone())
+                    .or_insert_with(&*this.init);
 
                 if let Some(result) = (this.step)(state, segment) {
                     Poll::Ready(Some((domain, result)))
@@ -160,10 +161,14 @@ mod tests {
         };
 
         let results: Vec<(String, u32)> = stream::iter(packets)
-            .group_by_domain(resolver, || 0u32, |count, _| {
-                *count += 1;
-                Some(*count)
-            })
+            .group_by_domain(
+                resolver,
+                || 0u32,
+                |count, _| {
+                    *count += 1;
+                    Some(*count)
+                },
+            )
             .collect()
             .await;
 

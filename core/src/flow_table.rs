@@ -44,6 +44,10 @@ impl<D: Detector<Input = TcpSegment>> FlowTable<D> {
         all_signals
     }
 
+    pub fn get(&self, flow: &Flow) -> Option<&D> {
+        self.flows.get(&normalize_flow(flow))
+    }
+
     pub fn flow_count(&self) -> usize {
         self.flows.len()
     }
