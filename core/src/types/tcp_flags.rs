@@ -13,6 +13,33 @@ bitflags! {
     }
 }
 
+impl std::fmt::Display for TcpFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.contains(TcpFlags::SYN) {
+            write!(f, "S")?;
+        }
+        if self.contains(TcpFlags::ACK) {
+            write!(f, "A")?;
+        }
+        if self.contains(TcpFlags::PSH) {
+            write!(f, "P")?;
+        }
+        if self.contains(TcpFlags::FIN) {
+            write!(f, "F")?;
+        }
+        if self.contains(TcpFlags::RST) {
+            write!(f, "R")?;
+        }
+        if self.contains(TcpFlags::URG) {
+            write!(f, "U")?;
+        }
+        if self.is_empty() {
+            write!(f, "none")?;
+        }
+        Ok(())
+    }
+}
+
 impl TcpFlags {
     pub fn is_syn(self) -> bool {
         self.contains(TcpFlags::SYN) && !self.contains(TcpFlags::ACK)
