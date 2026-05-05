@@ -12,7 +12,7 @@
 use reflex_core::builder::TcpBuilder;
 use reflex_core::command::InjectablePacket;
 use reflex_core::types::{Flow, Protocol, TcpFlags};
-use reflex_linux::nfqueue::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
+use reflex_linux::nfqueue::{NfqConfig, NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
 use std::net::{Ipv4Addr, SocketAddr};
 
 struct FragmentHandler;
@@ -129,7 +129,8 @@ fn main() {
     println!("Press Ctrl+C to stop");
 
     let handler = FragmentHandler;
-    let mut pipeline = NfqPipeline::new(200, 0xBB, handler).expect("failed to create NfqPipeline");
+    let mut pipeline =
+        NfqPipeline::new(NfqConfig::default(), handler).expect("failed to create NfqPipeline");
 
     if let Err(e) = pipeline.run_blocking() {
         eprintln!("Pipeline error: {e}");
