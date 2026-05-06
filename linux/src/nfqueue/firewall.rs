@@ -39,8 +39,8 @@ impl FirewallRules {
             .map_err(|e| format!("{cmd} -C {chain}: {e}"))?;
 
         if check.status.success() {
-            info!("{cmd} {chain} NFQUEUE rule already exists, reusing");
-            return Ok(false);
+            warn!("{cmd} {chain} NFQUEUE rule already exists (orphaned?), removing");
+            Self::remove_rule(cmd, chain, args);
         }
 
         let insert = Command::new(cmd)
