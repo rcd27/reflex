@@ -45,6 +45,23 @@ pub struct TlsRecord {
     pub fragment: TlsFragment,
 }
 
+/// Greedy SNI extraction from a potentially truncated TLS ClientHello.
+/// Works like TSPU/DPI: grabs SNI from whatever bytes are available
+/// in the first TCP segment, doesn't need the full TLS record.
+pub fn extract_sni(data: &[u8]) -> Option<String> {
+    // TLS record header: content_type(1) + version(2) + length(2) = 5 bytes
+    // Handshake type at byte 5 must be 0x01 (ClientHello)
+    if data.len() < 6 || data[0] != 0x16 || data[5] != 0x01 {
+        return None;
+    }
+    // Use whatever bytes we have after the 5-byte TLS record header
+    let body = &data[5..];
+    match TlsRecord::parse_client_hello(body) {
+        TlsFragment::ClientHello { sni } => sni,
+        _ => None,
+    }
+}
+
 impl TlsRecord {
     pub fn parse(data: &[u8]) -> Option<Self> {
         if data.len() < 5 {
@@ -88,7 +105,7 @@ impl TlsRecord {
         }
     }
 
-    fn parse_client_hello(data: &[u8]) -> TlsFragment {
+    pub(crate) fn parse_client_hello(data: &[u8]) -> TlsFragment {
         // handshake_type(1) + length(3) + client_version(2) + random(32) = 38 min
         if data.len() < 38 {
             return TlsFragment::ClientHello { sni: None };
