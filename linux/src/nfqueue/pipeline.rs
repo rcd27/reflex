@@ -118,14 +118,15 @@ impl<H: NfqHandler> NfqPipeline<H> {
         Ok(true)
     }
 
-    pub fn run_blocking(&mut self) -> Result<(), String> {
-        loop {
+    pub fn run_while(&mut self, alive: impl Fn() -> bool) -> Result<(), String> {
+        while alive() {
             match self.step() {
                 Ok(true) => {}
                 Ok(false) => std::thread::sleep(std::time::Duration::from_micros(100)),
                 Err(e) => return Err(e),
             }
         }
+        Ok(())
     }
 }
 
