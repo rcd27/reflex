@@ -6,8 +6,8 @@ pub(crate) struct FirewallRules {
     fwmark: u32,
     v4_output_installed: bool,
     v4_input_installed: bool,
-    v6_output_installed: bool,
-    v6_input_installed: bool,
+    quic_drop_installed: bool,
+    v6_drop_installed: bool,
 }
 
 impl FirewallRules {
@@ -15,18 +15,24 @@ impl FirewallRules {
         let output_args = Self::output_args(queue_num, fwmark);
         let input_args = Self::input_args(queue_num, fwmark);
 
+        // IPv4 NFQUEUE for TCP :443
         let v4_output_installed = Self::install_rule("iptables", "OUTPUT", &output_args)?;
         let v4_input_installed = Self::install_rule("iptables", "INPUT", &input_args)?;
-        let v6_output_installed = Self::install_rule("ip6tables", "OUTPUT", &output_args)?;
-        let v6_input_installed = Self::install_rule("ip6tables", "INPUT", &input_args)?;
+
+        // Drop QUIC (UDP :443) — force browser to fall back to TCP
+        let quic_drop_installed = Self::install_rule("iptables", "OUTPUT", &Self::quic_drop_args())?;
+
+        // Drop IPv6 :443 — force browser to use IPv4 (we only handle IPv4)
+        let v6_drop_installed =
+            Self::install_rule("ip6tables", "OUTPUT", &Self::v6_drop_args()).unwrap_or(false);
 
         Ok(Self {
             queue_num,
             fwmark,
             v4_output_installed,
             v4_input_installed,
-            v6_output_installed,
-            v6_input_installed,
+            quic_drop_installed,
+            v6_drop_installed,
         })
     }
 
@@ -39,7 +45,7 @@ impl FirewallRules {
             .map_err(|e| format!("{cmd} -C {chain}: {e}"))?;
 
         if check.status.success() {
-            warn!("{cmd} {chain} NFQUEUE rule already exists (orphaned?), removing");
+            warn!("{cmd} {chain} rule already exists (orphaned?), removing");
             Self::remove_rule(cmd, chain, args);
         }
 
@@ -55,7 +61,7 @@ impl FirewallRules {
             return Err(format!("{cmd} -I {chain}: {stderr}"));
         }
 
-        info!("{cmd} {chain} NFQUEUE rule installed");
+        info!("{cmd} {chain} rule installed");
         Ok(true)
     }
 
@@ -102,6 +108,28 @@ impl FirewallRules {
             queue_num.to_string(),
         ]
     }
+
+    fn quic_drop_args() -> Vec<String> {
+        vec![
+            "-p".into(),
+            "udp".into(),
+            "--dport".into(),
+            "443".into(),
+            "-j".into(),
+            "DROP".into(),
+        ]
+    }
+
+    fn v6_drop_args() -> Vec<String> {
+        vec![
+            "-p".into(),
+            "tcp".into(),
+            "--dport".into(),
+            "443".into(),
+            "-j".into(),
+            "DROP".into(),
+        ]
+    }
 }
 
 impl Drop for FirewallRules {
@@ -115,11 +143,11 @@ impl Drop for FirewallRules {
         if self.v4_input_installed {
             Self::remove_rule("iptables", "INPUT", &input_args);
         }
-        if self.v6_output_installed {
-            Self::remove_rule("ip6tables", "OUTPUT", &output_args);
+        if self.quic_drop_installed {
+            Self::remove_rule("iptables", "OUTPUT", &Self::quic_drop_args());
         }
-        if self.v6_input_installed {
-            Self::remove_rule("ip6tables", "INPUT", &input_args);
+        if self.v6_drop_installed {
+            Self::remove_rule("ip6tables", "OUTPUT", &Self::v6_drop_args());
         }
     }
 }
@@ -172,5 +200,17 @@ mod tests {
                 "200",
             ]
         );
+    }
+
+    #[test]
+    fn quic_drop_args_format() {
+        let args = FirewallRules::quic_drop_args();
+        assert_eq!(args, vec!["-p", "udp", "--dport", "443", "-j", "DROP"]);
+    }
+
+    #[test]
+    fn v6_drop_args_format() {
+        let args = FirewallRules::v6_drop_args();
+        assert_eq!(args, vec!["-p", "tcp", "--dport", "443", "-j", "DROP"]);
     }
 }
