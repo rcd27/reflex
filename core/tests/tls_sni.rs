@@ -1,0 +1,228 @@
+#![cfg(feature = "tls")]
+
+use reflex_core::tls::{TlsContentType, TlsFragment, TlsRecord, TlsVersion};
+
+// --- Helper: build a minimal ClientHello with SNI ---
+
+fn build_client_hello_record(domain: &str) -> Vec<u8> {
+    let sni_ext_data_len = 2 + 1 + 2 + domain.len();
+    let extensions_len = 2 + 2 + sni_ext_data_len;
+
+    let mut hello_payload = Vec::new();
+    hello_payload.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+    hello_payload.extend_from_slice(&[0x00; 32]); // random
+    hello_payload.push(0x00); // session_id len = 0
+    hello_payload.extend_from_slice(&[0x00, 0x02, 0x00, 0x2F]); // cipher suites (1 suite)
+    hello_payload.extend_from_slice(&[0x01, 0x00]); // compression methods
+    hello_payload.extend_from_slice(&(extensions_len as u16).to_be_bytes());
+    // SNI extension
+    hello_payload.extend_from_slice(&[0x00, 0x00]); // extension type = SNI
+    hello_payload.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+    hello_payload.extend_from_slice(&((sni_ext_data_len - 2) as u16).to_be_bytes());
+    hello_payload.push(0x00); // host_name type
+    hello_payload.extend_from_slice(&(domain.len() as u16).to_be_bytes());
+    hello_payload.extend_from_slice(domain.as_bytes());
+
+    let hello_len = hello_payload.len();
+    let mut handshake = vec![0x01]; // ClientHello type
+    handshake.push(0x00);
+    handshake.extend_from_slice(&(hello_len as u16).to_be_bytes());
+    handshake.extend_from_slice(&hello_payload);
+
+    let hs_len = handshake.len();
+    let mut record = vec![0x16]; // content_type = Handshake
+    record.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
+    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+    record
+}
+
+// --- extract_sni ---
+
+#[test]
+fn extract_sni_valid_client_hello() {
+    let record = build_client_hello_record("rutracker.org");
+    let sni = reflex_core::tls::extract_sni(&record);
+    assert_eq!(sni.as_deref(), Some("rutracker.org"));
+}
+
+#[test]
+fn extract_sni_truncated_after_sni_extension() {
+    // Build a full record, then truncate *after* the SNI extension
+    // but before the TLS record length is fully satisfied.
+    // The greedy parser should still extract the SNI.
+    let record = build_client_hello_record("discord.com");
+
+    // Corrupt the TLS record length to be larger than actual data,
+    // simulating a truncated first TCP segment where SNI is still present.
+    let mut truncated = record.clone();
+    // Increase the TLS record length field beyond actual data
+    let fake_len = (truncated.len() - 5 + 100) as u16;
+    truncated[3] = (fake_len >> 8) as u8;
+    truncated[4] = (fake_len & 0xFF) as u8;
+
+    // extract_sni uses greedy parsing and doesn't require full record
+    let sni = reflex_core::tls::extract_sni(&truncated);
+    assert_eq!(sni.as_deref(), Some("discord.com"));
+}
+
+#[test]
+fn extract_sni_non_tls_data() {
+    let data = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    let sni = reflex_core::tls::extract_sni(data);
+    assert!(sni.is_none());
+}
+
+#[test]
+fn extract_sni_too_short() {
+    let data = [0x16, 0x03, 0x01, 0x00];
+    let sni = reflex_core::tls::extract_sni(&data);
+    assert!(sni.is_none());
+}
+
+#[test]
+fn extract_sni_empty() {
+    let sni = reflex_core::tls::extract_sni(&[]);
+    assert!(sni.is_none());
+}
+
+#[test]
+fn extract_sni_server_hello_returns_none() {
+    // Build a ServerHello record
+    let mut handshake = vec![0x02]; // ServerHello type
+    handshake.extend_from_slice(&[0x00, 0x00, 0x04]); // length = 4
+    handshake.extend_from_slice(&[0x03, 0x03, 0x00, 0x00]); // minimal body
+
+    let hs_len = handshake.len();
+    let mut record = vec![0x16]; // Handshake
+    record.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+
+    let sni = reflex_core::tls::extract_sni(&record);
+    assert!(sni.is_none());
+}
+
+#[test]
+fn extract_sni_wrong_content_type() {
+    // Application data (0x17), not handshake (0x16)
+    let data = [0x17, 0x03, 0x03, 0x00, 0x04, 0x01, 0xDE, 0xAD, 0xBE, 0xEF];
+    let sni = reflex_core::tls::extract_sni(&data);
+    assert!(sni.is_none());
+}
+
+// --- TlsRecord::parse ---
+
+#[test]
+fn parse_valid_tls_record() {
+    let record = build_client_hello_record("example.com");
+    let parsed = TlsRecord::parse(&record).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::Handshake);
+    assert_eq!(parsed.version, TlsVersion { major: 3, minor: 1 });
+    if let TlsFragment::ClientHello { sni } = &parsed.fragment {
+        assert_eq!(sni.as_deref(), Some("example.com"));
+    } else {
+        panic!("expected ClientHello");
+    }
+}
+
+#[test]
+fn parse_too_short_data() {
+    assert!(TlsRecord::parse(&[0x16, 0x03]).is_none());
+    assert!(TlsRecord::parse(&[]).is_none());
+    assert!(TlsRecord::parse(&[0x16]).is_none());
+}
+
+#[test]
+fn parse_length_exceeds_data() {
+    // Header says 100 bytes of payload but only 5 total
+    let data = [0x16, 0x03, 0x01, 0x00, 0x64];
+    assert!(TlsRecord::parse(&data).is_none());
+}
+
+#[test]
+fn parse_application_data() {
+    let data = [0x17, 0x03, 0x03, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
+    let parsed = TlsRecord::parse(&data).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::ApplicationData);
+    assert_eq!(parsed.fragment, TlsFragment::Other);
+}
+
+#[test]
+fn parse_alert_record() {
+    let data = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28]; // fatal, handshake_failure
+    let parsed = TlsRecord::parse(&data).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::Alert);
+    assert_eq!(parsed.fragment, TlsFragment::Other);
+}
+
+#[test]
+fn parse_change_cipher_spec() {
+    let data = [0x14, 0x03, 0x03, 0x00, 0x01, 0x01];
+    let parsed = TlsRecord::parse(&data).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::ChangeCipherSpec);
+    assert_eq!(parsed.fragment, TlsFragment::Other);
+}
+
+#[test]
+fn parse_server_hello_record() {
+    let mut handshake = vec![0x02]; // ServerHello
+    handshake.extend_from_slice(&[0x00, 0x00, 0x02]);
+    handshake.extend_from_slice(&[0x03, 0x03]);
+
+    let hs_len = handshake.len();
+    let mut record = vec![0x16, 0x03, 0x03];
+    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+
+    let parsed = TlsRecord::parse(&record).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::Handshake);
+    assert_eq!(parsed.fragment, TlsFragment::ServerHello);
+}
+
+#[test]
+fn parse_empty_handshake_body() {
+    // Handshake record with zero-length body
+    let data = [0x16, 0x03, 0x03, 0x00, 0x00];
+    let parsed = TlsRecord::parse(&data).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::Handshake);
+    assert_eq!(parsed.fragment, TlsFragment::Other);
+}
+
+// --- TlsContentType ---
+
+#[test]
+fn content_type_other_variant() {
+    let data = [0x19, 0x03, 0x03, 0x00, 0x01, 0x00]; // type 25, unknown
+    let parsed = TlsRecord::parse(&data).unwrap();
+    assert_eq!(parsed.content_type, TlsContentType::Other(25));
+}
+
+// --- ClientHello without SNI ---
+
+#[test]
+fn client_hello_no_extensions() {
+    let mut hello_payload = Vec::new();
+    hello_payload.extend_from_slice(&[0x03, 0x03]); // version
+    hello_payload.extend_from_slice(&[0x00; 32]); // random
+    hello_payload.push(0x00); // session_id len
+    hello_payload.extend_from_slice(&[0x00, 0x02, 0x00, 0x2F]); // cipher suites
+    hello_payload.extend_from_slice(&[0x01, 0x00]); // compression
+
+    let hello_len = hello_payload.len();
+    let mut handshake = vec![0x01, 0x00];
+    handshake.extend_from_slice(&(hello_len as u16).to_be_bytes());
+    handshake.extend_from_slice(&hello_payload);
+
+    let hs_len = handshake.len();
+    let mut record = vec![0x16, 0x03, 0x01];
+    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+
+    let parsed = TlsRecord::parse(&record).unwrap();
+    if let TlsFragment::ClientHello { sni } = &parsed.fragment {
+        assert!(sni.is_none());
+    } else {
+        panic!("expected ClientHello");
+    }
+}

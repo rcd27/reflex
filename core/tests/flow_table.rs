@@ -98,3 +98,88 @@ fn different_flows_get_different_detectors() {
     table.process(&rst2);
     assert_eq!(table.flow_count(), 2);
 }
+
+#[test]
+fn tick_visits_all_flows() {
+    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let syn1 = make_segment(11111, 443, TcpFlags::SYN);
+    let syn2 = make_segment(22222, 443, TcpFlags::SYN);
+    table.process(&syn1);
+    table.process(&syn2);
+    assert_eq!(table.flow_count(), 2);
+
+    // tick() should visit all flows (no signals from RstCounter on Tick)
+    let signals = table.tick();
+    assert!(signals.is_empty());
+    // Flows should still be present after tick
+    assert_eq!(table.flow_count(), 2);
+}
+
+#[test]
+fn get_returns_detector_for_existing_flow() {
+    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let seg = make_segment(12345, 443, TcpFlags::RST);
+    table.process(&seg);
+
+    let detector = table.get(&seg.flow);
+    assert!(detector.is_some());
+    assert_eq!(detector.unwrap().count, 1);
+}
+
+#[test]
+fn get_returns_none_for_missing_flow() {
+    let table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let seg = make_segment(12345, 443, TcpFlags::SYN);
+    assert!(table.get(&seg.flow).is_none());
+}
+
+#[test]
+fn multiple_flows_with_different_states() {
+    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+
+    let rst_a = make_segment(11111, 443, TcpFlags::RST);
+    let rst_b = make_segment(22222, 443, TcpFlags::RST);
+
+    // Flow A gets 3 RSTs
+    table.process(&rst_a);
+    table.process(&rst_a);
+    table.process(&rst_a);
+
+    // Flow B gets 1 RST
+    table.process(&rst_b);
+
+    assert_eq!(table.flow_count(), 2);
+    assert_eq!(table.get(&rst_a.flow).unwrap().count, 3);
+    assert_eq!(table.get(&rst_b.flow).unwrap().count, 1);
+}
+
+#[test]
+fn normalize_reverses_high_port_source() {
+    // When src has a high port and dst has a high port (not 443, not <1024),
+    // flow gets reversed for normalization. Verify they map to the same detector.
+    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+
+    let seg_forward = make_segment(12345, 443, TcpFlags::SYN);
+    table.process(&seg_forward);
+
+    // Reverse direction (server -> client)
+    let seg_reverse = TcpSegment {
+        flow: Flow {
+            src: SocketAddr::new(Ipv4Addr::new(93, 184, 216, 34).into(), 443),
+            dst: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 12345),
+            protocol: Protocol::Tcp,
+        },
+        seq: 0,
+        ack: 1001,
+        flags: TcpFlags::RST,
+        window: 0,
+        options: TcpOptions::default(),
+        ttl: 53,
+        payload: vec![],
+    };
+
+    let signals = table.process(&seg_reverse);
+    assert_eq!(signals.as_slice(), &[1]);
+    // Both directions should be in the same flow entry
+    assert_eq!(table.flow_count(), 1);
+}
