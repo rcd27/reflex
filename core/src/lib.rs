@@ -7,9 +7,11 @@ pub mod ext;
 pub mod flow_table;
 pub mod parse;
 pub mod stream;
+pub mod subject;
 pub mod tap;
 pub mod types;
 
+pub use subject::Subject;
 pub use tap::Tap;
 
 #[cfg(feature = "dns")]
