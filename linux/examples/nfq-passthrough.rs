@@ -8,7 +8,7 @@
 //   iptables -D OUTPUT -p tcp --dport 443 -m mark ! --mark 0xBB -j NFQUEUE --queue-num 200
 
 use reflex_core::command::InjectablePacket;
-use reflex_linux::nfqueue::{NfqConfig, NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
+use reflex_linux::nfqueue::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
 
 struct PassthroughHandler {
     count: u64,
@@ -59,9 +59,9 @@ fn main() {
 
     let handler = PassthroughHandler { count: 0 };
     let mut pipeline =
-        NfqPipeline::new(NfqConfig::default(), handler).expect("failed to create NfqPipeline");
+        NfqPipeline::bind(200, 0xBB, handler).expect("failed to bind NfqPipeline");
 
-    if let Err(e) = pipeline.run_blocking() {
+    if let Err(e) = pipeline.run_while(|| true) {
         eprintln!("Pipeline error: {e}");
     }
 }
