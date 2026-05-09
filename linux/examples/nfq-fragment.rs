@@ -129,8 +129,7 @@ fn main() {
     println!("Press Ctrl+C to stop");
 
     let handler = FragmentHandler;
-    let mut pipeline =
-        NfqPipeline::bind(200, 0xBB, handler).expect("failed to bind NfqPipeline");
+    let mut pipeline = NfqPipeline::bind(200, 0xBB, handler).expect("failed to bind NfqPipeline");
 
     if let Err(e) = pipeline.run_while(|| true) {
         eprintln!("Pipeline error: {e}");
