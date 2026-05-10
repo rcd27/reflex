@@ -15,7 +15,13 @@ impl RawSender {
     /// `fwmark` is set on every sent packet via SO_MARK — used to prevent
     /// NFQUEUE from re-capturing our injected packets.
     pub fn open(fwmark: u32) -> Result<Self, io::Error> {
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_INET,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_RAW,
+            )
+        };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }

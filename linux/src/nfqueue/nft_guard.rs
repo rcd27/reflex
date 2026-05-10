@@ -75,7 +75,10 @@ impl NftGuard {
         ));
 
         run_nft_batch(&script)?;
-        info!("nftables table {TABLE_FAMILY} {TABLE_NAME} installed ({} slots)", config.slots.len());
+        info!(
+            "nftables table {TABLE_FAMILY} {TABLE_NAME} installed ({} slots)",
+            config.slots.len()
+        );
 
         Ok(Self {
             dynamic_rule_handles: Vec::new(),
