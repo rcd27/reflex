@@ -31,9 +31,7 @@ pub struct NftConfig {
     pub slots: Vec<SlotConfig>,
 }
 
-pub struct NftGuard {
-    dynamic_rule_handles: Vec<u64>,
-}
+pub struct NftGuard;
 
 impl NftGuard {
     pub fn install(config: NftConfig) -> Result<Self, NftGuardError> {
@@ -46,33 +44,33 @@ impl NftGuard {
             "add chain {TABLE_FAMILY} {TABLE_NAME} output {{ type filter hook output priority 0; policy accept; }}\n"
         ));
 
-        // Global: drop all IPv6 HTTPS — Geneva only handles IPv4 TCP
+        // Global: drop all IPv6 HTTPS
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} output ip6 version 6 tcp dport 443 drop\n"
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output ip6 version 6 tcp dport 443 counter drop\n"
         ));
 
-        // Global: drop all QUIC (UDP :443) — force browsers to TCP
+        // Global: drop all QUIC (UDP :443)
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} output udp dport 443 drop\n"
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output udp dport 443 counter drop\n"
         ));
 
-        // Inject mark → accept (skip queue for injected packets)
+        // Inject mark -> accept (skip queue for injected packets)
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta mark 0x{:x} accept\n",
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta mark 0x{:x} counter accept\n",
             config.inject_mark
         ));
 
-        // Per-slot rules: fwmark → slot queue (nft v0.9.3 doesn't support queue in vmap)
+        // Per-slot rules: fwmark -> slot queue
         for slot in &config.slots {
             script.push_str(&format!(
-                "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta mark 0x{:x} queue num {} bypass\n",
+                "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta mark 0x{:x} counter queue num {} bypass\n",
                 slot.fwmark, slot.queue_num
             ));
         }
 
-        // Default: unmatched HTTPS → main queue
+        // Default: unmatched HTTPS -> main queue
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 queue num {} bypass\n",
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 counter queue num {} bypass\n",
             config.main_queue
         ));
 
@@ -80,12 +78,11 @@ impl NftGuard {
         script.push_str(&format!(
             "add chain {TABLE_FAMILY} {TABLE_NAME} input {{ type filter hook input priority 0; policy accept; }}\n"
         ));
-        // Global: drop inbound IPv6 HTTPS
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} input ip6 version 6 tcp sport 443 drop\n"
+            "add rule {TABLE_FAMILY} {TABLE_NAME} input ip6 version 6 tcp sport 443 counter drop\n"
         ));
         script.push_str(&format!(
-            "add rule {TABLE_FAMILY} {TABLE_NAME} input tcp sport 443 queue num {} bypass\n",
+            "add rule {TABLE_FAMILY} {TABLE_NAME} input tcp sport 443 counter queue num {} bypass\n",
             config.main_queue
         ));
 
@@ -95,50 +92,7 @@ impl NftGuard {
             config.slots.len()
         );
 
-        Ok(Self {
-            dynamic_rule_handles: Vec::new(),
-        })
-    }
-
-    pub fn add_inject_rule(
-        &mut self,
-        target_ip: std::net::Ipv4Addr,
-        queue_num: u16,
-    ) -> Result<(), NftGuardError> {
-        let rule = format!(
-            "insert rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 ip daddr {} queue num {} bypass comment \"slot-{}\"",
-            target_ip, queue_num, queue_num
-        );
-        run_nft(&rule)?;
-        info!("nft: route {target_ip} → queue {queue_num}");
-        Ok(())
-    }
-
-    pub fn remove_inject_rule(
-        &mut self,
-        target_ip: std::net::Ipv4Addr,
-        queue_num: u16,
-    ) -> Result<(), NftGuardError> {
-        let output = Command::new("nft")
-            .args(["-a", "list", "chain", TABLE_FAMILY, TABLE_NAME, "output"])
-            .output()
-            .map_err(|e| NftGuardError(format!("nft list: {e}")))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let comment = format!("slot-{queue_num}");
-        for line in stdout.lines() {
-            if line.contains(&comment) && line.contains(&target_ip.to_string()) {
-                if let Some(handle) = extract_handle(line) {
-                    let delete =
-                        format!("delete rule {TABLE_FAMILY} {TABLE_NAME} output handle {handle}");
-                    run_nft(&delete)?;
-                    info!("nft: removed route {target_ip} → queue {queue_num}");
-                    return Ok(());
-                }
-            }
-        }
-        warn!("nft: rule for {target_ip} queue {queue_num} not found");
-        Ok(())
+        Ok(Self)
     }
 }
 
@@ -212,11 +166,4 @@ fn run_nft_batch(script: &str) -> Result<(), NftGuardError> {
         return Err(NftGuardError(format!("nft batch: {stderr}")));
     }
     Ok(())
-}
-
-fn extract_handle(line: &str) -> Option<u64> {
-    let marker = "# handle ";
-    let pos = line.find(marker)?;
-    let rest = &line[pos + marker.len()..];
-    rest.trim().parse().ok()
 }
