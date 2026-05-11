@@ -39,10 +39,21 @@ impl NftGuard {
     pub fn install(config: NftConfig) -> Result<Self, NftGuardError> {
         let mut script = String::new();
         script.push_str(&format!("add table {TABLE_FAMILY} {TABLE_NAME}\n"));
+        script.push_str(&format!("flush table {TABLE_FAMILY} {TABLE_NAME}\n"));
 
         // Output chain
         script.push_str(&format!(
             "add chain {TABLE_FAMILY} {TABLE_NAME} output {{ type filter hook output priority 0; policy accept; }}\n"
+        ));
+
+        // Global: drop all IPv6 HTTPS — Geneva only handles IPv4 TCP
+        script.push_str(&format!(
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output ip6 version 6 tcp dport 443 drop\n"
+        ));
+
+        // Global: drop all QUIC (UDP :443) — force browsers to TCP
+        script.push_str(&format!(
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output udp dport 443 drop\n"
         ));
 
         // Inject mark → accept (skip queue for injected packets)
@@ -68,6 +79,10 @@ impl NftGuard {
         // Input chain (RST detection on main queue only)
         script.push_str(&format!(
             "add chain {TABLE_FAMILY} {TABLE_NAME} input {{ type filter hook input priority 0; policy accept; }}\n"
+        ));
+        // Global: drop inbound IPv6 HTTPS
+        script.push_str(&format!(
+            "add rule {TABLE_FAMILY} {TABLE_NAME} input ip6 version 6 tcp sport 443 drop\n"
         ));
         script.push_str(&format!(
             "add rule {TABLE_FAMILY} {TABLE_NAME} input tcp sport 443 queue num {} bypass\n",
