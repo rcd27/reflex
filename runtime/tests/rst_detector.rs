@@ -1,5 +1,6 @@
 use futures::StreamExt;
-use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use reflex_core::{Detector, DetectorEvent};
+use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
 
 // --- domain types (application level, not framework) ---

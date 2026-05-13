@@ -7,7 +7,7 @@ use futures::Stream;
 use pin_project_lite::pin_project;
 use tokio::time::{self, Interval};
 
-use crate::detector::{Detector, DetectorEvent};
+use reflex_core::detector::{Detector, DetectorEvent};
 
 pin_project! {
     pub struct DetectStream<S, D>

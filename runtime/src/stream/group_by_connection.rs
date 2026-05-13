@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use tokio::time::{self, Interval};
 
 use super::group_by_flow::FlowConfig;
-use crate::types::{ConnectionId, HasConnectionId};
+use reflex_core::types::{ConnectionId, HasConnectionId};
 
 struct FlowEntry<State> {
     state: State,

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use reflex_core::{Detector, DetectorEvent};
+use reflex_runtime::ReflexRuntimeExt;
 use reflex_linux::AfPacketBackend;
 use smallvec::SmallVec;
 

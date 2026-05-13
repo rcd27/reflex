@@ -2,9 +2,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use futures::StreamExt;
-use reflex_core::stream::FlowConfig;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::ReflexExt;
+use reflex_runtime::stream::FlowConfig;
+use reflex_runtime::ReflexRuntimeExt;
 use tokio_stream::iter;
 
 fn tcp_seg(src_port: u16, dst_port: u16, seq: u32) -> TcpSegment {

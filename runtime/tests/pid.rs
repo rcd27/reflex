@@ -1,4 +1,4 @@
-use reflex_core::pid::{PidError, PidGuard};
+use reflex_runtime::pid::{PidError, PidGuard};
 use std::path::PathBuf;
 
 use std::sync::atomic::{AtomicU32, Ordering};

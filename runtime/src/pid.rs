@@ -38,12 +38,14 @@ impl PidGuard {
         }
 
         if path.exists() {
-            if let Ok(contents) = fs::read_to_string(&path) { match contents.trim().parse::<u32>() {
-                Ok(pid) if is_process_alive(pid) => {
-                    return Err(PidError::AlreadyRunning(pid));
+            if let Ok(contents) = fs::read_to_string(&path) {
+                match contents.trim().parse::<u32>() {
+                    Ok(pid) if is_process_alive(pid) => {
+                        return Err(PidError::AlreadyRunning(pid));
+                    }
+                    _ => {}
                 }
-                _ => {}
-            } }
+            }
         }
 
         fs::write(&path, std::process::id().to_string())?;

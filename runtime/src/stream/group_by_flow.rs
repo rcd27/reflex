@@ -8,7 +8,7 @@ use futures::Stream;
 use pin_project_lite::pin_project;
 use tokio::time::{self, Interval};
 
-use crate::types::{Flow, HasFlow};
+use reflex_core::types::{Flow, HasFlow};
 
 /// Configuration for flow lifecycle management.
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use reflex_core::ReflexExt;
+use reflex_runtime::ReflexRuntimeExt;
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 

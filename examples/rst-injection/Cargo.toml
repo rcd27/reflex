@@ -11,6 +11,7 @@ nfqueue = ["reflex-linux/nfqueue"]
 
 [dependencies]
 reflex-core = { path = "../../core" }
+reflex-runtime = { path = "../../runtime" }
 reflex-linux = { path = "../../linux" }
 reflex-linux-common = { path = "../../linux-common", optional = true }
 futures = "0.3"

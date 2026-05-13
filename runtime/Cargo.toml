@@ -1,0 +1,18 @@
+[package]
+name = "reflex-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Tokio/OS runtime adapters for reflex-core (IO at the edge)"
+license = "GPL-3.0-only"
+
+[dependencies]
+reflex-core = { path = "../core" }
+libc = "0.2"
+futures = "0.3"
+tokio = { version = "1", features = ["time", "sync", "rt", "signal", "macros"] }
+pin-project-lite = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["time", "sync", "rt", "macros", "test-util"] }
+tokio-stream = "0.1"
+smallvec = "1"

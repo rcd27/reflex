@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures::StreamExt;
-use reflex_core::stream::FlowConfig;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::ReflexExt;
+use reflex_runtime::stream::FlowConfig;
+use reflex_runtime::ReflexRuntimeExt;
 
 fn addr(s: &str) -> SocketAddr {
     s.parse().unwrap()

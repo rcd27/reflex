@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use reflex_core::{Detector, DetectorEvent};
+use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
 
