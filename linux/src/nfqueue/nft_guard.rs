@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::fmt;
 use std::process::Command;
 
@@ -22,6 +23,11 @@ impl std::error::Error for NftGuardError {}
 pub struct SlotConfig {
     pub fwmark: u32,
     pub queue_num: u16,
+    /// System user whose outbound TCP/443 traffic is steered to this slot's
+    /// queue. NftGuard ensures the user exists (creates it if needed) and
+    /// resolves it to a uid for the `meta skuid` rule. Verify runners exec
+    /// miniooni under this user.
+    pub username: String,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +41,14 @@ pub struct NftGuard;
 
 impl NftGuard {
     pub fn install(config: NftConfig) -> Result<Self, NftGuardError> {
+        // Resolve every slot user to a uid (creating it if missing) BEFORE
+        // writing any rule — failing late would leave a half-installed table.
+        let slot_uids: Vec<u32> = config
+            .slots
+            .iter()
+            .map(|s| ensure_user(&s.username))
+            .collect::<Result<_, _>>()?;
+
         let mut script = String::new();
         script.push_str(&format!("add table {TABLE_FAMILY} {TABLE_NAME}\n"));
         script.push_str(&format!("flush table {TABLE_FAMILY} {TABLE_NAME}\n"));
@@ -60,7 +74,26 @@ impl NftGuard {
             config.inject_mark
         ));
 
-        // Per-slot rules: fwmark -> slot queue
+        // Restore mark from conntrack — catches teardown/retransmit packets
+        // emitted by the kernel after the owning socket has closed (no skuid
+        // context). MUST come before the skuid rule so it doesn't overwrite a
+        // fresh skuid match. Conntrack guarantees the mark persists for the
+        // life of the flow.
+        script.push_str(&format!(
+            "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 ct mark != 0 meta mark set ct mark counter\n"
+        ));
+
+        // Per-slot skuid rules: outbound TCP/443 from this slot's uid gets the
+        // slot's fwmark, and that fwmark is pinned onto the conntrack entry so
+        // the rule above can restore it on later packets.
+        for (slot, uid) in config.slots.iter().zip(slot_uids.iter()) {
+            script.push_str(&format!(
+                "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta skuid {} meta mark set 0x{:x} ct mark set meta mark counter\n",
+                uid, slot.fwmark
+            ));
+        }
+
+        // Per-slot routing: fwmark -> slot queue
         for slot in &config.slots {
             script.push_str(&format!(
                 "add rule {TABLE_FAMILY} {TABLE_NAME} output tcp dport 443 meta mark 0x{:x} counter queue num {} bypass\n",
@@ -144,6 +177,72 @@ fn run_nft(cmd: &str) -> Result<(), NftGuardError> {
         return Err(NftGuardError(format!("nft {cmd}: {stderr}")));
     }
     Ok(())
+}
+
+/// Resolves a system user to its uid, creating it via `useradd` if missing.
+///
+/// useradd is best-effort: it can fail when the daemon runs without setuid
+/// rights (e.g. with only CAP_NET_ADMIN). In that case we don't surface the
+/// failure unless the user is *still* missing afterwards — operators may
+/// pre-provision users out-of-band.
+fn ensure_user(username: &str) -> Result<u32, NftGuardError> {
+    if let Some(uid) = lookup_uid(username) {
+        return Ok(uid);
+    }
+
+    let create_status = Command::new("useradd")
+        .args(["-r", "-M", "-s", "/usr/sbin/nologin", username])
+        .output();
+
+    match create_status {
+        Ok(o) if o.status.success() => {
+            info!("[nft] created system user {username}");
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!("[nft] useradd {username} exit {}: {stderr}", o.status);
+        }
+        Err(e) => {
+            warn!("[nft] useradd {username} spawn failed: {e}");
+        }
+    }
+
+    lookup_uid(username).ok_or_else(|| {
+        NftGuardError(format!(
+            "system user {username} does not exist and cannot be created \
+             (provision it via useradd or grant the daemon enough privileges)"
+        ))
+    })
+}
+
+/// Wraps `getpwnam_r` — returns the uid if `name` resolves, None otherwise.
+fn lookup_uid(name: &str) -> Option<u32> {
+    let c_name = CString::new(name).ok()?;
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0u8; 1024];
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    loop {
+        let rc = unsafe {
+            libc::getpwnam_r(
+                c_name.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == 0 {
+            if result.is_null() {
+                return None;
+            }
+            return Some(pwd.pw_uid as u32);
+        }
+        if rc == libc::ERANGE {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        return None;
+    }
 }
 
 fn run_nft_batch(script: &str) -> Result<(), NftGuardError> {

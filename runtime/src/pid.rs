@@ -55,6 +55,20 @@ impl PidGuard {
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
+
+    /// Inspects a pid file without taking the lock. Returns the owning pid if
+    /// the file exists and points at a live process. Use this from admin
+    /// subcommands that should refuse to mutate state owned by a running
+    /// daemon (e.g. an nft-cleanup tool).
+    pub fn live_owner(path: &PathBuf) -> Option<u32> {
+        let contents = fs::read_to_string(path).ok()?;
+        let pid: u32 = contents.trim().parse().ok()?;
+        if is_process_alive(pid) {
+            Some(pid)
+        } else {
+            None
+        }
+    }
 }
 
 impl Drop for PidGuard {
