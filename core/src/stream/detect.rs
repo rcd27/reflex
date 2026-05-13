@@ -55,8 +55,8 @@ where
         // 2. Try tick
         if let Some(detector) = this.detector.take() {
             if this.tick.as_mut().poll_tick(cx).is_ready() {
-                let now = std::time::Instant::now();
-                let (new_detector, signals) = detector.step(DetectorEvent::Tick(now));
+                let at = std::time::Instant::now();
+                let (new_detector, signals) = detector.step(DetectorEvent::Tick { at });
                 *this.detector = Some(new_detector);
                 for signal in signals {
                     this.buffer.push_back(signal);
@@ -73,7 +73,9 @@ where
         match this.source.as_mut().poll_next(cx) {
             Poll::Ready(Some(input)) => {
                 if let Some(detector) = this.detector.take() {
-                    let (new_detector, signals) = detector.step(DetectorEvent::Packet(input));
+                    let at = std::time::Instant::now();
+                    let (new_detector, signals) =
+                        detector.step(DetectorEvent::Packet { input, at });
                     *this.detector = Some(new_detector);
                     for signal in signals {
                         this.buffer.push_back(signal);

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use smallvec::SmallVec;
 
@@ -19,24 +20,26 @@ impl<D: Detector<Input = TcpSegment>> FlowTable<D> {
         }
     }
 
-    pub fn process(&mut self, segment: &TcpSegment) -> SmallVec<[D::Signal; 2]> {
+    pub fn process(&mut self, segment: &TcpSegment, at: Instant) -> SmallVec<[D::Signal; 2]> {
         let flow = normalize_flow(&segment.flow);
         let detector = self
             .flows
             .remove(&flow)
             .unwrap_or_else(|| (self.make_detector)(flow.clone()));
-        let (detector, signals) = detector.step(DetectorEvent::Packet(segment.clone()));
+        let (detector, signals) = detector.step(DetectorEvent::Packet {
+            input: segment.clone(),
+            at,
+        });
         self.flows.insert(flow, detector);
         signals
     }
 
-    pub fn tick(&mut self) -> Vec<D::Signal> {
-        let now = std::time::Instant::now();
+    pub fn tick(&mut self, at: Instant) -> Vec<D::Signal> {
         let mut all_signals = Vec::new();
         let flows: Vec<Flow> = self.flows.keys().cloned().collect();
         for flow in flows {
             if let Some(detector) = self.flows.remove(&flow) {
-                let (detector, signals) = detector.step(DetectorEvent::Tick(now));
+                let (detector, signals) = detector.step(DetectorEvent::Tick { at });
                 all_signals.extend(signals);
                 self.flows.insert(flow, detector);
             }

@@ -193,9 +193,7 @@ impl Detector for RstDetector {
         let mut signals = SmallVec::new();
 
         match event {
-            DetectorEvent::Packet(pkt) => {
-                let now = Instant::now();
-
+            DetectorEvent::Packet { input: pkt, at: now } => {
                 // SYN from client (flags = 0x02, only SYN set)
                 if pkt.tcp_flags & 0x3f == 0x02 && pkt.dst_port == 443 {
                     let key = Self::flow_key_from_client(&pkt);
@@ -314,7 +312,7 @@ impl Detector for RstDetector {
                     }
                 }
             }
-            DetectorEvent::Tick(now) => {
+            DetectorEvent::Tick { at: now } => {
                 // cleanup flows older than 30s
                 self.flows.retain(|_, f| {
                     f.syn_sent_at

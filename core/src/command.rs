@@ -52,3 +52,22 @@ pub struct ModifyPacket {
     pub flow: Flow,
     pub new_data: Vec<u8>,
 }
+
+/// Reduce a Command list to (packets to inject, whether the original must be dropped).
+///
+/// Used by strategy executors that translate an `ActionTree` into a sequence
+/// of side effects and need to forward the result to a verdict-based backend
+/// (e.g. NFQUEUE: Drop+Inject vs Accept).
+pub fn commands_to_injects(commands: Vec<Command>) -> (Vec<InjectablePacket>, bool) {
+    let mut injects = Vec::new();
+    let mut drop_original = false;
+    for cmd in commands {
+        match cmd {
+            Command::Inject(pkt) => injects.push(pkt),
+            Command::DropFlow(_) => drop_original = true,
+            Command::Modify(_) => drop_original = true,
+            Command::Accept(_) | Command::ClearFlow(_) | Command::Hold(_) => {}
+        }
+    }
+    (injects, drop_original)
+}

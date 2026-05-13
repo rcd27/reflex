@@ -66,7 +66,7 @@ impl Detector for RstDetector {
         let mut signals = SmallVec::new();
 
         match event {
-            DetectorEvent::Packet(pkt) => {
+            DetectorEvent::Packet { input: pkt, .. } => {
                 if pkt.is_syn_ack {
                     self.server_ttl = Some(pkt.ttl);
                 }
@@ -91,7 +91,7 @@ impl Detector for RstDetector {
                     }
                 }
             }
-            DetectorEvent::Tick(_) => {}
+            DetectorEvent::Tick { .. } => {}
         }
 
         (self, signals)

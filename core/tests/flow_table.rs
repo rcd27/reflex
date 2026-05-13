@@ -4,6 +4,7 @@ use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::Detector;
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Instant;
 
 #[derive(Clone)]
 struct RstCounter {
@@ -17,7 +18,7 @@ impl Detector for RstCounter {
 
     fn step(mut self, event: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[u32; 2]>) {
         let mut signals = SmallVec::new();
-        if let DetectorEvent::Packet(ref seg) = event {
+        if let DetectorEvent::Packet { input: ref seg, .. } = event {
             if seg.flags.is_rst() {
                 self.count += 1;
                 signals.push(self.count);
@@ -48,7 +49,7 @@ fn make_segment(src_port: u16, dst_port: u16, flags: TcpFlags) -> TcpSegment {
 fn process_creates_detector_on_first_packet() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let seg = make_segment(12345, 443, TcpFlags::SYN);
-    let signals = table.process(&seg);
+    let signals = table.process(&seg, Instant::now());
     assert!(signals.is_empty());
     assert_eq!(table.flow_count(), 1);
 }
@@ -57,9 +58,9 @@ fn process_creates_detector_on_first_packet() {
 fn process_reuses_detector_for_same_flow() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let rst = make_segment(12345, 443, TcpFlags::RST);
-    let signals1 = table.process(&rst);
+    let signals1 = table.process(&rst, Instant::now());
     assert_eq!(signals1.as_slice(), &[1]);
-    let signals2 = table.process(&rst);
+    let signals2 = table.process(&rst, Instant::now());
     assert_eq!(signals2.as_slice(), &[2]);
     assert_eq!(table.flow_count(), 1);
 }
@@ -68,7 +69,7 @@ fn process_reuses_detector_for_same_flow() {
 fn process_normalizes_server_response_to_same_flow() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let syn = make_segment(12345, 443, TcpFlags::SYN);
-    table.process(&syn);
+    table.process(&syn, Instant::now());
 
     let rst = TcpSegment {
         flow: Flow {
@@ -84,7 +85,7 @@ fn process_normalizes_server_response_to_same_flow() {
         ttl: 53,
         payload: vec![],
     };
-    let signals = table.process(&rst);
+    let signals = table.process(&rst, Instant::now());
     assert_eq!(signals.as_slice(), &[1]);
     assert_eq!(table.flow_count(), 1);
 }
@@ -94,8 +95,8 @@ fn different_flows_get_different_detectors() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let rst1 = make_segment(11111, 443, TcpFlags::RST);
     let rst2 = make_segment(22222, 443, TcpFlags::RST);
-    table.process(&rst1);
-    table.process(&rst2);
+    table.process(&rst1, Instant::now());
+    table.process(&rst2, Instant::now());
     assert_eq!(table.flow_count(), 2);
 }
 
@@ -104,12 +105,12 @@ fn tick_visits_all_flows() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let syn1 = make_segment(11111, 443, TcpFlags::SYN);
     let syn2 = make_segment(22222, 443, TcpFlags::SYN);
-    table.process(&syn1);
-    table.process(&syn2);
+    table.process(&syn1, Instant::now());
+    table.process(&syn2, Instant::now());
     assert_eq!(table.flow_count(), 2);
 
     // tick() should visit all flows (no signals from RstCounter on Tick)
-    let signals = table.tick();
+    let signals = table.tick(Instant::now());
     assert!(signals.is_empty());
     // Flows should still be present after tick
     assert_eq!(table.flow_count(), 2);
@@ -119,7 +120,7 @@ fn tick_visits_all_flows() {
 fn get_returns_detector_for_existing_flow() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
     let seg = make_segment(12345, 443, TcpFlags::RST);
-    table.process(&seg);
+    table.process(&seg, Instant::now());
 
     let detector = table.get(&seg.flow);
     assert!(detector.is_some());
@@ -141,12 +142,12 @@ fn multiple_flows_with_different_states() {
     let rst_b = make_segment(22222, 443, TcpFlags::RST);
 
     // Flow A gets 3 RSTs
-    table.process(&rst_a);
-    table.process(&rst_a);
-    table.process(&rst_a);
+    table.process(&rst_a, Instant::now());
+    table.process(&rst_a, Instant::now());
+    table.process(&rst_a, Instant::now());
 
     // Flow B gets 1 RST
-    table.process(&rst_b);
+    table.process(&rst_b, Instant::now());
 
     assert_eq!(table.flow_count(), 2);
     assert_eq!(table.get(&rst_a.flow).unwrap().count, 3);
@@ -160,7 +161,7 @@ fn normalize_reverses_high_port_source() {
     let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
 
     let seg_forward = make_segment(12345, 443, TcpFlags::SYN);
-    table.process(&seg_forward);
+    table.process(&seg_forward, Instant::now());
 
     // Reverse direction (server -> client)
     let seg_reverse = TcpSegment {
@@ -178,7 +179,7 @@ fn normalize_reverses_high_port_source() {
         payload: vec![],
     };
 
-    let signals = table.process(&seg_reverse);
+    let signals = table.process(&seg_reverse, Instant::now());
     assert_eq!(signals.as_slice(), &[1]);
     // Both directions should be in the same flow entry
     assert_eq!(table.flow_count(), 1);
