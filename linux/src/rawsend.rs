@@ -34,7 +34,7 @@ impl RawSender {
                 libc::IPPROTO_IP,
                 libc::IP_HDRINCL,
                 &one as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                size_of::<libc::c_int>() as libc::socklen_t,
             )
         };
         if ret < 0 {
@@ -50,7 +50,7 @@ impl RawSender {
                 libc::SOL_SOCKET,
                 libc::SO_MARK,
                 &fwmark as *const u32 as *const libc::c_void,
-                std::mem::size_of::<u32>() as libc::socklen_t,
+                size_of::<u32>() as libc::socklen_t,
             )
         };
         if ret < 0 {
@@ -89,7 +89,7 @@ impl RawSender {
                 ip_packet.len(),
                 0,
                 &addr as *const libc::sockaddr_in as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                size_of::<libc::sockaddr_in>() as libc::socklen_t,
             )
         };
 
