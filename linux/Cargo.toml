@@ -15,7 +15,8 @@ reflex-core = { path = "../core", features = ["tls"] }
 nfq = { version = "0.2", optional = true }
 tracing = "0.1"
 futures = "0.3"
-tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "process", "io-util"] }
+thiserror = "2"
 libc = "0.2"
 aya = { version = "0.13", optional = true }
 reflex-linux-common = { path = "../linux-common", optional = true }
