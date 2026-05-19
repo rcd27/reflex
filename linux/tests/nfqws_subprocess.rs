@@ -31,3 +31,25 @@ async fn spawn_with_qnum_keeps_running_until_killed() {
     assert!(p.is_alive());
     p.kill().await.expect("kill");
 }
+
+/// Real nfqws2 binary smoke test. Ignored by default — to run, set
+/// NFQWS2_BIN env var to the nfqws2 binary path and use
+/// `cargo test -p reflex-linux --test nfqws_subprocess -- --ignored`.
+#[tokio::test]
+#[ignore = "requires real nfqws2 binary; set NFQWS2_BIN env"]
+async fn real_nfqws2_help_runs_clean() {
+    let path = std::env::var("NFQWS2_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            panic!("NFQWS2_BIN env var must point to nfqws2 binary to run this test");
+        });
+    let p = NfqwsProcess::spawn(path, vec!["--help".to_string()])
+        .await
+        .expect("spawn real nfqws2 --help");
+    let status = tokio::time::timeout(Duration::from_secs(5), p.wait_for_exit())
+        .await
+        .expect("wait timeout")
+        .expect("wait result");
+    assert!(status.success() || status.code() == Some(0),
+        "nfqws2 --help should exit 0, got {:?}", status);
+}
