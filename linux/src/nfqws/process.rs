@@ -35,10 +35,7 @@ impl NfqwsProcess {
     /// `path` points at the nfqws2 binary (the test fixture or a real
     /// `nfqws` binary from zapret2). `args` is passed verbatim — caller
     /// is responsible for `--qnum=N` and strategy args.
-    pub async fn spawn(
-        path: PathBuf,
-        args: Vec<String>,
-    ) -> Result<Self, NfqwsError> {
+    pub async fn spawn(path: PathBuf, args: Vec<String>) -> Result<Self, NfqwsError> {
         let child = Command::new(&path)
             .args(&args)
             .stdout(std::process::Stdio::null())

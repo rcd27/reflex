@@ -21,12 +21,9 @@ async fn spawn_help_completes_quickly() {
 
 #[tokio::test]
 async fn spawn_with_qnum_keeps_running_until_killed() {
-    let p = NfqwsProcess::spawn(
-        fixture_path(),
-        vec!["--qnum=200".to_string()],
-    )
-    .await
-    .expect("spawn --qnum");
+    let p = NfqwsProcess::spawn(fixture_path(), vec!["--qnum=200".to_string()])
+        .await
+        .expect("spawn --qnum");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(p.is_alive());
     p.kill().await.expect("kill");
@@ -50,6 +47,9 @@ async fn real_nfqws2_help_runs_clean() {
         .await
         .expect("wait timeout")
         .expect("wait result");
-    assert!(status.success() || status.code() == Some(0),
-        "nfqws2 --help should exit 0, got {:?}", status);
+    assert!(
+        status.success() || status.code() == Some(0),
+        "nfqws2 --help should exit 0, got {:?}",
+        status
+    );
 }
