@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 /// kill_on_drop). Use `kill` for explicit shutdown.
 pub struct NfqwsProcess {
     child: Mutex<Option<Child>>,
+    pid: u32,
 }
 
 #[derive(Debug, Error)]
@@ -43,9 +44,17 @@ impl NfqwsProcess {
             .kill_on_drop(true)
             .spawn()
             .map_err(|source| NfqwsError::Spawn { path, source })?;
+        let pid = child.id().unwrap_or(0);
         Ok(Self {
             child: Mutex::new(Some(child)),
+            pid,
         })
+    }
+
+    /// PID подпроцесса. Закэширован в момент spawn'а — после kill значение
+    /// остаётся stale (по дизайну: вызывать pid после kill — programmer error).
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     /// Return true if the subprocess is still running (best-effort).
