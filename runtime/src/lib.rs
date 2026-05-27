@@ -9,12 +9,14 @@
 pub mod ext;
 pub mod pid;
 pub mod signal;
+pub mod stage;
 pub mod stream;
 pub mod subject;
 
 pub use ext::ReflexRuntimeExt;
 pub use pid::{PidError, PidGuard};
 pub use signal::shutdown_signal;
+pub use stage::{Stage, StageExt, StageOutcome, Then};
 pub use stream::{
     DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
 };
