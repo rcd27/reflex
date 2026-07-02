@@ -1,4 +1,5 @@
 use reflex_core::command::InjectablePacket;
+use reflex_core::Tap;
 
 use super::backend::NfqueueBackend;
 use super::preflight;
@@ -19,6 +20,23 @@ pub enum NfqVerdict {
     Modify(Vec<u8>),
 }
 
+/// Типизированный исход шага пайпа (Rule 17): что пайп сделал с одним пакетом.
+/// Бизнес-агностик — вердикт + число инжектов, без знания домена. Эмитится в `Tap`;
+/// слушатель (rx-конец) — забота потребителя (наблюдаемость в пайпе, не в бизнес-логике).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NfqStep {
+    pub fwmark: u32,
+    pub verdict: NfqVerdictKind,
+    pub injects: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NfqVerdictKind {
+    Accept,
+    Drop,
+    Modify,
+}
+
 /// Generic handler: receives packet, returns verdict + inject list.
 pub trait NfqHandler {
     fn handle(&mut self, packet: &NfqPacket) -> (NfqVerdict, Vec<InjectablePacket>);
@@ -35,6 +53,7 @@ pub struct NfqPipeline<H> {
     sender: RawSender,
     handler: H,
     our_fwmark: u32,
+    tap: Option<Tap<NfqStep>>,
 }
 
 impl<H: NfqHandler> NfqPipeline<H> {
@@ -51,7 +70,15 @@ impl<H: NfqHandler> NfqPipeline<H> {
             sender,
             handler,
             our_fwmark: fwmark,
+            tap: None,
         })
+    }
+
+    /// Повесить слушатель на пайп: каждый обработанный пакет эмитит `NfqStep`.
+    /// Функтор наблюдаемости — non-blocking (drop-on-full), пайп не тормозит.
+    pub fn with_tap(mut self, tap: Tap<NfqStep>) -> Self {
+        self.tap = Some(tap);
+        self
     }
 
     pub fn step(&mut self) -> Result<bool, String> {
@@ -85,6 +112,19 @@ impl<H: NfqHandler> NfqPipeline<H> {
             if let Err(e) = self.sender.send(&ip_bytes) {
                 tracing::warn!("RawSender inject failed: {e}");
             }
+        }
+
+        if let Some(tap) = &self.tap {
+            let kind = match verdict {
+                NfqVerdict::Accept => NfqVerdictKind::Accept,
+                NfqVerdict::Drop => NfqVerdictKind::Drop,
+                NfqVerdict::Modify(_) => NfqVerdictKind::Modify,
+            };
+            tap.emit(NfqStep {
+                fwmark: mark,
+                verdict: kind,
+                injects: injects.len(),
+            });
         }
 
         match verdict {

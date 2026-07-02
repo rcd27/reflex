@@ -15,4 +15,4 @@ pub use nft_guard::{NftConfig, NftGuard, NftGuardError, SlotConfig};
 
 /// Backward compatibility alias — remove after all consumers migrate.
 pub type FirewallGuard = NfqGuard;
-pub use pipeline::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
+pub use pipeline::{NfqHandler, NfqPacket, NfqPipeline, NfqStep, NfqVerdict, NfqVerdictKind};
