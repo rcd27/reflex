@@ -67,6 +67,8 @@ impl<H: WireHandler> NfqHandler for TypedNfq<H> {
         match parse_wire(&packet.payload) {
             Some(wire) => self.inner.on(&wire),
             // Down-shift: не-семейство fail-open, в домен не попадает.
+            // TODO(BL-203): для ЗАБЛОКИРОВАННОГО необработанного протокола Accept=«умер на DPI»;
+            // модель ByteFlowFloor требует route-to-floor (proxy), не слепой пропуск.
             None => (NfqVerdict::Accept, vec![]),
         }
     }
