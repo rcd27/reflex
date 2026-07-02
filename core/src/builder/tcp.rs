@@ -14,14 +14,26 @@ pub struct BuiltTcpPacket {
     ttl: u8,
     window: u16,
     payload: Vec<u8>,
+    options: Vec<u8>,
     src_mac: Mac,
     dst_mac: Mac,
+}
+
+/// Padding TCP-опций нулями (End Of Option List) до кратности 4 — иначе data offset
+/// не выразим (он в 32-битных словах). Бизнес-агностик: стандарт TCP, не десинк.
+fn pad_tcp_options(opts: &[u8]) -> Vec<u8> {
+    let mut v = opts.to_vec();
+    while v.len() % 4 != 0 {
+        v.push(0x00);
+    }
+    v
 }
 
 impl BuiltTcpPacket {
     /// Serialize as IP packet (no ethernet header). For raw socket injection.
     pub fn serialize_ip(&self) -> Vec<u8> {
-        let tcp_header_len = 20usize;
+        let opts = pad_tcp_options(&self.options);
+        let tcp_header_len = 20 + opts.len();
         let tcp_total = tcp_header_len + self.payload.len();
         let ip_total = 20 + tcp_total;
         let mut buf = Vec::with_capacity(ip_total);
@@ -43,12 +55,13 @@ impl BuiltTcpPacket {
         buf.extend_from_slice(&self.dst_port.to_be_bytes());
         buf.extend_from_slice(&self.seq.to_be_bytes());
         buf.extend_from_slice(&self.ack.to_be_bytes());
-        buf.push(0x50);
+        buf.push(((tcp_header_len / 4) << 4) as u8); // data offset (в 32-бит словах)
         buf.push(self.flags.bits());
         buf.extend_from_slice(&self.window.to_be_bytes());
         buf.extend_from_slice(&[0x00, 0x00]); // checksum placeholder
         buf.extend_from_slice(&[0x00, 0x00]); // urgent
 
+        buf.extend_from_slice(&opts);
         buf.extend_from_slice(&self.payload);
 
         // IP checksum
@@ -66,7 +79,8 @@ impl BuiltTcpPacket {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        let tcp_header_len = 20usize;
+        let opts = pad_tcp_options(&self.options);
+        let tcp_header_len = 20 + opts.len();
         let tcp_total = tcp_header_len + self.payload.len();
         let ip_total = 20 + tcp_total;
         let eth_total = 14 + ip_total;
@@ -94,12 +108,13 @@ impl BuiltTcpPacket {
         buf.extend_from_slice(&self.dst_port.to_be_bytes());
         buf.extend_from_slice(&self.seq.to_be_bytes());
         buf.extend_from_slice(&self.ack.to_be_bytes());
-        buf.push(0x50); // data offset=5
+        buf.push(((tcp_header_len / 4) << 4) as u8); // data offset (в 32-бит словах)
         buf.push(self.flags.bits());
         buf.extend_from_slice(&self.window.to_be_bytes());
         buf.extend_from_slice(&[0x00, 0x00]); // checksum
         buf.extend_from_slice(&[0x00, 0x00]); // urgent
 
+        buf.extend_from_slice(&opts);
         buf.extend_from_slice(&self.payload);
 
         // Compute and write IP checksum
@@ -129,6 +144,7 @@ pub struct TcpBuilder {
     ttl: u8,
     window: u16,
     payload: Vec<u8>,
+    options: Vec<u8>,
     src_mac: Mac,
     dst_mac: Mac,
 }
@@ -152,6 +168,7 @@ impl TcpBuilder {
             ttl: 64,
             window: 29200,
             payload: Vec::new(),
+            options: Vec::new(),
             src_mac: Mac([0x00; 6]),
             dst_mac: Mac([0xFF; 6]),
         }
@@ -199,6 +216,14 @@ impl TcpBuilder {
         self
     }
 
+    /// Сырые TCP-опции (после фикс. 20-байтного заголовка). Padding до кратности 4
+    /// и data offset — забота сериализатора. Бизнес-агностик: механизм TCP-опций,
+    /// какая именно опция (MD5/timestamp/…) — забота потребителя.
+    pub fn tcp_options(mut self, opts: &[u8]) -> Self {
+        self.options = opts.to_vec();
+        self
+    }
+
     pub fn src_mac(mut self, mac: Mac) -> Self {
         self.src_mac = mac;
         self
@@ -221,6 +246,7 @@ impl TcpBuilder {
             ttl: self.ttl,
             window: self.window,
             payload: self.payload,
+            options: self.options,
             src_mac: self.src_mac,
             dst_mac: self.dst_mac,
         }

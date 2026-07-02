@@ -189,6 +189,51 @@ fn tcp_builder_valid_tcp_checksum() {
 }
 
 #[test]
+fn tcp_builder_with_options_sets_data_offset_and_verifies_checksum() {
+    let flow = Flow {
+        src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 443),
+        dst: SocketAddr::new(Ipv4Addr::new(93, 184, 216, 34).into(), 80),
+        protocol: Protocol::Tcp,
+    };
+    // TCP-MD5 опция (RFC 2385): kind=19, len=18, 16 нулевых байт.
+    let mut md5 = vec![19u8, 18];
+    md5.extend_from_slice(&[0u8; 16]);
+    let payload = vec![0xAB, 0xCD];
+
+    let bytes = TcpBuilder::new()
+        .flow(&flow)
+        .seq(1)
+        .flags(TcpFlags::PSH | TcpFlags::ACK)
+        .tcp_options(&md5)
+        .payload(&payload)
+        .build()
+        .serialize();
+
+    let src_ip = &bytes[26..30];
+    let dst_ip = &bytes[30..34];
+    let tcp_segment = &bytes[34..];
+
+    // 20 фикс. + 18 опции padded до 20 = 40 байт заголовка = 10 32-бит слов.
+    assert_eq!(tcp_segment[12] >> 4, 10, "data offset обязан считать опции");
+    assert_eq!(&tcp_segment[20..22], &[19, 18], "MD5 kind+len сразу за фикс-заголовком");
+    assert_eq!(
+        reflex_core::checksum::tcp_checksum(
+            src_ip.try_into().unwrap(),
+            dst_ip.try_into().unwrap(),
+            tcp_segment
+        ),
+        0x0000,
+        "TCP checksum обязан верифицироваться с опциями"
+    );
+
+    // Парсер отделяет payload от опций по data offset.
+    let frame = EthernetFrame::parse(&bytes).unwrap();
+    let ip = Ipv4Packet::parse(&frame.payload).unwrap();
+    let seg = TcpSegment::parse(&ip.payload, ip.src, ip.dst, ip.ttl).unwrap();
+    assert_eq!(seg.payload, payload, "payload идёт ПОСЛЕ опций");
+}
+
+#[test]
 fn udp_builder_valid_ip_checksum() {
     let flow = Flow {
         src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 53),
