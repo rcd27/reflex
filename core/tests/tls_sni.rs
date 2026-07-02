@@ -232,7 +232,9 @@ fn client_hello_no_extensions() {
 #[test]
 fn sni_span_points_at_hostname_bytes() {
     let hello = reflex_core::tls::build_client_hello("rutracker.org");
-    let (offset, len) = reflex_core::tls::sni_span(&hello).expect("span found");
+    let sni = reflex_core::tls::sni(&hello).expect("sni found");
+    assert_eq!(sni.name, "rutracker.org", "имя и диапазон неразделимы");
+    let (offset, len) = sni.span;
     assert_eq!(len, "rutracker.org".len(), "длина = длина хоста");
     assert_eq!(
         &hello[offset..offset + len],
@@ -244,5 +246,59 @@ fn sni_span_points_at_hostname_bytes() {
 #[test]
 fn sni_span_none_when_no_sni() {
     // Обычные байты, не ClientHello — span отсутствует.
-    assert_eq!(reflex_core::tls::sni_span(b"not a tls hello"), None);
+    assert_eq!(reflex_core::tls::sni(b"not a tls hello"), None);
+}
+
+// --- sni_span accuracy: structural parse, not substring search ---
+
+/// ClientHello, где КОПИЯ hostname лежит в session_id (decoy) ПЕРЕД настоящим SNI.
+/// Поиск подстроки нашёл бы decoy (ранний offset); структурный парс — настоящий SNI.
+fn hello_decoy_in_session_id(domain: &str) -> (Vec<u8>, usize) {
+    let d = domain.as_bytes();
+    let sid_len = d.len();
+    let sni_list_len = 1 + 2 + d.len();
+    let sni_ext_data_len = 2 + sni_list_len;
+    let extensions_len = 2 + 2 + sni_ext_data_len;
+    let ch_body_len = 2 + 32 + 1 + sid_len + 2 + 2 + 1 + 1 + 2 + extensions_len;
+    let record_len = 1 + 3 + ch_body_len;
+
+    let mut pkt = Vec::new();
+    pkt.push(0x16);
+    pkt.extend_from_slice(&[0x03, 0x01]);
+    pkt.extend_from_slice(&(record_len as u16).to_be_bytes());
+    pkt.push(0x01);
+    let bl = ch_body_len as u32;
+    pkt.push((bl >> 16) as u8);
+    pkt.push((bl >> 8) as u8);
+    pkt.push(bl as u8);
+    pkt.extend_from_slice(&[0x03, 0x03]);
+    pkt.extend_from_slice(&[0xAA; 32]);
+    pkt.push(sid_len as u8);
+    pkt.extend_from_slice(d); // DECOY копия домена в session_id
+    pkt.extend_from_slice(&[0x00, 0x02]);
+    pkt.extend_from_slice(&[0x00, 0x2F]);
+    pkt.push(0x01);
+    pkt.push(0x00);
+    pkt.extend_from_slice(&(extensions_len as u16).to_be_bytes());
+    pkt.extend_from_slice(&[0x00, 0x00]);
+    pkt.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
+    pkt.extend_from_slice(&(sni_list_len as u16).to_be_bytes());
+    pkt.push(0x00);
+    pkt.extend_from_slice(&(d.len() as u16).to_be_bytes());
+    let real_offset = pkt.len(); // настоящий SNI hostname начинается здесь
+    pkt.extend_from_slice(d);
+    (pkt, real_offset)
+}
+
+#[test]
+fn sni_span_skips_decoy_hostname_in_session_id() {
+    let (hello, real_offset) = hello_decoy_in_session_id("rutracker.org");
+    let sni = reflex_core::tls::sni(&hello).expect("sni");
+    let (offset, len) = sni.span;
+    assert_eq!(
+        offset, real_offset,
+        "span указывает на SNI, не на decoy в session_id"
+    );
+    assert_eq!(len, "rutracker.org".len());
+    assert_eq!(&hello[offset..offset + len], b"rutracker.org");
 }

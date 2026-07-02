@@ -55,33 +55,72 @@ pub struct TlsRecord {
     pub fragment: TlsFragment,
 }
 
-/// Greedy SNI extraction from a potentially truncated TLS ClientHello.
-/// Works like TSPU/DPI: grabs SNI from whatever bytes are available
-/// in the first TCP segment, doesn't need the full TLS record.
-pub fn extract_sni(data: &[u8]) -> Option<String> {
-    // TLS record header: content_type(1) + version(2) + length(2) = 5 bytes
-    // Handshake type at byte 5 must be 0x01 (ClientHello)
-    if data.len() < 6 || data[0] != 0x16 || data[5] != 0x01 {
-        return None;
-    }
-    // Use whatever bytes we have after the 5-byte TLS record header
-    let body = &data[5..];
-    match TlsRecord::parse_client_hello(body) {
-        TlsFragment::ClientHello { sni } => sni,
-        _ => None,
-    }
+/// Server Name Indication из TLS ClientHello: имя хоста И его байтовый диапазон в payload,
+/// НЕРАЗДЕЛИМО. `span` — `(offset, len)`, offset абсолютный в payload. Связка убирает
+/// нелегальное состояние «имя есть, позиции нет»: SNI либо целиком (имя+диапазон), либо нет.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sni {
+    pub name: String,
+    pub span: (usize, usize),
 }
 
-/// Byte range `(offset, len)` of the SNI hostname within the ClientHello payload.
-/// The offset is relative to `hello` (the raw TCP payload). Locates the hostname by
-/// the extracted SNI string — cheap and parser-independent.
-pub fn sni_span(hello: &[u8]) -> Option<(usize, usize)> {
-    let sni = extract_sni(hello)?;
-    let needle = sni.as_bytes();
-    hello
-        .windows(needle.len())
-        .position(|w| w == needle)
-        .map(|offset| (offset, needle.len()))
+/// SNI из ClientHello структурным проходом: `None` если это не ClientHello ИЛИ SNI нет
+/// (SNI — опциональное TLS-расширение). Диапазон указывает на РЕАЛЬНЫЙ hostname, не на
+/// первое байтовое совпадение (копия-decoy в session_id/другом расширении не обманет).
+pub fn sni(hello: &[u8]) -> Option<Sni> {
+    // Record: type(0x16) + version(2) + length(2) = 5; handshake type 0x01.
+    if hello.len() < 6 || hello[0] != 0x16 || hello[5] != 0x01 {
+        return None;
+    }
+    // Handshake body от offset 5: type(1)+length(3)+version(2)+random(32) = 38 → session_id.
+    let mut pos = 5 + 38;
+    if pos >= hello.len() {
+        return None;
+    }
+    pos += 1 + hello[pos] as usize; // session_id
+
+    if pos + 2 > hello.len() {
+        return None;
+    }
+    pos += 2 + u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize; // cipher_suites
+
+    if pos >= hello.len() {
+        return None;
+    }
+    pos += 1 + hello[pos] as usize; // compression_methods
+
+    if pos + 2 > hello.len() {
+        return None;
+    }
+    let ext_total = u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize;
+    pos += 2;
+    let ext_end = (pos + ext_total).min(hello.len());
+
+    while pos + 4 <= ext_end {
+        let ext_type = u16::from_be_bytes([hello[pos], hello[pos + 1]]);
+        let ext_len = u16::from_be_bytes([hello[pos + 2], hello[pos + 3]]) as usize;
+        pos += 4;
+        // SNI extension body: list_len(2) + name_type(1) + name_len(2) + hostname.
+        if ext_type == 0x0000 && ext_len >= 5 && pos + ext_len <= hello.len() {
+            let name_type = hello[pos + 2];
+            let name_len = u16::from_be_bytes([hello[pos + 3], hello[pos + 4]]) as usize;
+            if name_type == 0 && 5 + name_len <= ext_len {
+                let start = pos + 5;
+                let name = String::from_utf8(hello[start..start + name_len].to_vec()).ok()?;
+                return Some(Sni {
+                    name,
+                    span: (start, name_len),
+                });
+            }
+        }
+        pos += ext_len;
+    }
+    None
+}
+
+/// SNI hostname как строка (без диапазона). Тонкая обёртка над `sni` — единый источник парса.
+pub fn extract_sni(data: &[u8]) -> Option<String> {
+    sni(data).map(|s| s.name)
 }
 
 impl TlsRecord {

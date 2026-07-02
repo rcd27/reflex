@@ -9,19 +9,18 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use reflex_core::command::InjectablePacket;
-use reflex_core::tls;
+use reflex_core::tls::{self, Sni};
 use reflex_core::types::{Flow, Protocol, TcpFlags};
 
 use super::pipeline::{NfqHandler, NfqPacket, NfqVerdict};
 
-/// Типизированный L7-контент поддержанного пакета (sealed, Rule 4).
+/// Типизированный L7-контент поддержанного пакета (sealed, Rule 4). SNI живёт ТОЛЬКО в
+/// `TlsClientHello` → для прочих L7 он структурно непредставим.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum L7 {
-    /// TLS ClientHello: SNI-строка и байтовый диапазон hostname в payload.
-    TlsClientHello {
-        sni: Option<String>,
-        sni_span: Option<(usize, usize)>,
-    },
+    /// TLS ClientHello. `sni` опционален (SNI — опциональное TLS-расширение), но КОГДА есть —
+    /// имя и диапазон неразделимы (`Sni`), рассинхрон непредставим.
+    TlsClientHello { sni: Option<Sni> },
     /// Ответ сервера (ChangeCipherSpec/Alert/Handshake/ApplicationData).
     ServerResp,
     /// Прочий/непарсимый L7.
@@ -117,10 +116,7 @@ fn parse_wire(payload: &[u8]) -> Option<WirePacket> {
 /// Классификация L7-байт в типизированный вариант.
 fn classify_l7(l7: &[u8]) -> L7 {
     if tls::is_client_hello(l7) {
-        L7::TlsClientHello {
-            sni: tls::extract_sni(l7),
-            sni_span: tls::sni_span(l7),
-        }
+        L7::TlsClientHello { sni: tls::sni(l7) }
     } else if tls::is_server_response(l7) {
         L7::ServerResp
     } else {
@@ -196,11 +192,11 @@ mod tests {
             .seen
             .expect("хендлер зван на поддержанном семействе");
         assert_eq!(wire.seq, 1000);
-        let L7::TlsClientHello { sni, sni_span } = &wire.l7 else {
-            panic!("ожидался TlsClientHello, got {:?}", wire.l7);
+        let L7::TlsClientHello { sni: Some(sni) } = &wire.l7 else {
+            panic!("ожидался TlsClientHello c SNI, got {:?}", wire.l7);
         };
-        assert_eq!(sni.as_deref(), Some("rutracker.org"));
-        let (off, len) = sni_span.expect("span");
+        assert_eq!(sni.name, "rutracker.org");
+        let (off, len) = sni.span;
         assert_eq!(&wire.payload[off..off + len], b"rutracker.org");
     }
 }
