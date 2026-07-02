@@ -226,3 +226,23 @@ fn client_hello_no_extensions() {
         panic!("expected ClientHello");
     }
 }
+
+// --- sni_span: byte range of SNI hostname within the ClientHello payload ---
+
+#[test]
+fn sni_span_points_at_hostname_bytes() {
+    let hello = reflex_core::tls::build_client_hello("rutracker.org");
+    let (offset, len) = reflex_core::tls::sni_span(&hello).expect("span found");
+    assert_eq!(len, "rutracker.org".len(), "длина = длина хоста");
+    assert_eq!(
+        &hello[offset..offset + len],
+        b"rutracker.org",
+        "диапазон указывает ровно на байты хоста"
+    );
+}
+
+#[test]
+fn sni_span_none_when_no_sni() {
+    // Обычные байты, не ClientHello — span отсутствует.
+    assert_eq!(reflex_core::tls::sni_span(b"not a tls hello"), None);
+}

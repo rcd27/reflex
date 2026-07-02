@@ -72,6 +72,18 @@ pub fn extract_sni(data: &[u8]) -> Option<String> {
     }
 }
 
+/// Byte range `(offset, len)` of the SNI hostname within the ClientHello payload.
+/// The offset is relative to `hello` (the raw TCP payload). Locates the hostname by
+/// the extracted SNI string — cheap and parser-independent.
+pub fn sni_span(hello: &[u8]) -> Option<(usize, usize)> {
+    let sni = extract_sni(hello)?;
+    let needle = sni.as_bytes();
+    hello
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|offset| (offset, needle.len()))
+}
+
 impl TlsRecord {
     pub fn parse(data: &[u8]) -> Option<Self> {
         if data.len() < 5 {
