@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use reflex_core::{Detector, DetectorEvent};
-use reflex_runtime::ReflexRuntimeExt;
 use reflex_linux::AfPacketBackend;
+use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
 
 // --- domain types ---
@@ -194,7 +194,10 @@ impl Detector for RstDetector {
         let mut signals = SmallVec::new();
 
         match event {
-            DetectorEvent::Packet { input: pkt, at: now } => {
+            DetectorEvent::Packet {
+                input: pkt,
+                at: now,
+            } => {
                 // SYN from client (flags = 0x02, only SYN set)
                 if pkt.tcp_flags & 0x3f == 0x02 && pkt.dst_port == 443 {
                     let key = Self::flow_key_from_client(&pkt);

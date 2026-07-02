@@ -215,7 +215,11 @@ fn tcp_builder_with_options_sets_data_offset_and_verifies_checksum() {
 
     // 20 фикс. + 18 опции padded до 20 = 40 байт заголовка = 10 32-бит слов.
     assert_eq!(tcp_segment[12] >> 4, 10, "data offset обязан считать опции");
-    assert_eq!(&tcp_segment[20..22], &[19, 18], "MD5 kind+len сразу за фикс-заголовком");
+    assert_eq!(
+        &tcp_segment[20..22],
+        &[19, 18],
+        "MD5 kind+len сразу за фикс-заголовком"
+    );
     assert_eq!(
         reflex_core::checksum::tcp_checksum(
             src_ip.try_into().unwrap(),
