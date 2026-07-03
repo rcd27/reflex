@@ -24,4 +24,4 @@ pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{Detector, DetectorEvent};
 pub use ext::ReflexExt;
 pub use guard::{CleanupReport, TrafficGuard};
-pub use reactor::{drive, group_by_reactor, Reactor};
+pub use reactor::{drive, drive_observed, group_by_reactor, Reactor, Transition};

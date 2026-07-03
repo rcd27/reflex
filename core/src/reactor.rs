@@ -11,6 +11,7 @@ use futures::Stream;
 use futures::StreamExt;
 
 use crate::ext::ReflexExt;
+use crate::Tap;
 
 pub trait Reactor: Sized + Copy {
     type Event;
@@ -23,6 +24,14 @@ pub trait Reactor: Sized + Copy {
     fn step(self, event: Self::Event) -> (Self, Option<Self::Effect>);
 }
 
+/// Наблюдаемый переход атома: событие-вход + эффект-исход (типизированный). Join-point аспекта
+/// наблюдаемости — атом его НЕ производит, аспект вплетён в драйвер ([`drive_observed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transition<E, F> {
+    pub event: E,
+    pub effect: Option<F>,
+}
+
 /// Прогоняет ОДИН reactor по потоку событий: сперва эффект `start` (если есть), затем —
 /// эффект `step` на каждое событие (если есть). Единственный способ увидеть эффекты reactor'а.
 pub fn drive<R: Reactor>(events: impl Stream<Item = R::Event>) -> impl Stream<Item = R::Effect> {
@@ -30,6 +39,31 @@ pub fn drive<R: Reactor>(events: impl Stream<Item = R::Event>) -> impl Stream<It
     let stepped = events
         .scan_state((initial, None::<R::Effect>), |st, ev| {
             let (next, fx) = st.0.step(ev);
+            st.0 = next;
+            st.1 = fx;
+        })
+        .filter_map(|(_, fx)| async move { fx });
+    futures::stream::iter(start_fx).chain(stepped)
+}
+
+/// АСПЕКТ наблюдаемости (aspect-first): тот же прогон, что [`drive`], но на КАЖДОМ переходе
+/// эмитит `Transition{event, effect}` в `tap` — атом остаётся ЧИСТЫМ, наблюдение вплетено в
+/// драйвер (край маппит `Transition` в спан). Эффекты-исходы reactor'а идут наружу как обычно.
+pub fn drive_observed<R: Reactor>(
+    events: impl Stream<Item = R::Event>,
+    tap: Tap<Transition<R::Event, R::Effect>>,
+) -> impl Stream<Item = R::Effect>
+where
+    R::Event: Copy,
+{
+    let (initial, start_fx) = R::start();
+    let stepped = events
+        .scan_state((initial, None::<R::Effect>), move |st, ev| {
+            let (next, fx) = st.0.step(ev);
+            tap.emit(Transition {
+                event: ev,
+                effect: fx,
+            });
             st.0 = next;
             st.1 = fx;
         })
