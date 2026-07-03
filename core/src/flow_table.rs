@@ -47,6 +47,23 @@ impl<D: Detector<Input = TcpSegment>> FlowTable<D> {
         all_signals
     }
 
+    /// Как [`tick`](Self::tick), но АТРИБУТИРУЕТ сигнал флоу-ключом. Витнесу нужно адресовать
+    /// здоровье конкретному соединению (per-host решение), а `tick` теряет ключ.
+    pub fn tick_attributed(&mut self, at: Instant) -> Vec<(Flow, D::Signal)> {
+        let mut out = Vec::new();
+        let flows: Vec<Flow> = self.flows.keys().cloned().collect();
+        for flow in flows {
+            if let Some(detector) = self.flows.remove(&flow) {
+                let (detector, signals) = detector.step(DetectorEvent::Tick { at });
+                for s in signals {
+                    out.push((flow.clone(), s));
+                }
+                self.flows.insert(flow, detector);
+            }
+        }
+        out
+    }
+
     pub fn get(&self, flow: &Flow) -> Option<&D> {
         self.flows.get(&normalize_flow(flow))
     }
