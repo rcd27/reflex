@@ -37,11 +37,14 @@ pub struct FlowWitness<H> {
 
 impl<H> FlowWitness<H> {
     /// `make_detector` строит per-flow детектор (напр. байт-здоровье с окном); `tick` — период
-    /// тика (закрытие окон простойных потоков); `tap` — сток атрибутированных сигналов.
+    /// тика (закрытие окон простойных потоков); `idle_timeout` — молчание, после которого поток
+    /// мёртв и эвиктится (иначе завершённый поток тикается вечно — спам + утечка); `tap` — сток
+    /// атрибутированных сигналов.
     pub fn new<D>(
         inner: H,
         make_detector: impl Fn(Flow) -> D + Send + 'static,
         tick: Duration,
+        idle_timeout: Duration,
         tap: Tap<(Flow, D::Signal)>,
     ) -> Self
     where
@@ -61,7 +64,7 @@ impl<H> FlowWitness<H> {
 
         // Актор: единоличный владелец `FlowTable` (Rule 10), сворачивает события, эмитит в `tap`.
         thread::spawn(move || {
-            let mut table = FlowTable::new(make_detector);
+            let mut table = FlowTable::new(idle_timeout, make_detector);
             for ev in rx {
                 match ev {
                     WitnessEvent::Segment(seg, at) => {
