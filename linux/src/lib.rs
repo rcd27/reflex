@@ -6,6 +6,8 @@ pub mod nfqws;
 pub mod rawsend;
 #[cfg(feature = "tc")]
 pub mod tc;
+#[cfg(feature = "tun")]
+pub mod tun;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
