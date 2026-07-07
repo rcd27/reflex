@@ -85,6 +85,21 @@ impl TcProgram {
         Ok(())
     }
 
+    /// ifindex устройства несущей (nevod0) для L2-РЕДИРЕКТА (`bpf_redirect`): eBPF отправит целевой
+    /// кадр прямо в xmit устройства, минуя ip_rcv/ip_forward → обходит forward→tun дроп и
+    /// conntrack-игнор лифтнутых кадров (L2-native, как AF_PACKET). 0 = fallback на MAC-lift.
+    pub fn set_steer_ifindex(&mut self, ifindex: u32) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("STEER_IFINDEX")
+                .ok_or("STEER_IFINDEX map not found")?,
+        )
+        .map_err(|e| format!("STEER_IFINDEX type mismatch: {e}"))?;
+        m.set(0, ifindex, 0)
+            .map_err(|e| format!("STEER_IFINDEX set: {e}"))?;
+        Ok(())
+    }
+
     /// Set action for a flow in the BPF action table.
     pub fn set_flow_action(&mut self, flow_hash: u32, action: FlowAction) -> Result<(), String> {
         let mut action_table: HashMap<_, u32, u8> = HashMap::try_from(

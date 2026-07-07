@@ -67,6 +67,21 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        // L2-РЕДИРЕКТ в устройство несущей (nevod0): ifindex из sysfs → карта STEER_IFINDEX. eBPF
+        // отправит целевой кадр прямо в xmit устройства, минуя ip_rcv/ip_forward (L2-native, как
+        // AF_PACKET) — обходит forward→tun дроп и conntrack-игнор лифтнутых кадров. Env
+        // STEER_REDIRECT_DEV (дефолт nevod0); устройство должно СУЩЕСТВОВАТЬ (nevod --tun поднят до steer).
+        let redirect_dev =
+            std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
+        match dev_ifindex(&redirect_dev) {
+            Ok(ifx) => match tc.set_steer_ifindex(ifx) {
+                Ok(()) => eprintln!("[l2_steer] L2-редирект → {redirect_dev} (ifindex {ifx})"),
+                Err(e) => eprintln!("[l2_steer] set_steer_ifindex провалился: {e}"),
+            },
+            Err(e) => eprintln!(
+                "[l2_steer] нет ifindex {redirect_dev} ({e}) — fallback MAC-lift (подними nevod --tun ДО steer)"
+            ),
+        }
         // Целевые dst-IP (блокируемые домены) — args[5..]. eBPF заворачивает TCP-флоу к ним.
         for t in args.iter().skip(5) {
             match t.parse::<std::net::Ipv4Addr>() {
@@ -118,6 +133,14 @@ fn bridge_mac(iface: &str) -> std::io::Result<[u8; 6]> {
     let raw = std::fs::read_to_string(format!("/sys/class/net/{master}/address"))?;
     parse_mac(raw.trim())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "не MAC"))
+}
+
+/// ifindex устройства из `/sys/class/net/<dev>/ifindex` (для L2-редиректа в несущую).
+fn dev_ifindex(dev: &str) -> std::io::Result<u32> {
+    let raw = std::fs::read_to_string(format!("/sys/class/net/{dev}/ifindex"))?;
+    raw.trim()
+        .parse::<u32>()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// `aa:bb:cc:dd:ee:ff` → 6 байт.

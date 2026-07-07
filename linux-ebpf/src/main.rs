@@ -6,7 +6,7 @@ use aya_ebpf::{
     maps::{Array, HashMap},
     programs::TcContext,
 };
-use aya_ebpf_bindings::helpers::bpf_skb_store_bytes;
+use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_skb_store_bytes};
 use reflex_linux_common::{FlowAction, SteerStat, STEER_STAT_SLOTS};
 
 const TC_ACT_OK: i32 = 0; // pass
@@ -31,6 +31,14 @@ static STEER_MAC: Array<u8> = Array::with_max_entries(6, 0);
 // печатает — где счётчик проваливается в 0, там теряется кадр. Слоты = `SteerStat` (общий контракт).
 #[map]
 static STEER_STATS: Array<u64> = Array::with_max_entries(STEER_STAT_SLOTS, 0);
+
+// ifindex устройства несущей (nevod0) для L2-РЕДИРЕКТА (`bpf_redirect`): userspace ставит перед attach.
+// Редирект отправляет кадр прямо в xmit устройства на TC-хуке, МИНУЯ `ip_rcv`/`ip_forward` целиком —
+// обходит forward→tun дроп И conntrack-игнор лифтнутых кадров (измерено 2026-07-07: L3-доставка
+// лифтнутого мостового кадра на этой коробке ломается при brnf=0). 0 = не редиректить (fallback на
+// MAC-lift, legacy). Это L2-native путь, как AF_PACKET — ничего не входит в L3, ломаться нечему.
+#[map]
+static STEER_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 
 // Инкремент слота. Гонка между CPU (не PerCpu) сознательна: для диагностики важен ПОРЯДОК величины
 // и «>0 vs 0», не точный счёт — плата за простоту при отсутствии BTF на риге (см. де-риск R2S).
@@ -225,13 +233,28 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     // знать блокируемые домены ЗАРАНЕЕ не нужно — earned-routing открывает блок реактивно
     // (project_earned_routing_pivot_bl188). isTarget модели TransparentIntercept проецируется на
     // «HTTPS», не на «dst ∈ blocklist». Не-443 → на транзит (Surgical). STEER_TARGETS больше не гейт.
-    if dport_be != 443u16.to_be() {
+    // dport 443 на проводе (big-endian) = байты [0x01, 0xBB]. Сравниваем СЫРЫЕ байты провода —
+    // без to_be()/from_ne_bytes-неоднозначности (та на bpfel НЕ матчила, хоть логически и верна:
+    // tcpdump подтвердил dport-443 SYN на ingress, а target_hit оставался 0).
+    if *tcp_start.add(2) != 0x01 || *tcp_start.add(3) != 0xBB {
         return Ok(TC_ACT_OK);
     }
 
-    bump(SteerStat::TargetHit); // HTTPS-флоу — кандидат перехвата (судьбу решит движок)
+    bump(SteerStat::TargetHit); // HTTPS-флоу к тест-цели — кандидат перехвата
 
-    // L2-доставка: переписать dst-MAC на MAC моста → кадр уходит НАВЕРХ в локальный L3-стек
+    // L2-РЕДИРЕКТ (если ifindex несущей задан): кадр идёт прямо в xmit устройства, МИНУЯ ip_rcv/
+    // ip_forward → обходит forward→tun дроп и conntrack-игнор (L2-native, как AF_PACKET). Возвращаем
+    // код `bpf_redirect` (TC_ACT_REDIRECT). Кадр несёт Ethernet-заголовок — nevod0 (IFF_NO_PI) снимет
+    // его в read-pump (или eth-strip в eBPF — следующий шаг после замера доставки).
+    if let Some(ifx) = STEER_IFINDEX.get(0) {
+        let ifindex = *ifx;
+        if ifindex != 0 {
+            bump(SteerStat::Rewritten); // переиспользуем слот как «доставлен через редирект»
+            return Ok(bpf_redirect(ifindex, 0) as i32);
+        }
+    }
+
+    // L2-доставка (fallback, ifindex=0): переписать dst-MAC на MAC моста → кадр уходит НАВЕРХ в L3-стек
     // (br_pass_frame_up→ip_rcv), а не форвардится по чужому MAC. Дальше policy-route (iif br0 →
     // table steer → dev tun0) доставит его в tun2socks (hev) → SOCKS5 несущей (Tun-путь, sk_assign/
     // DNAT/TPROXY на этом ядре RED — доказано на риге, TransparentCapture/Delivery, BL-215).
@@ -278,7 +301,7 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
 
     // src_be/sport_be/dst_be не нужны (sk_assign убран; матч теперь по dport, не по dst-IP) —
     // глушим предупреждения намеренно. dport_be используется в гейте HTTPS выше.
-    let _ = (src_be, sport_be, dst_be);
+    let _ = (src_be, sport_be, dport_be, dst_be);
 
     Ok(TC_ACT_OK)
 }
