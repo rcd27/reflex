@@ -108,6 +108,34 @@ fn main() {
         tc
     };
 
+    // ОБРАТНАЯ половина круга: reflex_return на INGRESS устройства несущей (nevod0) → bpf_redirect_neigh
+    // к клиенту через br0, минуя сломанный форвард nevod0→br0. Держим живым (Drop отцепляет).
+    let return_held = if steer {
+        let redirect_dev =
+            std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
+        // Куда bpf_redirect_neigh шлёт ответ назад к клиенту. br0 (мост) может отвергать self-MAC;
+        // eth1 (физпорт) минует мост — тогда нужен статический neigh клиента на eth1.
+        let return_dev = std::env::var("STEER_RETURN_DEV").unwrap_or_else(|_| "br0".to_string());
+        let ret_ifx = dev_ifindex(&return_dev).unwrap_or(0);
+        match TcProgram::attach_return(&redirect_dev, BPF_OBJECT) {
+            Ok(mut tcr) => {
+                match tcr.set_return_ifindex(ret_ifx) {
+                    Ok(()) => eprintln!(
+                        "[l2_steer] reflex_return на {redirect_dev} INGRESS → {return_dev} (ifindex {ret_ifx})"
+                    ),
+                    Err(e) => eprintln!("[l2_steer] set_return_ifindex: {e}"),
+                }
+                Some(tcr)
+            }
+            Err(e) => {
+                eprintln!("[l2_steer] attach_return на {redirect_dev} провалился: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Держим программу прицепленной. В режиме steer печатаем datapath-снапшот каждые 5с (Правило 17):
     // seen→ipv4_tcp→target_hit→established_hit/listener_hit→assigned. Где счётчик проваливается в 0 —
     // там теряется кадр. Это то, что делает «почему не заворачивается» наблюдаемым, а не гаданием.
@@ -117,6 +145,12 @@ fn main() {
             match held.steer_stats_line() {
                 Ok(line) => tracing::info!(target: "steer_stats", "{line}"),
                 Err(e) => tracing::warn!("steer_stats недоступны: {e}"),
+            }
+            if let Some(r) = return_held.as_ref() {
+                match r.return_stats_line() {
+                    Ok(line) => tracing::info!(target: "steer_stats", "{line}"),
+                    Err(e) => tracing::warn!("return_stats недоступны: {e}"),
+                }
             }
         }
     }

@@ -6,7 +6,7 @@ use aya_ebpf::{
     maps::{Array, HashMap},
     programs::TcContext,
 };
-use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_skb_store_bytes};
+use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_redirect_neigh, bpf_skb_store_bytes};
 use reflex_linux_common::{FlowAction, SteerStat, STEER_STAT_SLOTS};
 
 const TC_ACT_OK: i32 = 0; // pass
@@ -39,6 +39,19 @@ static STEER_STATS: Array<u64> = Array::with_max_entries(STEER_STAT_SLOTS, 0);
 // MAC-lift, legacy). Это L2-native путь, как AF_PACKET — ничего не входит в L3, ломаться нечему.
 #[map]
 static STEER_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
+
+// ifindex устройства НАЗАД к клиенту (br0) для ОБРАТНОГО L2-редиректа. Датаплейн — КРУГ: вход мы
+// сделали L2-native (`bpf_redirect`), но ВЫХОД netstack→клиент шёл обычным kernel-форвардом
+// nevod0→br0, который эта коробка РОНЯЕТ (зеркало входного дропа; измерено: 176 SYN-ACK на nevod0, 0
+// на br0). `reflex_return` на INGRESS nevod0 берёт ответ netstack'а и `bpf_redirect_neigh(br0)` —
+// хелпер сам делает FIB+neigh(MAC клиента известен)+L2-заголовок и доставляет, МИНУЯ форвард. 0 = off.
+#[map]
+static RETURN_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
+
+// Наблюдаемость reflex_return: [0]=seen (кадров на nevod0-ingress), [1]=ipv4, [2]=последний rc
+// bpf_redirect_neigh (7=TC_ACT_REDIRECT успех; отрицательное как u64 = ошибка резолва/FIB).
+#[map]
+static RETURN_STATS: Array<u64> = Array::with_max_entries(3, 0);
 
 // Инкремент слота. Гонка между CPU (не PerCpu) сознательна: для диагностики важен ПОРЯДОК величины
 // и «>0 vs 0», не точный счёт — плата за простоту при отсутствии BTF на риге (см. де-риск R2S).
@@ -303,6 +316,53 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     // глушим предупреждения намеренно. dport_be используется в гейте HTTPS выше.
     let _ = (src_be, sport_be, dport_be, dst_be);
 
+    Ok(TC_ACT_OK)
+}
+
+// ── reflex_return (TC INGRESS на nevod0): ОБРАТНАЯ половина круга ──
+// netstack пишет ответ (src=цель, dst=клиент) в nevod0 → ядро получает его на nevod0-ingress. Обычный
+// форвард nevod0→br0→клиент эта коробка РОНЯЕТ (тот же tun-форвард дроп, что и на входе). Берём кадр и
+// `bpf_redirect_neigh(br0)` — хелпер сам: FIB-lookup dst=клиент → br0, neigh-резолв (MAC клиента есть),
+// строит L2-заголовок, доставляет — МИНУЯ форвард. tun (IFF_NO_PI) отдаёт кадр с IP (без Ethernet).
+#[classifier]
+pub fn reflex_return(ctx: TcContext) -> i32 {
+    match unsafe { try_return(&ctx) } {
+        Ok(v) => v,
+        Err(_) => TC_ACT_OK,
+    }
+}
+
+#[inline(always)]
+unsafe fn try_return(ctx: &TcContext) -> Result<i32, ()> {
+    let data = ctx.data() as *const u8;
+    let data_end = ctx.data_end() as *const u8;
+
+    if let Some(p) = RETURN_STATS.get_ptr_mut(0) {
+        unsafe { *p += 1 } // seen: кадр на nevod0-ingress
+    }
+
+    if data.add(1) as usize > data_end as usize {
+        return Ok(TC_ACT_OK);
+    }
+    if (*data >> 4) != 4 {
+        return Ok(TC_ACT_OK); // не IPv4 (tun даёт сырой IP)
+    }
+
+    if let Some(p) = RETURN_STATS.get_ptr_mut(1) {
+        unsafe { *p += 1 } // ipv4
+    }
+
+    if let Some(ifx) = RETURN_IFINDEX.get(0) {
+        let ifindex = *ifx;
+        if ifindex != 0 {
+            // params=NULL → хелпер сам делает FIB+neigh для dst пакета (клиент) и строит L2.
+            let rc = bpf_redirect_neigh(ifindex, core::ptr::null_mut(), 0, 0);
+            if let Some(p) = RETURN_STATS.get_ptr_mut(2) {
+                unsafe { *p = rc as u64 } // последний rc (7=успех, отриц.=ошибка)
+            }
+            return Ok(rc as i32);
+        }
+    }
     Ok(TC_ACT_OK)
 }
 

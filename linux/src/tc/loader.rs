@@ -20,6 +20,12 @@ impl TcProgram {
         Self::attach_named(interface, bpf_bytes, "reflex_steer", TcAttachType::Ingress)
     }
 
+    /// `reflex_return` на INGRESS nevod0: ОБРАТНАЯ половина круга. netstack пишет ответ в nevod0 →
+    /// программа `bpf_redirect_neigh` доставляет его клиенту через br0, минуя сломанный форвард.
+    pub fn attach_return(interface: &str, bpf_bytes: &[u8]) -> Result<Self, String> {
+        Self::attach_named(interface, bpf_bytes, "reflex_return", TcAttachType::Ingress)
+    }
+
     fn attach_named(
         interface: &str,
         bpf_bytes: &[u8],
@@ -97,6 +103,34 @@ impl TcProgram {
         .map_err(|e| format!("STEER_IFINDEX type mismatch: {e}"))?;
         m.set(0, ifindex, 0)
             .map_err(|e| format!("STEER_IFINDEX set: {e}"))?;
+        Ok(())
+    }
+
+    /// Снапшот RETURN_STATS: [seen, ipv4, last_rc]. `last_rc`=7 → редирект успешен; большое (u64 от
+    /// отрицательного i64) → bpf_redirect_neigh вернул ошибку (FIB/neigh не резолвится).
+    pub fn return_stats_line(&self) -> Result<String, String> {
+        let stats: aya::maps::Array<_, u64> = aya::maps::Array::try_from(
+            self.bpf
+                .map("RETURN_STATS")
+                .ok_or("RETURN_STATS map not found")?,
+        )
+        .map_err(|e| format!("RETURN_STATS type mismatch: {e}"))?;
+        let seen = stats.get(&0, 0).unwrap_or(0);
+        let ipv4 = stats.get(&1, 0).unwrap_or(0);
+        let rc = stats.get(&2, 0).unwrap_or(0) as i64;
+        Ok(format!("return: seen={seen} ipv4={ipv4} last_rc={rc}"))
+    }
+
+    /// ifindex устройства НАЗАД к клиенту (br0) для `reflex_return` (`bpf_redirect_neigh`).
+    pub fn set_return_ifindex(&mut self, ifindex: u32) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("RETURN_IFINDEX")
+                .ok_or("RETURN_IFINDEX map not found")?,
+        )
+        .map_err(|e| format!("RETURN_IFINDEX type mismatch: {e}"))?;
+        m.set(0, ifindex, 0)
+            .map_err(|e| format!("RETURN_IFINDEX set: {e}"))?;
         Ok(())
     }
 
