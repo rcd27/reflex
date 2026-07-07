@@ -49,11 +49,16 @@ static STEER_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 #[map]
 static RETURN_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 
-// Ethernet-заголовок обратного кадра: 12 байт = dst-MAC(клиент, [0..6]) + src-MAC(box/eth1, [6..12]).
-// Userspace ставит перед attach. tun отдаёт сырой IP (IFF_NO_PI); `reflex_return` дорастит хедрум и
-// впишет эти MAC + ethertype 0x0800 → валидный L2-кадр для xmit eth1. Все нули = не сконфигурен (off).
+// src-MAC обратного кадра (6 байт = MAC самого eth1). Userspace читает из sysfs и ставит перед attach.
+// НЕ конфиг клиента — лишь наш egress-MAC. dst-MAC берётся из CLIENT_MACS (выучен), не отсюда.
 #[map]
-static RETURN_MAC: Array<u8> = Array::with_max_entries(12, 0);
+static RETURN_SRC_MAC: Array<u8> = Array::with_max_entries(6, 0);
+
+// Выученные MAC downstream-next-hop: client-IP(__be32) → его src-MAC (6 байт). `reflex_steer` пишет на
+// forward-кадре (src-MAC Ethernet = MAC роутера/клиента), `reflex_return` читает по dst-IP ответа. Так
+// возврат портируем ЗА ЛЮБЫМ роутером БЕЗ конфига клиента (проекция SteerDatapath `MacLearned`).
+#[map]
+static CLIENT_MACS: HashMap<u32, [u8; 6]> = HashMap::with_max_entries(1024, 0);
 
 // Наблюдаемость reflex_return: [0]=seen (кадров на nevod0-ingress), [1]=ipv4, [2]=последний rc
 // (7=TC_ACT_REDIRECT успех bpf_redirect(eth1); отрицательное как u64 = ошибка change_head/store).
@@ -262,6 +267,20 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
 
     bump(SteerStat::TargetHit); // HTTPS-флоу к тест-цели — кандидат перехвата
 
+    // ВЫУЧИТЬ MAC downstream-next-hop: src-MAC Ethernet кадра (data[6..12]) = MAC роутера/клиента, к
+    // которому `reflex_return` погонит ответ. Ключ = client-IP (src_be) — по нему возврат найдёт MAC по
+    // dst-IP ответа. Так круг портируем БЕЗ конфига клиента (SteerDatapath `MacLearned`). Границы data
+    // [0..14] проверены выше (ethernet+ip). insert best-effort — промах не рвёт заворот.
+    let client_mac: [u8; 6] = [
+        *data.add(6),
+        *data.add(7),
+        *data.add(8),
+        *data.add(9),
+        *data.add(10),
+        *data.add(11),
+    ];
+    let _ = CLIENT_MACS.insert(&src_be, &client_mac, 0);
+
     // L2-РЕДИРЕКТ (если ifindex несущей задан): кадр идёт прямо в xmit устройства, МИНУЯ ip_rcv/
     // ip_forward → обходит forward→tun дроп и conntrack-игнор (L2-native, как AF_PACKET). Возвращаем
     // код `bpf_redirect` (TC_ACT_REDIRECT). Кадр несёт Ethernet-заголовок — nevod0 (IFF_NO_PI) снимет
@@ -364,20 +383,36 @@ unsafe fn try_return(ctx: &TcContext) -> Result<i32, ()> {
         _ => return Ok(TC_ACT_OK), // ifindex eth1 не задан → на транзит (fail-open)
     };
 
-    // Ethernet-заголовок из RETURN_MAC ЧИТАЕМ ДО change_head (карта переживёт инвалидацию skb-указателей;
-    // после дороста хедрума пакетные указатели трогать нельзя). 12 явных get — развёртка без loop-verifier.
+    // dst-IP ответа (клиент) — ключ к выученному MAC. IP-заголовок ≥ 20 байт (dst на offset 16..20).
+    if data.add(20) as usize > data_end as usize {
+        return Ok(TC_ACT_OK);
+    }
+    let dst_ip = u32::from_ne_bytes([*data.add(16), *data.add(17), *data.add(18), *data.add(19)]);
+
+    // Ethernet-заголовок ЧИТАЕМ ДО change_head (карты переживут инвалидацию skb-указателей; после дороста
+    // хедрума пакетные указатели трогать нельзя). dst-MAC = ВЫУЧЕННЫЙ из forward-кадра (CLIENT_MACS по
+    // dst-IP клиента); src-MAC = eth1 (RETURN_SRC_MAC). Портируемо БЕЗ конфига клиента (`MacLearned`).
+    let dst_mac = match CLIENT_MACS.get(&dst_ip) {
+        Some(m) => *m,
+        None => return Ok(TC_ACT_OK), // MAC клиента ещё не выучен (forward-кадр научит) → транзит, fail-open
+    };
     let mut eth = [0u8; 14];
-    let mut configured = 0u8;
     let mut i = 0usize;
-    while i < 12 {
-        if let Some(b) = RETURN_MAC.get(i as u32) {
-            eth[i] = *b;
-            configured |= *b;
-        }
+    while i < 6 {
+        eth[i] = dst_mac[i]; // dst-MAC (выученный next-hop)
         i += 1;
     }
+    let mut configured = 0u8;
+    let mut j = 0usize;
+    while j < 6 {
+        if let Some(b) = RETURN_SRC_MAC.get(j as u32) {
+            eth[6 + j] = *b; // src-MAC (eth1)
+            configured |= *b;
+        }
+        j += 1;
+    }
     if configured == 0 {
-        return Ok(TC_ACT_OK); // MAC не сконфигурен → не трогаем (транзит)
+        return Ok(TC_ACT_OK); // src-MAC eth1 не задан → транзит (off)
     }
     eth[12] = 0x08; // ethertype IPv4
     eth[13] = 0x00;

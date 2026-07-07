@@ -39,18 +39,23 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(std::net::Ipv4Addr::new(127, 0, 0, 1));
         let proxy_port: u16 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(11080);
-        let mut tc = match TcProgram::attach_steer(&iface, BPF_OBJECT) {
+        // Несущая (nevod0): вход steer редиректит В неё, reflex_return читает ответ ИЗ неё. Должна
+        // СУЩЕСТВОВАТЬ до attach. Порт клиента (eth1): reflex_return отдаёт готовый L2-кадр туда.
+        let redirect_dev =
+            std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
+        let return_dev = std::env::var("STEER_RETURN_DEV").unwrap_or_else(|_| "eth1".to_string());
+
+        // ОДИН Ebpf на ОБА хука круга → карты ОБЩИЕ (steer учит CLIENT_MACS из forward, return читает).
+        let mut tc = match TcProgram::attach_steer_and_return(&iface, &redirect_dev, BPF_OBJECT) {
             Ok(tc) => tc,
             Err(e) => {
-                eprintln!("[l2_steer] attach_steer на {iface} провалился (verifier?): {e}");
+                eprintln!(
+                    "[l2_steer] attach steer+return ({iface}+{redirect_dev}) провалился (verifier? nevod0 up?): {e}"
+                );
                 std::process::exit(1);
             }
         };
-        // proxy_ip/proxy_port (args 3/4) — легаси sk_assign-пути (STEER_CFG удалён); доставку теперь
-        // делает nft DNAT в deploy-скрипте. Позиции args сохранены, чтобы deploy не менять; значения
-        // лишь печатаются как «куда DNAT шлёт».
-        // L2-доставка (BL-215 Phase 1): dst-MAC заворота → MAC моста, иначе мост форвардит по чужому
-        // MAC и sk_assign не консультируется. Читаем MAC master'а слейва (br0), не самого слейва.
+        // L2-доставка входа: dst-MAC заворота → MAC моста (br0), иначе мост форвардит по чужому MAC.
         match bridge_mac(&iface) {
             Ok(mac) => {
                 if let Err(e) = tc.set_steer_mac(mac) {
@@ -58,8 +63,8 @@ fn main() {
                     std::process::exit(1);
                 }
                 eprintln!(
-                    "[l2_steer] L2-доставка: dst-MAC → {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} (мост)",
-                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                    "[l2_steer] L2-доставка входа: dst-MAC → {} (мост)",
+                    fmt_mac(&mac)
                 );
             }
             Err(e) => {
@@ -67,22 +72,40 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        // L2-РЕДИРЕКТ в устройство несущей (nevod0): ifindex из sysfs → карта STEER_IFINDEX. eBPF
-        // отправит целевой кадр прямо в xmit устройства, минуя ip_rcv/ip_forward (L2-native, как
-        // AF_PACKET) — обходит forward→tun дроп и conntrack-игнор лифтнутых кадров. Env
-        // STEER_REDIRECT_DEV (дефолт nevod0); устройство должно СУЩЕСТВОВАТЬ (nevod --tun поднят до steer).
-        let redirect_dev =
-            std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
+        // ВХОД: bpf_redirect(nevod0) — ifindex несущей в STEER_IFINDEX (L2-native, минует ip_forward).
         match dev_ifindex(&redirect_dev) {
             Ok(ifx) => match tc.set_steer_ifindex(ifx) {
-                Ok(()) => eprintln!("[l2_steer] L2-редирект → {redirect_dev} (ifindex {ifx})"),
+                Ok(()) => eprintln!("[l2_steer] вход → {redirect_dev} (ifindex {ifx})"),
                 Err(e) => eprintln!("[l2_steer] set_steer_ifindex провалился: {e}"),
             },
             Err(e) => eprintln!(
-                "[l2_steer] нет ifindex {redirect_dev} ({e}) — fallback MAC-lift (подними nevod --tun ДО steer)"
+                "[l2_steer] нет ifindex {redirect_dev} ({e}) — подними nevod --tun ДО steer"
             ),
         }
-        // Целевые dst-IP (блокируемые домены) — args[5..]. eBPF заворачивает TCP-флоу к ним.
+        // ВОЗВРАТ: bpf_redirect(eth1) — ifindex порта клиента + src-MAC=eth1. dst-MAC учит сам eBPF из
+        // forward-кадров (CLIENT_MACS) — портируемо ЗА ЛЮБЫМ роутером без конфига клиента.
+        match dev_ifindex(&return_dev) {
+            Ok(ifx) => match tc.set_return_ifindex(ifx) {
+                Ok(()) => eprintln!(
+                    "[l2_steer] возврат → {return_dev} (ifindex {ifx}); dst-MAC учится из forward"
+                ),
+                Err(e) => eprintln!("[l2_steer] set_return_ifindex: {e}"),
+            },
+            Err(e) => eprintln!("[l2_steer] нет ifindex {return_dev} ({e}) — возврат на транзите"),
+        }
+        match dev_mac(&return_dev) {
+            Ok(src) => match tc.set_return_src_mac(src) {
+                Ok(()) => eprintln!(
+                    "[l2_steer] возврат src-MAC = {} ({return_dev})",
+                    fmt_mac(&src)
+                ),
+                Err(e) => eprintln!("[l2_steer] set_return_src_mac: {e}"),
+            },
+            Err(e) => {
+                eprintln!("[l2_steer] не прочитал MAC {return_dev}: {e} — возврат на транзите")
+            }
+        }
+        // Целевые dst-IP (args[5..]) — легаси per-domain (обычно пусто; гейт = dport 443).
         for t in args.iter().skip(5) {
             match t.parse::<std::net::Ipv4Addr>() {
                 Ok(ip) => match tc.add_steer_target(ip) {
@@ -92,8 +115,9 @@ fn main() {
                 Err(_) => eprintln!("[l2_steer] пропущен не-IPv4 target: {t}"),
             }
         }
-        tracing::info!(iface = %tc.interface(), %proxy_ip, proxy_port, "reflex_steer прицеплен на INGRESS (sk_assign)");
-        eprintln!("[l2_steer] STEER на {iface} ingress → несущая {proxy_ip}:{proxy_port}. Verifier ПРИНЯЛ sk_assign.");
+        eprintln!(
+            "[l2_steer] КРУГ на {iface}: вход→{redirect_dev}, возврат→{return_dev}; несущая {proxy_ip}:{proxy_port}"
+        );
         tc
     } else {
         let tc = match TcProgram::attach(&iface, BPF_OBJECT) {
@@ -108,55 +132,8 @@ fn main() {
         tc
     };
 
-    // ОБРАТНАЯ половина круга (L2RedirectEth1, модель SteerDatapath `.tobe`): reflex_return на INGRESS
-    // несущей (nevod0) сам клеит Ethernet (dst=client-MAC, src=eth1-MAC) и `bpf_redirect(eth1)` прямо в
-    // порт клиента — минуя kernel-форвард (ЧД) и neigh-резолв (провал bpf_redirect_neigh). Держим живым.
-    let return_held = if steer {
-        let redirect_dev =
-            std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
-        // Порт клиента, куда bpf_redirect отдаёт готовый L2-кадр (физпорт, не мост — детерминированно).
-        let return_dev = std::env::var("STEER_RETURN_DEV").unwrap_or_else(|_| "eth1".to_string());
-        let ret_ifx = dev_ifindex(&return_dev).unwrap_or(0);
-        // dst=MAC клиента (STEER_CLIENT_MAC, либо резолв по STEER_CLIENT_IP из /proc/net/arp),
-        // src=MAC самого порта возврата. Обе нужны, иначе eBPF оставит кадр на транзите (fail-open).
-        let client_mac = resolve_client_mac();
-        let src_mac = dev_mac(&return_dev).ok();
-        match TcProgram::attach_return(&redirect_dev, BPF_OBJECT) {
-            Ok(mut tcr) => {
-                match tcr.set_return_ifindex(ret_ifx) {
-                    Ok(()) => eprintln!(
-                        "[l2_steer] reflex_return на {redirect_dev} INGRESS → {return_dev} (ifindex {ret_ifx})"
-                    ),
-                    Err(e) => eprintln!("[l2_steer] set_return_ifindex: {e}"),
-                }
-                match (client_mac, src_mac) {
-                    (Some(dst), Some(src)) => match tcr.set_return_mac(dst, src) {
-                        Ok(()) => eprintln!(
-                            "[l2_steer] return L2: dst={} src={} (→ {return_dev})",
-                            fmt_mac(&dst),
-                            fmt_mac(&src)
-                        ),
-                        Err(e) => eprintln!("[l2_steer] set_return_mac: {e}"),
-                    },
-                    _ => eprintln!(
-                        "[l2_steer] return MAC не задан (client={client_mac:?} src={src_mac:?}) — \
-                         задай STEER_CLIENT_MAC/STEER_CLIENT_IP; возврат на транзите (fail-open)"
-                    ),
-                }
-                Some(tcr)
-            }
-            Err(e) => {
-                eprintln!("[l2_steer] attach_return на {redirect_dev} провалился: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Держим программу прицепленной. В режиме steer печатаем datapath-снапшот каждые 5с (Правило 17):
-    // seen→ipv4_tcp→target_hit→established_hit/listener_hit→assigned. Где счётчик проваливается в 0 —
-    // там теряется кадр. Это то, что делает «почему не заворачивается» наблюдаемым, а не гаданием.
+    // Держим программу прицепленной. Стата каждые 5с (Правило 17): вход (steer) + возврат (return) — ОБА
+    // хука живут в одном `held` (общий Ebpf, общие карты). Где счётчик проваливается в 0 — там теряется кадр.
     loop {
         std::thread::sleep(Duration::from_secs(5));
         if steer {
@@ -164,11 +141,9 @@ fn main() {
                 Ok(line) => tracing::info!(target: "steer_stats", "{line}"),
                 Err(e) => tracing::warn!("steer_stats недоступны: {e}"),
             }
-            if let Some(r) = return_held.as_ref() {
-                match r.return_stats_line() {
-                    Ok(line) => tracing::info!(target: "steer_stats", "{line}"),
-                    Err(e) => tracing::warn!("return_stats недоступны: {e}"),
-                }
+            match held.return_stats_line() {
+                Ok(line) => tracing::info!(target: "steer_stats", "{line}"),
+                Err(e) => tracing::warn!("return_stats недоступны: {e}"),
             }
         }
     }
@@ -192,23 +167,6 @@ fn dev_mac(dev: &str) -> std::io::Result<[u8; 6]> {
     let raw = std::fs::read_to_string(format!("/sys/class/net/{dev}/address"))?;
     parse_mac(raw.trim())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "не MAC"))
-}
-
-/// MAC клиента (dst обратного L2-кадра): сперва явный `STEER_CLIENT_MAC`, иначе резолв по
-/// `STEER_CLIENT_IP` из `/proc/net/arp` (busybox гол — `ip neigh` нет, но /proc есть).
-fn resolve_client_mac() -> Option<[u8; 6]> {
-    if let Ok(m) = std::env::var("STEER_CLIENT_MAC") {
-        if let Some(mac) = parse_mac(m.trim()) {
-            return Some(mac);
-        }
-    }
-    let ip = std::env::var("STEER_CLIENT_IP").ok()?;
-    let arp = std::fs::read_to_string("/proc/net/arp").ok()?;
-    arp.lines()
-        .skip(1) // заголовок
-        .find(|l| l.split_whitespace().next() == Some(ip.as_str()))
-        .and_then(|l| l.split_whitespace().nth(3)) // колонка HW address
-        .and_then(parse_mac)
 }
 
 /// 6 байт → `aa:bb:cc:dd:ee:ff` для лога.

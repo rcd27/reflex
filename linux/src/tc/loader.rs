@@ -26,6 +26,32 @@ impl TcProgram {
         Self::attach_named(interface, bpf_bytes, "reflex_return", TcAttachType::Ingress)
     }
 
+    /// Грузит объект ОДИН раз и цепляет ОБА хука круга из ОДНОГО `Ebpf`: `reflex_steer` на INGRESS
+    /// `steer_iface` (учит `CLIENT_MACS`) + `reflex_return` на INGRESS `return_iface` (читает её). Карты
+    /// ОБЩИЕ — иначе (раздельная загрузка) две изолированные `CLIENT_MACS`, learned-MAC не шарится
+    /// (замерено: nevod терминирует, а reflex_return промахивается по dst-MAC → SYNACK=0). `interface` =
+    /// steer_iface (для стата/лога). nevod0 (return_iface) должен СУЩЕСТВОВАТЬ до вызова.
+    pub fn attach_steer_and_return(
+        steer_iface: &str,
+        return_iface: &str,
+        bpf_bytes: &[u8],
+    ) -> Result<Self, String> {
+        let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
+        let _ = tc::qdisc_add_clsact(steer_iface);
+        let _ = tc::qdisc_add_clsact(return_iface);
+        Self::load_attach(&mut bpf, "reflex_steer", steer_iface, TcAttachType::Ingress)?;
+        Self::load_attach(
+            &mut bpf,
+            "reflex_return",
+            return_iface,
+            TcAttachType::Ingress,
+        )?;
+        Ok(Self {
+            bpf,
+            interface: steer_iface.to_string(),
+        })
+    }
+
     fn attach_named(
         interface: &str,
         bpf_bytes: &[u8],
@@ -33,28 +59,34 @@ impl TcProgram {
         at: TcAttachType,
     ) -> Result<Self, String> {
         let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
+        let _ = tc::qdisc_add_clsact(interface); // add clsact qdisc (required for tc-bpf)
+        Self::load_attach(&mut bpf, prog, interface, at)?;
+        Ok(Self {
+            bpf,
+            interface: interface.to_string(),
+        })
+    }
 
-        // add clsact qdisc (required for tc-bpf)
-        let _ = tc::qdisc_add_clsact(interface);
-
+    /// Загрузить (verifier) + прицепить одну TC-программу из уже открытого `Ebpf`. Вынесено, чтобы
+    /// `attach_steer_and_return` цеплял оба хука из ОДНОГО объекта (общие карты).
+    fn load_attach(
+        bpf: &mut Ebpf,
+        prog: &str,
+        interface: &str,
+        at: TcAttachType,
+    ) -> Result<(), String> {
         let program: &mut SchedClassifier = bpf
             .program_mut(prog)
             .ok_or_else(|| format!("TC program '{prog}' not found in eBPF object"))?
             .try_into()
             .map_err(|e| format!("not a SchedClassifier: {e}"))?;
-
         program
             .load()
             .map_err(|e| format!("TC program '{prog}' load failed: {e}"))?;
-
         program
             .attach(interface, at)
             .map_err(|e| format!("TC attach '{prog}' to {interface} failed: {e}"))?;
-
-        Ok(Self {
-            bpf,
-            interface: interface.to_string(),
-        })
+        Ok(())
     }
 
     /// MAC моста (br0) для L2-доставки (BL-215 Phase 1): eBPF переписывает dst-MAC целевого кадра на
@@ -134,20 +166,20 @@ impl TcProgram {
         Ok(())
     }
 
-    /// Ethernet-заголовок обратного кадра: `dst`=MAC клиента, `src`=MAC box/eth1 → карта RETURN_MAC
-    /// (12 байт). `reflex_return` дорастит хедрум сырого IP из tun и впишет эти MAC + ethertype 0x0800,
-    /// затем `bpf_redirect(eth1)` — L2-native доставка клиенту, минуя FIB/neigh (модель `.tobe`).
-    pub fn set_return_mac(&mut self, dst: [u8; 6], src: [u8; 6]) -> Result<(), String> {
+    /// src-MAC обратного кадра = MAC самого eth1 (userspace читает из sysfs) → карта RETURN_SRC_MAC
+    /// (6 байт). dst-MAC НЕ отсюда — `reflex_return` берёт его выученным из CLIENT_MACS (портируемо за
+    /// любым роутером, без конфига клиента; проекция `MacLearned`). Ставим лишь наш egress-MAC.
+    pub fn set_return_src_mac(&mut self, src: [u8; 6]) -> Result<(), String> {
         let mut m: aya::maps::Array<_, u8> = aya::maps::Array::try_from(
             self.bpf
-                .map_mut("RETURN_MAC")
-                .ok_or("RETURN_MAC map not found")?,
+                .map_mut("RETURN_SRC_MAC")
+                .ok_or("RETURN_SRC_MAC map not found")?,
         )
-        .map_err(|e| format!("RETURN_MAC type mismatch: {e}"))?;
+        .map_err(|e| format!("RETURN_SRC_MAC type mismatch: {e}"))?;
 
-        for (i, b) in dst.iter().chain(src.iter()).enumerate() {
+        for (i, b) in src.iter().enumerate() {
             m.set(i as u32, *b, 0)
-                .map_err(|e| format!("RETURN_MAC set[{i}]: {e}"))?;
+                .map_err(|e| format!("RETURN_SRC_MAC set[{i}]: {e}"))?;
         }
         Ok(())
     }
