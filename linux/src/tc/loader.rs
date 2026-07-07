@@ -106,8 +106,8 @@ impl TcProgram {
         Ok(())
     }
 
-    /// Снапшот RETURN_STATS: [seen, ipv4, last_rc]. `last_rc`=7 → редирект успешен; большое (u64 от
-    /// отрицательного i64) → bpf_redirect_neigh вернул ошибку (FIB/neigh не резолвится).
+    /// Снапшот RETURN_STATS: [seen, ipv4, last_rc]. `last_rc`=7 → `bpf_redirect(eth1)` успешен; большое
+    /// (u64 от отрицательного i64) → change_head/store_bytes вернул ошибку (не смогли склеить L2).
     pub fn return_stats_line(&self) -> Result<String, String> {
         let stats: aya::maps::Array<_, u64> = aya::maps::Array::try_from(
             self.bpf
@@ -121,7 +121,7 @@ impl TcProgram {
         Ok(format!("return: seen={seen} ipv4={ipv4} last_rc={rc}"))
     }
 
-    /// ifindex устройства НАЗАД к клиенту (br0) для `reflex_return` (`bpf_redirect_neigh`).
+    /// ifindex устройства НАЗАД к клиенту (eth1, порт клиента) для `reflex_return` (`bpf_redirect(eth1)`).
     pub fn set_return_ifindex(&mut self, ifindex: u32) -> Result<(), String> {
         let mut m: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
             self.bpf
@@ -131,6 +131,24 @@ impl TcProgram {
         .map_err(|e| format!("RETURN_IFINDEX type mismatch: {e}"))?;
         m.set(0, ifindex, 0)
             .map_err(|e| format!("RETURN_IFINDEX set: {e}"))?;
+        Ok(())
+    }
+
+    /// Ethernet-заголовок обратного кадра: `dst`=MAC клиента, `src`=MAC box/eth1 → карта RETURN_MAC
+    /// (12 байт). `reflex_return` дорастит хедрум сырого IP из tun и впишет эти MAC + ethertype 0x0800,
+    /// затем `bpf_redirect(eth1)` — L2-native доставка клиенту, минуя FIB/neigh (модель `.tobe`).
+    pub fn set_return_mac(&mut self, dst: [u8; 6], src: [u8; 6]) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u8> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("RETURN_MAC")
+                .ok_or("RETURN_MAC map not found")?,
+        )
+        .map_err(|e| format!("RETURN_MAC type mismatch: {e}"))?;
+
+        for (i, b) in dst.iter().chain(src.iter()).enumerate() {
+            m.set(i as u32, *b, 0)
+                .map_err(|e| format!("RETURN_MAC set[{i}]: {e}"))?;
+        }
         Ok(())
     }
 

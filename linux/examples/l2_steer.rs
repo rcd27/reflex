@@ -108,15 +108,19 @@ fn main() {
         tc
     };
 
-    // ОБРАТНАЯ половина круга: reflex_return на INGRESS устройства несущей (nevod0) → bpf_redirect_neigh
-    // к клиенту через br0, минуя сломанный форвард nevod0→br0. Держим живым (Drop отцепляет).
+    // ОБРАТНАЯ половина круга (L2RedirectEth1, модель SteerDatapath `.tobe`): reflex_return на INGRESS
+    // несущей (nevod0) сам клеит Ethernet (dst=client-MAC, src=eth1-MAC) и `bpf_redirect(eth1)` прямо в
+    // порт клиента — минуя kernel-форвард (ЧД) и neigh-резолв (провал bpf_redirect_neigh). Держим живым.
     let return_held = if steer {
         let redirect_dev =
             std::env::var("STEER_REDIRECT_DEV").unwrap_or_else(|_| "nevod0".to_string());
-        // Куда bpf_redirect_neigh шлёт ответ назад к клиенту. br0 (мост) может отвергать self-MAC;
-        // eth1 (физпорт) минует мост — тогда нужен статический neigh клиента на eth1.
-        let return_dev = std::env::var("STEER_RETURN_DEV").unwrap_or_else(|_| "br0".to_string());
+        // Порт клиента, куда bpf_redirect отдаёт готовый L2-кадр (физпорт, не мост — детерминированно).
+        let return_dev = std::env::var("STEER_RETURN_DEV").unwrap_or_else(|_| "eth1".to_string());
         let ret_ifx = dev_ifindex(&return_dev).unwrap_or(0);
+        // dst=MAC клиента (STEER_CLIENT_MAC, либо резолв по STEER_CLIENT_IP из /proc/net/arp),
+        // src=MAC самого порта возврата. Обе нужны, иначе eBPF оставит кадр на транзите (fail-open).
+        let client_mac = resolve_client_mac();
+        let src_mac = dev_mac(&return_dev).ok();
         match TcProgram::attach_return(&redirect_dev, BPF_OBJECT) {
             Ok(mut tcr) => {
                 match tcr.set_return_ifindex(ret_ifx) {
@@ -124,6 +128,20 @@ fn main() {
                         "[l2_steer] reflex_return на {redirect_dev} INGRESS → {return_dev} (ifindex {ret_ifx})"
                     ),
                     Err(e) => eprintln!("[l2_steer] set_return_ifindex: {e}"),
+                }
+                match (client_mac, src_mac) {
+                    (Some(dst), Some(src)) => match tcr.set_return_mac(dst, src) {
+                        Ok(()) => eprintln!(
+                            "[l2_steer] return L2: dst={} src={} (→ {return_dev})",
+                            fmt_mac(&dst),
+                            fmt_mac(&src)
+                        ),
+                        Err(e) => eprintln!("[l2_steer] set_return_mac: {e}"),
+                    },
+                    _ => eprintln!(
+                        "[l2_steer] return MAC не задан (client={client_mac:?} src={src_mac:?}) — \
+                         задай STEER_CLIENT_MAC/STEER_CLIENT_IP; возврат на транзите (fail-open)"
+                    ),
                 }
                 Some(tcr)
             }
@@ -167,6 +185,38 @@ fn bridge_mac(iface: &str) -> std::io::Result<[u8; 6]> {
     let raw = std::fs::read_to_string(format!("/sys/class/net/{master}/address"))?;
     parse_mac(raw.trim())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "не MAC"))
+}
+
+/// MAC самого устройства (не master) из `/sys/class/net/<dev>/address` — src обратного L2-кадра.
+fn dev_mac(dev: &str) -> std::io::Result<[u8; 6]> {
+    let raw = std::fs::read_to_string(format!("/sys/class/net/{dev}/address"))?;
+    parse_mac(raw.trim())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "не MAC"))
+}
+
+/// MAC клиента (dst обратного L2-кадра): сперва явный `STEER_CLIENT_MAC`, иначе резолв по
+/// `STEER_CLIENT_IP` из `/proc/net/arp` (busybox гол — `ip neigh` нет, но /proc есть).
+fn resolve_client_mac() -> Option<[u8; 6]> {
+    if let Ok(m) = std::env::var("STEER_CLIENT_MAC") {
+        if let Some(mac) = parse_mac(m.trim()) {
+            return Some(mac);
+        }
+    }
+    let ip = std::env::var("STEER_CLIENT_IP").ok()?;
+    let arp = std::fs::read_to_string("/proc/net/arp").ok()?;
+    arp.lines()
+        .skip(1) // заголовок
+        .find(|l| l.split_whitespace().next() == Some(ip.as_str()))
+        .and_then(|l| l.split_whitespace().nth(3)) // колонка HW address
+        .and_then(parse_mac)
+}
+
+/// 6 байт → `aa:bb:cc:dd:ee:ff` для лога.
+fn fmt_mac(m: &[u8; 6]) -> String {
+    m.iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// ifindex устройства из `/sys/class/net/<dev>/ifindex` (для L2-редиректа в несущую).

@@ -6,7 +6,7 @@ use aya_ebpf::{
     maps::{Array, HashMap},
     programs::TcContext,
 };
-use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_redirect_neigh, bpf_skb_store_bytes};
+use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_skb_change_head, bpf_skb_store_bytes};
 use reflex_linux_common::{FlowAction, SteerStat, STEER_STAT_SLOTS};
 
 const TC_ACT_OK: i32 = 0; // pass
@@ -40,16 +40,23 @@ static STEER_STATS: Array<u64> = Array::with_max_entries(STEER_STAT_SLOTS, 0);
 #[map]
 static STEER_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 
-// ifindex устройства НАЗАД к клиенту (br0) для ОБРАТНОГО L2-редиректа. Датаплейн — КРУГ: вход мы
-// сделали L2-native (`bpf_redirect`), но ВЫХОД netstack→клиент шёл обычным kernel-форвардом
-// nevod0→br0, который эта коробка РОНЯЕТ (зеркало входного дропа; измерено: 176 SYN-ACK на nevod0, 0
-// на br0). `reflex_return` на INGRESS nevod0 берёт ответ netstack'а и `bpf_redirect_neigh(br0)` —
-// хелпер сам делает FIB+neigh(MAC клиента известен)+L2-заголовок и доставляет, МИНУЯ форвард. 0 = off.
+// ifindex устройства НАЗАД к клиенту (eth1, порт клиента) для ОБРАТНОГО L2-редиректа. Датаплейн —
+// КРУГ: вход мы сделали L2-native (`bpf_redirect(nevod0)`), и ВЫХОД netstack→клиент делаем ЗЕРКАЛЬНО.
+// Обычный kernel-форвард nevod0→br0 эта коробка РОНЯЕТ (измерено: 176 SYN-ACK на nevod0, 0 на br0), а
+// `bpf_redirect_neigh(br0)` возвращал rc=7, но ядро роняло кадр ПОЗЖЕ на резолве neigh/mgmt-IP (модель
+// SteerDatapath `.neigh-fragile` RED). `.tobe` = `reflex_return` сам клеит Ethernet (`change_head`+
+// `store_bytes` из RETURN_MAC) и `bpf_redirect(eth1)` — БЕЗ FIB/neigh/mgmt-IP, как AF_PACKET. 0 = off.
 #[map]
 static RETURN_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 
+// Ethernet-заголовок обратного кадра: 12 байт = dst-MAC(клиент, [0..6]) + src-MAC(box/eth1, [6..12]).
+// Userspace ставит перед attach. tun отдаёт сырой IP (IFF_NO_PI); `reflex_return` дорастит хедрум и
+// впишет эти MAC + ethertype 0x0800 → валидный L2-кадр для xmit eth1. Все нули = не сконфигурен (off).
+#[map]
+static RETURN_MAC: Array<u8> = Array::with_max_entries(12, 0);
+
 // Наблюдаемость reflex_return: [0]=seen (кадров на nevod0-ingress), [1]=ipv4, [2]=последний rc
-// bpf_redirect_neigh (7=TC_ACT_REDIRECT успех; отрицательное как u64 = ошибка резолва/FIB).
+// (7=TC_ACT_REDIRECT успех bpf_redirect(eth1); отрицательное как u64 = ошибка change_head/store).
 #[map]
 static RETURN_STATS: Array<u64> = Array::with_max_entries(3, 0);
 
@@ -319,11 +326,11 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     Ok(TC_ACT_OK)
 }
 
-// ── reflex_return (TC INGRESS на nevod0): ОБРАТНАЯ половина круга ──
-// netstack пишет ответ (src=цель, dst=клиент) в nevod0 → ядро получает его на nevod0-ingress. Обычный
-// форвард nevod0→br0→клиент эта коробка РОНЯЕТ (тот же tun-форвард дроп, что и на входе). Берём кадр и
-// `bpf_redirect_neigh(br0)` — хелпер сам: FIB-lookup dst=клиент → br0, neigh-резолв (MAC клиента есть),
-// строит L2-заголовок, доставляет — МИНУЯ форвард. tun (IFF_NO_PI) отдаёт кадр с IP (без Ethernet).
+// ── reflex_return (TC INGRESS на nevod0): ОБРАТНАЯ половина круга (L2RedirectEth1) ──
+// netstack пишет ответ (src=цель, dst=клиент) в nevod0 → ядро получает его на nevod0-ingress СЫРЫМ IP
+// (tun IFF_NO_PI, без Ethernet). Мы ЗЕРКАЛИМ проверенный вход: сами клеим L2-заголовок из RETURN_MAC
+// (dst=client, src=box) и `bpf_redirect(eth1)` прямо в xmit порта клиента — МИНУЯ kernel-форвард (ЧД на
+// коробке) И neigh-резолв (провал `bpf_redirect_neigh`, модель `.neigh-fragile`). Проекция `.tobe`.
 #[classifier]
 pub fn reflex_return(ctx: TcContext) -> i32 {
     match unsafe { try_return(&ctx) } {
@@ -352,18 +359,58 @@ unsafe fn try_return(ctx: &TcContext) -> Result<i32, ()> {
         unsafe { *p += 1 } // ipv4
     }
 
-    if let Some(ifx) = RETURN_IFINDEX.get(0) {
-        let ifindex = *ifx;
-        if ifindex != 0 {
-            // params=NULL → хелпер сам делает FIB+neigh для dst пакета (клиент) и строит L2.
-            let rc = bpf_redirect_neigh(ifindex, core::ptr::null_mut(), 0, 0);
-            if let Some(p) = RETURN_STATS.get_ptr_mut(2) {
-                unsafe { *p = rc as u64 } // последний rc (7=успех, отриц.=ошибка)
-            }
-            return Ok(rc as i32);
+    let ifindex = match RETURN_IFINDEX.get(0) {
+        Some(v) if *v != 0 => *v,
+        _ => return Ok(TC_ACT_OK), // ifindex eth1 не задан → на транзит (fail-open)
+    };
+
+    // Ethernet-заголовок из RETURN_MAC ЧИТАЕМ ДО change_head (карта переживёт инвалидацию skb-указателей;
+    // после дороста хедрума пакетные указатели трогать нельзя). 12 явных get — развёртка без loop-verifier.
+    let mut eth = [0u8; 14];
+    let mut configured = 0u8;
+    let mut i = 0usize;
+    while i < 12 {
+        if let Some(b) = RETURN_MAC.get(i as u32) {
+            eth[i] = *b;
+            configured |= *b;
         }
+        i += 1;
     }
-    Ok(TC_ACT_OK)
+    if configured == 0 {
+        return Ok(TC_ACT_OK); // MAC не сконфигурен → не трогаем (транзит)
+    }
+    eth[12] = 0x08; // ethertype IPv4
+    eth[13] = 0x00;
+
+    // Вырастить 14 байт хедрума под Ethernet (сырой IP из tun → L2-кадр для физ-порта).
+    let rc_head = bpf_skb_change_head(ctx.skb.skb, 14, 0);
+    if rc_head != 0 {
+        if let Some(p) = RETURN_STATS.get_ptr_mut(2) {
+            unsafe { *p = rc_head as u64 } // не смогли дорастить → зафиксировать ошибку
+        }
+        return Ok(TC_ACT_OK); // fail-open: кадр останется на ingress (дропнется форвардом), но не битый
+    }
+
+    // Вписать 14 байт заголовка в новый хедрум (offset 0).
+    let rc_store = bpf_skb_store_bytes(
+        ctx.skb.skb,
+        0,
+        eth.as_ptr() as *const core::ffi::c_void,
+        14,
+        0,
+    );
+    if rc_store != 0 {
+        if let Some(p) = RETURN_STATS.get_ptr_mut(2) {
+            unsafe { *p = rc_store as u64 }
+        }
+        return Ok(TC_ACT_SHOT); // заголовок не записан → дропнуть (не слать битый кадр)
+    }
+
+    let rc = bpf_redirect(ifindex, 0) as i64;
+    if let Some(p) = RETURN_STATS.get_ptr_mut(2) {
+        unsafe { *p = rc as u64 } // 7=TC_ACT_REDIRECT успех
+    }
+    Ok(rc as i32)
 }
 
 #[cfg(not(test))]

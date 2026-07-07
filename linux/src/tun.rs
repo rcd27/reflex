@@ -59,7 +59,8 @@ fn open_tun(dev: &str) -> io::Result<OwnedFd> {
     }
 
     let cur = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFL) };
-    if cur < 0 || unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFL, cur | libc::O_NONBLOCK) } < 0
+    if cur < 0
+        || unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFL, cur | libc::O_NONBLOCK) } < 0
     {
         return Err(io::Error::last_os_error());
     }
@@ -71,8 +72,13 @@ async fn read_tun(fd: &AsyncFd<OwnedFd>, buf: &mut [u8]) -> io::Result<usize> {
     loop {
         let mut guard = fd.readable().await?;
         let res = guard.try_io(|inner| {
-            let n =
-                unsafe { libc::read(inner.get_ref().as_raw_fd(), buf.as_mut_ptr() as *mut _, buf.len()) };
+            let n = unsafe {
+                libc::read(
+                    inner.get_ref().as_raw_fd(),
+                    buf.as_mut_ptr() as *mut _,
+                    buf.len(),
+                )
+            };
             if n < 0 {
                 Err(io::Error::last_os_error())
             } else {
@@ -91,8 +97,13 @@ async fn write_tun(fd: &AsyncFd<OwnedFd>, pkt: &[u8]) -> io::Result<usize> {
     loop {
         let mut guard = fd.writable().await?;
         let res = guard.try_io(|inner| {
-            let n =
-                unsafe { libc::write(inner.get_ref().as_raw_fd(), pkt.as_ptr() as *const _, pkt.len()) };
+            let n = unsafe {
+                libc::write(
+                    inner.get_ref().as_raw_fd(),
+                    pkt.as_ptr() as *const _,
+                    pkt.len(),
+                )
+            };
             if n < 0 {
                 Err(io::Error::last_os_error())
             } else {
