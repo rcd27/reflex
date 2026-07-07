@@ -173,10 +173,13 @@ impl TunFlows {
         })
     }
 
-    /// Следующий терминированный флоу: `(поток, dst)`, где `dst` = `local_addr` netstack = ОРИГИНАЛЬНАЯ
-    /// цель, куда шёл клиент (из IP-заголовка). `None` — listener закрылся.
+    /// Следующий терминированный флоу: `(поток, dst)`, где `dst` = ОРИГИНАЛЬНАЯ цель, куда шёл клиент.
+    /// ВНИМАНИЕ: netstack-smoltcp именует КОНТРИНТУИТИВНО — `TcpListener` отдаёт `(stream, local_addr,
+    /// remote_addr)`, но `local_addr()` = `src_addr` = КЛИЕНТ (инициатор), а `remote_addr()` =
+    /// `dst_addr` = ЦЕЛЬ. Значит dst = ТРЕТИЙ элемент (`remote`), не второй (проверено: box-local nc к
+    /// цели дал в спане клиентский src как dst → serve_flow шёл к клиенту → дроп). `None` — listener закрыт.
     pub async fn accept(&mut self) -> Option<(TunStream, SocketAddr)> {
-        let (stream, dst, _client) = self.listener.next().await?;
+        let (stream, _client, dst) = self.listener.next().await?;
         Some((stream, dst))
     }
 }
