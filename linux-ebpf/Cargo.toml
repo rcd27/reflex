@@ -1,3 +1,7 @@
+# Собственный workspace-корень: компилируется под bpfel-unknown-none ОТДЕЛЬНО от
+# reflex-воркспейса (иной target, -Z build-std). Не член reflex/Cargo.toml.
+[workspace]
+
 [package]
 name = "reflex-linux-ebpf"
 version = "0.0.1"
@@ -7,6 +11,7 @@ license = "GPL-3.0-only"
 
 [dependencies]
 aya-ebpf = "0.1"
+aya-ebpf-bindings = "0.1" # сырые хелперы sk_lookup_tcp/sk_assign/sk_release (нет обёртки в aya-ebpf 0.1)
 aya-log-ebpf = "0.1"
 reflex-linux-common = { path = "../linux-common" }
 

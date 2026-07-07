@@ -13,7 +13,7 @@ pub use guard::{
     ConnmarkConfig, Direction, FirewallRule, MarkMatch, NfqGuard, NfqGuardError, PolicyRoute,
     RuleAction, RuleProtocol,
 };
-pub use nft_guard::{NftConfig, NftGuard, NftGuardError, SlotConfig};
+pub use nft_guard::{NftConfig, NftGuard, NftGuardError, NftMarkGuard, SlotConfig};
 
 /// Backward compatibility alias — remove after all consumers migrate.
 pub type FirewallGuard = NfqGuard;

@@ -1,7 +1,7 @@
 use aya::maps::HashMap;
 use aya::programs::{tc, SchedClassifier, TcAttachType};
 use aya::Ebpf;
-use reflex_linux_common::FlowAction;
+use reflex_linux_common::{steer_fate, Fate, FlowAction, SteerStat, STEER_STAT_SLOTS};
 
 pub struct TcProgram {
     bpf: Ebpf,
@@ -9,31 +9,80 @@ pub struct TcProgram {
 }
 
 impl TcProgram {
-    /// Load and attach TC-BPF classifier on interface egress.
+    /// `reflex_tc` на EGRESS: Pass/Drop/Steer-заглушка (Phase 0 passthrough, транзит-safety тест).
     pub fn attach(interface: &str, bpf_bytes: &[u8]) -> Result<Self, String> {
+        Self::attach_named(interface, bpf_bytes, "reflex_tc", TcAttachType::Egress)
+    }
+
+    /// `reflex_steer` на INGRESS: sk_assign-заворот целевого флоу в несущую (BL-213 Phase 1).
+    /// Ingress — перехват клиентского пакета ДО форвардинга моста. Требует `set_steer_cfg`.
+    pub fn attach_steer(interface: &str, bpf_bytes: &[u8]) -> Result<Self, String> {
+        Self::attach_named(interface, bpf_bytes, "reflex_steer", TcAttachType::Ingress)
+    }
+
+    fn attach_named(
+        interface: &str,
+        bpf_bytes: &[u8],
+        prog: &str,
+        at: TcAttachType,
+    ) -> Result<Self, String> {
         let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
 
         // add clsact qdisc (required for tc-bpf)
         let _ = tc::qdisc_add_clsact(interface);
 
         let program: &mut SchedClassifier = bpf
-            .program_mut("reflex_tc")
-            .ok_or("TC program 'reflex_tc' not found in eBPF object")?
+            .program_mut(prog)
+            .ok_or_else(|| format!("TC program '{prog}' not found in eBPF object"))?
             .try_into()
             .map_err(|e| format!("not a SchedClassifier: {e}"))?;
 
         program
             .load()
-            .map_err(|e| format!("TC program load failed: {e}"))?;
+            .map_err(|e| format!("TC program '{prog}' load failed: {e}"))?;
 
         program
-            .attach(interface, TcAttachType::Egress)
-            .map_err(|e| format!("TC attach to {interface} egress failed: {e}"))?;
+            .attach(interface, at)
+            .map_err(|e| format!("TC attach '{prog}' to {interface} failed: {e}"))?;
 
         Ok(Self {
             bpf,
             interface: interface.to_string(),
         })
+    }
+
+    /// MAC моста (br0) для L2-доставки (BL-215 Phase 1): eBPF переписывает dst-MAC целевого кадра на
+    /// него → мост отдаёт кадр наверх в локальный стек, а не форвардит по чужому MAC. Без этого
+    /// sk_assign на мосту игнорится (кадр не входит в L3). 6 байт в карту `STEER_MAC`.
+    pub fn set_steer_mac(&mut self, mac: [u8; 6]) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u8> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("STEER_MAC")
+                .ok_or("STEER_MAC map not found")?,
+        )
+        .map_err(|e| format!("STEER_MAC type mismatch: {e}"))?;
+
+        for (i, b) in mac.iter().enumerate() {
+            m.set(i as u32, *b, 0)
+                .map_err(|e| format!("STEER_MAC set[{i}]: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Пометить dst-IP как цель заворота (BL-213): eBPF заворачивает ЛЮБОЙ TCP-флоу к этому dst в
+    /// несущую (per-домен, не per-5-tuple — клиентский порт эфемерен). `dst` в HOST order → network.
+    pub fn add_steer_target(&mut self, dst: std::net::Ipv4Addr) -> Result<(), String> {
+        let mut targets: HashMap<_, u32, u8> = HashMap::try_from(
+            self.bpf
+                .map_mut("STEER_TARGETS")
+                .ok_or("STEER_TARGETS map not found")?,
+        )
+        .map_err(|e| format!("STEER_TARGETS type mismatch: {e}"))?;
+
+        targets
+            .insert(u32::from_ne_bytes(dst.octets()), 1, 0) // octets = network order байты
+            .map_err(|e| format!("STEER_TARGETS insert: {e}"))?;
+        Ok(())
     }
 
     /// Set action for a flow in the BPF action table.
@@ -63,6 +112,69 @@ impl TcProgram {
 
         let _ = action_table.remove(&flow_hash);
         Ok(())
+    }
+
+    /// Guarded-заворот целевого флоу в локальную несущую — проекция
+    /// `model/wire/TransparentIntercept` (`.tobe`). Ставит `Steer` ЛИШЬ когда несущая
+    /// готова принять владение (`carrier_ready`); не готова → снимает запись (Pass =
+    /// fail-open, кадр на прозрачном транзите, чёрной дыры нет). Решение — чистый
+    /// `steer_fate` (юнит-тесты в `reflex-linux-common`), здесь лишь исполнение (Правило 5).
+    /// Звать ТОЛЬКО для целевых флоу — не-цель не доходит сюда (Surgical на уровне вызова).
+    ///
+    /// Наблюдаемость (Правило 17): типизированный исход `Fate` ВОЗВРАЩАЕТСЯ (структурный порт,
+    /// не ThreadLocal) — край мапит в спан, `spanStatusOf`: `Ok(Fate)` нейтрален (оба исхода —
+    /// здоровый бизнес: `Owned`=завёрнут, `Transit`=fail-open деградация), `Err` (сбой карты
+    /// eBPF) КРАСНИТ. `tracing`-фасад эмитит на месте: `Owned`=debug, fail-open `Transit`=warn
+    /// (health-сигнал: цель течёт мимо движка, несущая не готова).
+    pub fn steer_target(&mut self, flow_hash: u32, carrier_ready: bool) -> Result<Fate, String> {
+        let fate = steer_fate(true, carrier_ready);
+
+        match fate {
+            Fate::Owned => {
+                self.set_flow_action(flow_hash, FlowAction::Steer)?;
+                tracing::debug!(flow_hash, "intercept: заворот в несущую (Owned)");
+            }
+            Fate::Transit => {
+                self.clear_flow_action(flow_hash)?;
+                tracing::warn!(
+                    flow_hash,
+                    "intercept: fail-open, несущая не готова (Transit)"
+                );
+            }
+        }
+
+        Ok(fate)
+    }
+
+    /// Снапшот datapath-счётчиков заворота (`STEER_STATS`, Правило 17): по значению на стадию
+    /// `try_steer`, индексировано `SteerStat`. Где счётчик = 0, там конвейер обрывается — риг-поллер
+    /// печатает это в лог, превращая чёрный ящик eBPF в наблюдаемый конвейер. Read-only, без блокировок.
+    pub fn steer_stats(&self) -> Result<[u64; STEER_STAT_SLOTS as usize], String> {
+        let stats: aya::maps::Array<_, u64> = aya::maps::Array::try_from(
+            self.bpf
+                .map("STEER_STATS")
+                .ok_or("STEER_STATS map not found")?,
+        )
+        .map_err(|e| format!("STEER_STATS type mismatch: {e}"))?;
+
+        let mut out = [0u64; STEER_STAT_SLOTS as usize];
+        for stat in SteerStat::ALL {
+            out[stat as usize] = stats
+                .get(&(stat as u32), 0)
+                .map_err(|e| format!("STEER_STATS get {}: {e}", stat.label()))?;
+        }
+        Ok(out)
+    }
+
+    /// Одна строка снапшота для лога — `seen=N ipv4_tcp=N … assigned=N` в порядке конвейера.
+    pub fn steer_stats_line(&self) -> Result<String, String> {
+        let snap = self.steer_stats()?;
+        let line = SteerStat::ALL
+            .iter()
+            .map(|s| format!("{}={}", s.label(), snap[*s as usize]))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(line)
     }
 
     pub fn interface(&self) -> &str {

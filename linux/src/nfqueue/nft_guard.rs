@@ -5,8 +5,11 @@ use std::process::Command;
 use reflex_core::guard::{CleanupReport, TrafficGuard};
 use tracing::{info, warn};
 
+use super::guard::{ConnmarkConfig, Direction, FirewallRule, MarkMatch, RuleAction, RuleProtocol};
+
 const TABLE_NAME: &str = "geneva";
 const TABLE_FAMILY: &str = "inet";
+const MARK_TABLE: &str = "nevod_desync";
 
 #[derive(Debug, Clone)]
 pub struct NftGuardError(pub String);
@@ -265,4 +268,155 @@ fn run_nft_batch(script: &str) -> Result<(), NftGuardError> {
         return Err(NftGuardError(format!("nft batch: {stderr}")));
     }
     Ok(())
+}
+
+// ── NftMarkGuard: nft-нативный порт `NfqGuard` (SO_MARK-модель десинк-плоскости) ──
+// Та же семантика (connmark save/restore + помеченная нога → очередь техники), но nft-нативными
+// правилами: `ct mark set meta mark` вместо легаси `CONNMARK --save-mark` (последнего extension нет
+// на nft-стеке коробки — iptables-nft роняет `--save-mark`). Держит таблицу; Drop её сносит (RAII).
+
+/// nft-фрагмент mark-матча (Правило 4: exhaustive).
+fn mark_expr(m: &MarkMatch) -> String {
+    match m {
+        MarkMatch::Exact(v) => format!("meta mark 0x{v:x} "),
+        MarkMatch::NotEqual(v) => format!("meta mark != 0x{v:x} "),
+        MarkMatch::Any => String::new(),
+    }
+}
+
+/// nft-фрагмент протокол+порт по направлению (Output→dport, Input→sport).
+fn proto_expr(p: &RuleProtocol, dir: &Direction) -> String {
+    let kw = match dir {
+        Direction::Output => "dport",
+        Direction::Input => "sport",
+    };
+    match p {
+        RuleProtocol::Tcp { port } => format!("tcp {kw} {port} "),
+        RuleProtocol::Udp { port } => format!("udp {kw} {port} "),
+    }
+}
+
+/// nft-фрагмент действия (Правило 4: exhaustive).
+fn action_expr(a: &RuleAction) -> String {
+    match a {
+        RuleAction::Nfqueue(q) => format!("counter queue num {q} bypass"),
+        RuleAction::Accept => "counter accept".to_string(),
+        RuleAction::Drop => "counter drop".to_string(),
+    }
+}
+
+/// Чистая сборка nft-батча из тех же `FirewallRule`+`ConnmarkConfig`, что ест `NfqGuard`. Юнит-тест
+/// проверяет форму (nft-приёмку валидирует стенд). connmark ПЕРЕД слот-правилами в каждой цепочке
+/// (restore на input даёт метку до слот-матча).
+fn build_mark_script(rules: &[FirewallRule], connmark: &Option<ConnmarkConfig>) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("add table {TABLE_FAMILY} {MARK_TABLE}\n"));
+    s.push_str(&format!("flush table {TABLE_FAMILY} {MARK_TABLE}\n"));
+    s.push_str(&format!(
+        "add chain {TABLE_FAMILY} {MARK_TABLE} output {{ type filter hook output priority 0; policy accept; }}\n"
+    ));
+    s.push_str(&format!(
+        "add chain {TABLE_FAMILY} {MARK_TABLE} input {{ type filter hook input priority 0; policy accept; }}\n"
+    ));
+
+    if let Some(cm) = connmark {
+        if cm.save_output {
+            s.push_str(&format!(
+                "add rule {TABLE_FAMILY} {MARK_TABLE} output tcp dport 443 meta mark != 0 ct mark set meta mark counter\n"
+            ));
+        }
+        if cm.restore_input {
+            s.push_str(&format!(
+                "add rule {TABLE_FAMILY} {MARK_TABLE} input tcp sport 443 ct mark != 0 meta mark set ct mark counter\n"
+            ));
+        }
+    }
+
+    for r in rules {
+        let chain = match r.direction {
+            Direction::Output => "output",
+            Direction::Input => "input",
+        };
+        s.push_str(&format!(
+            "add rule {TABLE_FAMILY} {MARK_TABLE} {chain} {}{}{}\n",
+            mark_expr(&r.mark_match),
+            proto_expr(&r.protocol, &r.direction),
+            action_expr(&r.action),
+        ));
+    }
+    s
+}
+
+/// nft-нативный guard десинк-плоскости (дроп-ин замена `NfqGuard::install` для nft-стека).
+pub struct NftMarkGuard;
+
+impl NftMarkGuard {
+    pub fn install(
+        rules: &[FirewallRule],
+        connmark: Option<ConnmarkConfig>,
+    ) -> Result<Self, NftGuardError> {
+        run_nft_batch(&build_mark_script(rules, &connmark))?;
+        info!(
+            "nftables table {TABLE_FAMILY} {MARK_TABLE} installed (mark-dispatch, {} rules)",
+            rules.len()
+        );
+        Ok(NftMarkGuard)
+    }
+}
+
+impl Drop for NftMarkGuard {
+    fn drop(&mut self) {
+        match run_nft(&format!("delete table {TABLE_FAMILY} {MARK_TABLE}")) {
+            Ok(()) => info!("nftables table {TABLE_FAMILY} {MARK_TABLE} removed"),
+            Err(e) => warn!("nft cleanup: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    fn out(m: u32, q: u16) -> FirewallRule {
+        FirewallRule {
+            direction: Direction::Output,
+            mark_match: MarkMatch::Exact(m),
+            action: RuleAction::Nfqueue(q),
+            protocol: RuleProtocol::Tcp { port: 443 },
+        }
+    }
+
+    #[test]
+    fn connmark_nft_native_not_legacy_savemark() {
+        // Замена легаси `CONNMARK --save-mark` (нет extension на nft) на nft-нативный ct mark.
+        let s = build_mark_script(
+            &[out(0x100, 200)],
+            &Some(ConnmarkConfig {
+                save_output: true,
+                restore_input: true,
+            }),
+        );
+        assert!(s.contains("output tcp dport 443 meta mark != 0 ct mark set meta mark"));
+        assert!(s.contains("input tcp sport 443 ct mark != 0 meta mark set ct mark"));
+        assert!(!s.contains("save-mark")); // легаси-синтаксиса быть НЕ должно
+    }
+
+    #[test]
+    fn slot_marks_dispatch_to_queue_per_direction() {
+        // Помеченная нога (SO_MARK) → очередь техники; Output=dport, Input=sport.
+        let s = build_mark_script(
+            &[
+                out(0x101, 201),
+                FirewallRule {
+                    direction: Direction::Input,
+                    mark_match: MarkMatch::Exact(0x101),
+                    action: RuleAction::Nfqueue(201),
+                    protocol: RuleProtocol::Tcp { port: 443 },
+                },
+            ],
+            &None,
+        );
+        assert!(s.contains("output meta mark 0x101 tcp dport 443 counter queue num 201 bypass"));
+        assert!(s.contains("input meta mark 0x101 tcp sport 443 counter queue num 201 bypass"));
+    }
 }
