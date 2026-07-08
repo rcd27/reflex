@@ -1,3 +1,6 @@
 mod loader;
 
-pub use loader::{flow_hash, TcProgram};
+pub use loader::{flow_hash, FlowEvents, TcProgram};
+pub use reflex_linux_common::{
+    FlowEvent, DIR_DOWNSTREAM, DIR_UPSTREAM, TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN,
+};

@@ -83,6 +83,56 @@ impl SteerStat {
     ];
 }
 
+/// Направление наблюдённого кадра относительно клиента — берётся ИЗ ХУКА, не из эвристики по
+/// подсети: на клиент-порту `ingress` = от клиента (Upstream), `egress` = к клиенту (Downstream).
+/// Общий контракт eBPF↔userspace (`FlowEvent.dir`).
+pub const DIR_UPSTREAM: u8 = 0; // клиент → сервер (SYN, ClientHello)
+pub const DIR_DOWNSTREAM: u8 = 1; // сервер → клиент (SYN-ACK, данные, RST)
+
+/// Маски TCP-флагов в `FlowEvent.flags` (общий контракт eBPF↔userspace). Ровно те флаги, что
+/// `inline_reach` фолдит в `Wire`: SYN (рукопожатие), ACK, RST (reset), FIN (закрытие).
+pub const TCP_SYN: u8 = 1 << 0;
+pub const TCP_ACK: u8 = 1 << 1;
+pub const TCP_RST: u8 = 1 << 2;
+pub const TCP_FIN: u8 = 1 << 3;
+
+/// Событие наблюдённого TCP-кадра проходящего флоу — общий wire-тип eBPF↔userspace, эмитится
+/// `reflex_observe` в `RingBuf`, потребляется userspace-witness'ом (`inline_witness` в неводе).
+/// `#[repr(C)]` + фикс-раскладка (16 байт, без padding): eBPF пишет байты, userspace читает тем же
+/// типом. Один backend, ДВА фолда (Правило 9): `flags`+`payload_len>0` → `inline_reach` (достижимость
+/// сейчас); `payload_len` суммарно → `ByteFlow`/троттлинг (throughput позже).
+///
+/// Все многобайтовые поля — network order (`__be`, как на проводе): userspace канонизирует при чтении.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FlowEvent {
+    pub src: u32,         // __be32 client-IP (Upstream) / server-IP (Downstream) — src кадра
+    pub dst: u32,         // __be32 — dst кадра; вердикт агрегируется по цели у потребителя
+    pub sport: u16,       // __be16
+    pub dport: u16,       // __be16
+    pub payload_len: u16, // L7-байты сегмента (0 = чистый ACK/handshake); суммарно = throughput
+    pub flags: u8,        // TCP_SYN|TCP_ACK|TCP_RST|TCP_FIN
+    pub dir: u8,          // DIR_UPSTREAM | DIR_DOWNSTREAM (из хука)
+}
+
+impl FlowEvent {
+    pub fn has_syn(&self) -> bool {
+        self.flags & TCP_SYN != 0
+    }
+    pub fn has_ack(&self) -> bool {
+        self.flags & TCP_ACK != 0
+    }
+    pub fn has_rst(&self) -> bool {
+        self.flags & TCP_RST != 0
+    }
+    pub fn has_payload(&self) -> bool {
+        self.payload_len > 0
+    }
+    pub fn is_upstream(&self) -> bool {
+        self.dir == DIR_UPSTREAM
+    }
+}
+
 /// Guarded-решение перехвата (`model/wire/TransparentIntercept`, `.tobe` GREEN): снимаем кадр
 /// с транзита ЛИШЬ при готовой несущей; не-цель никогда не снимаем (Surgical); не готова —
 /// fail-open на транзит (закон невода). Чистая функция свежих наблюдений, без снапшота-веры.
@@ -140,5 +190,43 @@ mod tests {
         // Owned → Steer (eBPF заворачивает); Transit → Pass (fast-path транзит).
         assert_eq!(Fate::Owned.action(), FlowAction::Steer);
         assert_eq!(Fate::Transit.action(), FlowAction::Pass);
+    }
+
+    #[test]
+    fn flow_event_layout_is_fixed_16_bytes() {
+        // Контракт eBPF↔userspace: eBPF пишет байты, userspace читает тем же типом — раскладка
+        // обязана быть фиксированной и без padding (иначе поля разъедутся между сторонами).
+        assert_eq!(core::mem::size_of::<FlowEvent>(), 16);
+        assert_eq!(core::mem::align_of::<FlowEvent>(), 4);
+    }
+
+    #[test]
+    fn flow_event_reads_flags_and_dir() {
+        // SYN-ACK downstream с payload=0 (рукопожатие): has_syn+has_ack, не upstream, нет payload.
+        let synack = FlowEvent {
+            src: 0,
+            dst: 0,
+            sport: 0,
+            dport: 0,
+            payload_len: 0,
+            flags: TCP_SYN | TCP_ACK,
+            dir: DIR_DOWNSTREAM,
+        };
+        assert!(synack.has_syn() && synack.has_ack());
+        assert!(!synack.has_rst() && !synack.has_payload());
+        assert!(!synack.is_upstream());
+
+        // ClientHello upstream (payload>0): upstream, payload есть, флаг ACK.
+        let hello = FlowEvent {
+            src: 0,
+            dst: 0,
+            sport: 0,
+            dport: 0,
+            payload_len: 517,
+            flags: TCP_ACK,
+            dir: DIR_UPSTREAM,
+        };
+        assert!(hello.is_upstream() && hello.has_payload());
+        assert!(!hello.has_syn());
     }
 }

@@ -1,7 +1,11 @@
-use aya::maps::HashMap;
+use std::collections::VecDeque;
+use std::io;
+
+use aya::maps::{HashMap, MapData, RingBuf};
 use aya::programs::{tc, SchedClassifier, TcAttachType};
 use aya::Ebpf;
-use reflex_linux_common::{steer_fate, Fate, FlowAction, SteerStat, STEER_STAT_SLOTS};
+use reflex_linux_common::{steer_fate, Fate, FlowAction, FlowEvent, SteerStat, STEER_STAT_SLOTS};
+use tokio::io::unix::AsyncFd;
 
 pub struct TcProgram {
     bpf: Ebpf,
@@ -24,6 +28,39 @@ impl TcProgram {
     /// программа `bpf_redirect_neigh` доставляет его клиенту через br0, минуя сломанный форвард.
     pub fn attach_return(interface: &str, bpf_bytes: &[u8]) -> Result<Self, String> {
         Self::attach_named(interface, bpf_bytes, "reflex_return", TcAttachType::Ingress)
+    }
+
+    /// `reflex_observe` на КЛИЕНТ-порту (clsact ingress+egress): наблюдение проходящего флоу для
+    /// witness — БЕЗ лифта/возврата (аддитивно, транзит невредим). Направление из хука: ingress =
+    /// от клиента (Upstream), egress = к клиенту (Downstream). Отдаёт держатель программ (Drop
+    /// отцепит, RAII) + async-поток `FlowEvents` из общего `RingBuf`. Потребитель (nevod) фолдит
+    /// поток `inline_witness`'ом в `(dst, Reach)`. Тот же поток позже поедет `ByteFlow` (Правило 9).
+    pub fn attach_observe(
+        client_iface: &str,
+        bpf_bytes: &[u8],
+    ) -> Result<(Self, FlowEvents), String> {
+        let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
+        let _ = tc::qdisc_add_clsact(client_iface);
+        Self::load_attach(
+            &mut bpf,
+            "reflex_observe_up",
+            client_iface,
+            TcAttachType::Ingress,
+        )?;
+        Self::load_attach(
+            &mut bpf,
+            "reflex_observe_down",
+            client_iface,
+            TcAttachType::Egress,
+        )?;
+        let events = FlowEvents::from_ebpf(&mut bpf)?;
+        Ok((
+            Self {
+                bpf,
+                interface: client_iface.to_string(),
+            },
+            events,
+        ))
     }
 
     /// Грузит объект ОДИН раз и цепляет ОБА хука круга из ОДНОГО `Ebpf`: `reflex_steer` на INGRESS
@@ -278,6 +315,66 @@ impl TcProgram {
 
     pub fn interface(&self) -> &str {
         &self.interface
+    }
+}
+
+/// Async-поток пакет-событий транзита из `RingBuf` FLOW_EVENTS — IO-край witness (Правило 2). eBPF
+/// (`reflex_observe`) пишет `FlowEvent`'ы, здесь читаем их async через `AsyncFd` (readable → дренаж
+/// кольца пачкой → отдаём по одному). Потеря события при переполнении кольца НЕ рвёт поток: witness
+/// идемпотентен к пропущенному не-классифицирующему пакету.
+pub struct FlowEvents {
+    fd: AsyncFd<RingBuf<MapData>>,
+    pending: VecDeque<FlowEvent>,
+}
+
+impl FlowEvents {
+    fn from_ebpf(bpf: &mut Ebpf) -> Result<Self, String> {
+        let map = bpf
+            .take_map("FLOW_EVENTS")
+            .ok_or("FLOW_EVENTS map not found")?;
+        let ring: RingBuf<MapData> =
+            RingBuf::try_from(map).map_err(|e| format!("FLOW_EVENTS not a RingBuf: {e}"))?;
+        let fd = AsyncFd::new(ring).map_err(|e| format!("AsyncFd(FLOW_EVENTS): {e}"))?;
+        Ok(Self {
+            fd,
+            pending: VecDeque::new(),
+        })
+    }
+
+    /// Следующее событие транзита. Отдаёт из буфера; пусто → ждёт readable ИЛИ короткий poll-таймаут,
+    /// дренит кольцо целиком. Запись короче контракта (`FlowEvent` = фикс-16-байт) игнорится.
+    ///
+    /// POLL-СТРАХОВКА (не чистый readable): BPF-ringbuf по умолчанию ПОДАВЛЯЕТ epoll-wakeup, если
+    /// считает потребителя отстающим (adaptive notification) — чистый `readable().await` тогда спит
+    /// вечно, хоть события копятся (замерено на риге: witness замирал после первого батча). Таймаут
+    /// гарантирует дренаж кольца не позже `POLL`, даже когда wakeup потерян.
+    pub async fn recv(&mut self) -> io::Result<FlowEvent> {
+        const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+        loop {
+            if let Some(ev) = self.pending.pop_front() {
+                return Ok(ev);
+            }
+            match tokio::time::timeout(POLL, self.fd.readable_mut()).await {
+                Ok(guard) => {
+                    let mut guard = guard?;
+                    Self::drain(guard.get_inner_mut(), &mut self.pending);
+                    guard.clear_ready();
+                }
+                // Wakeup потерян/подавлен → дренируем напрямую (get_mut, без readiness).
+                Err(_elapsed) => Self::drain(self.fd.get_mut(), &mut self.pending),
+            }
+        }
+    }
+
+    /// Дренаж кольца в буфер: все доступные записи → `FlowEvent` (read_unaligned — кольцо не
+    /// гарантирует выравнивание). Короче контракта = битая запись, пропускаем.
+    fn drain(ring: &mut RingBuf<MapData>, out: &mut VecDeque<FlowEvent>) {
+        while let Some(item) = ring.next() {
+            if item.len() >= core::mem::size_of::<FlowEvent>() {
+                let ev = unsafe { core::ptr::read_unaligned(item.as_ptr() as *const FlowEvent) };
+                out.push_back(ev);
+            }
+        }
     }
 }
 

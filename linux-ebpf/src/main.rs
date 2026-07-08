@@ -3,11 +3,14 @@
 
 use aya_ebpf::{
     macros::{classifier, map},
-    maps::{Array, HashMap},
+    maps::{Array, HashMap, RingBuf},
     programs::TcContext,
 };
 use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_skb_change_head, bpf_skb_store_bytes};
-use reflex_linux_common::{FlowAction, SteerStat, STEER_STAT_SLOTS};
+use reflex_linux_common::{
+    FlowAction, FlowEvent, SteerStat, DIR_DOWNSTREAM, DIR_UPSTREAM, STEER_STAT_SLOTS, TCP_ACK,
+    TCP_FIN, TCP_RST, TCP_SYN,
+};
 
 const TC_ACT_OK: i32 = 0; // pass
 const TC_ACT_SHOT: i32 = 2; // drop
@@ -64,6 +67,14 @@ static CLIENT_MACS: HashMap<u32, [u8; 6]> = HashMap::with_max_entries(1024, 0);
 // (7=TC_ACT_REDIRECT успех bpf_redirect(eth1); отрицательное как u64 = ошибка change_head/store).
 #[map]
 static RETURN_STATS: Array<u64> = Array::with_max_entries(3, 0);
+
+// Наблюдение проходящего флоу (`reflex_observe`): пакет-события транзита → userspace-witness
+// (`inline_witness` в неводе фолдит их в `(dst, Reach)`). ОТДЕЛЬНО от лифта/возврата — pure
+// observation, всегда TC_ACT_OK. Общий backend: тот же поток событий позже поедет `ByteFlow`.
+// 256 KiB кольца хватает на всплеск SYN'ов страницы; переполнение = потеря события (не краш),
+// witness идемпотентен к пропущенному не-классифицирующему пакету.
+#[map]
+static FLOW_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
 // Инкремент слота. Гонка между CPU (не PerCpu) сознательна: для диагностики важен ПОРЯДОК величины
 // и «>0 vs 0», не точный счёт — плата за простоту при отсутствии BTF на риге (см. де-риск R2S).
@@ -446,6 +457,119 @@ unsafe fn try_return(ctx: &TcContext) -> Result<i32, ()> {
         unsafe { *p = rc as u64 } // 7=TC_ACT_REDIRECT успех
     }
     Ok(rc as i32)
+}
+
+// ── reflex_observe (TC clsact на КЛИЕНТ-порту): наблюдение проходящего флоу для witness ──
+// Направление берётся ИЗ ХУКА, не эвристикой: ingress порта = от клиента (Upstream, SYN/ClientHello),
+// egress = к клиенту (Downstream, SYN-ACK/данные/RST). Оба пишут в общий RingBuf FLOW_EVENTS. Pure
+// observation: НИКОГДА не редиректит/дропает (всегда TC_ACT_OK) — транзит невредим (Surgical, fail-open).
+#[classifier]
+pub fn reflex_observe_up(ctx: TcContext) -> i32 {
+    unsafe { observe(&ctx, DIR_UPSTREAM) };
+    TC_ACT_OK
+}
+
+#[classifier]
+pub fn reflex_observe_down(ctx: TcContext) -> i32 {
+    unsafe { observe(&ctx, DIR_DOWNSTREAM) };
+    TC_ACT_OK
+}
+
+// Парс IPv4+TCP HTTPS-кадра → FlowEvent в RingBuf. Границы проверены до каждого чтения (verifier).
+// Не-HTTPS / не-IPv4-TCP / инжектнутый маркер → тихо игнорим (не наше событие). Промах reserve
+// (кольцо полно) → тоже тихо: witness идемпотентен к пропущенному пакету.
+#[inline(always)]
+unsafe fn observe(ctx: &TcContext, dir: u8) {
+    let data = ctx.data() as *const u8;
+    let data_end = ctx.data_end() as *const u8;
+
+    if data.add(14) as usize > data_end as usize {
+        return;
+    }
+    if *data.add(12) != 0x08 || *data.add(13) != 0x00 {
+        return; // не IPv4
+    }
+    let ip = data.add(14);
+    if ip.add(20) as usize > data_end as usize {
+        return;
+    }
+    if *ip.add(9) != 6 {
+        return; // не TCP
+    }
+
+    // Инжектнутые нами кадры (IP id = маркер) — не наблюдаем, это не транзит клиента.
+    let ip_id = u16::from_be_bytes([*ip.add(4), *ip.add(5)]);
+    if ip_id == MARKER_IP_ID {
+        return;
+    }
+
+    let ihl = ((*ip) & 0x0f) as usize * 4;
+    if ihl < 20 {
+        return;
+    }
+    let tcp = ip.add(ihl);
+    if tcp.add(14) as usize > data_end as usize {
+        return; // нужен доступ к data-offset (байт 12) и флагам (байт 13)
+    }
+
+    // HTTPS-гейт: dport 443 (upstream) ЛИБО sport 443 (downstream) — сырые байты провода [0x01,0xBB]
+    // (без from_ne-неоднозначности на bpfel, как в try_steer). Прочее — не наше.
+    let dport_443 = *tcp.add(2) == 0x01 && *tcp.add(3) == 0xBB;
+    let sport_443 = *tcp == 0x01 && *tcp.add(1) == 0xBB;
+    if !dport_443 && !sport_443 {
+        return;
+    }
+
+    // Поля 5-tuple в network order (raw провод) — контракт FlowEvent; userspace канонизирует.
+    let src = u32::from_ne_bytes([*ip.add(12), *ip.add(13), *ip.add(14), *ip.add(15)]);
+    let dst = u32::from_ne_bytes([*ip.add(16), *ip.add(17), *ip.add(18), *ip.add(19)]);
+    let sport = u16::from_ne_bytes([*tcp, *tcp.add(1)]);
+    let dport = u16::from_ne_bytes([*tcp.add(2), *tcp.add(3)]);
+
+    // payload_len = ip.total_len − ihl − tcp.data_offset (числовые значения, не raw). 0 = чистый
+    // ACK/handshake; >0 = ClientHello (upstream) / данные сервера (downstream) для inline_reach.
+    let ip_total = u16::from_be_bytes([*ip.add(2), *ip.add(3)]) as i32;
+    let doff = ((*tcp.add(12) >> 4) as i32) * 4;
+    let payload = ip_total - ihl as i32 - doff;
+    let payload_len = if payload > 0 {
+        if payload > 0xFFFF {
+            0xFFFF
+        } else {
+            payload as u16
+        }
+    } else {
+        0
+    };
+
+    // TCP-флаги провода (байт 13: FIN=0x01 SYN=0x02 RST=0x04 ACK=0x10) → маски FlowEvent.
+    let wire = *tcp.add(13);
+    let mut flags = 0u8;
+    if wire & 0x02 != 0 {
+        flags |= TCP_SYN;
+    }
+    if wire & 0x10 != 0 {
+        flags |= TCP_ACK;
+    }
+    if wire & 0x04 != 0 {
+        flags |= TCP_RST;
+    }
+    if wire & 0x01 != 0 {
+        flags |= TCP_FIN;
+    }
+
+    let event = FlowEvent {
+        src,
+        dst,
+        sport,
+        dport,
+        payload_len,
+        flags,
+        dir,
+    };
+    if let Some(mut slot) = FLOW_EVENTS.reserve::<FlowEvent>(0) {
+        slot.write(event);
+        slot.submit(0);
+    }
 }
 
 #[cfg(not(test))]
