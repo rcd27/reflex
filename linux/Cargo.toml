@@ -11,7 +11,9 @@ tc = ["dep:aya", "dep:reflex-linux-common"]
 nfqueue = ["dep:nfq"]
 # tun: userspace-терминация TCP из tun-устройства в async-потоки с ОРИГИНАЛЬНЫМ dst (netstack на
 # движке smoltcp). Субстрат данных, потребляемый неводом (проекция model/wire/TransparentCapture.tla).
-tun = ["dep:netstack-smoltcp", "dep:tokio-util"]
+# `smoltcp`/`spin` — прямые: originate-нога (`tun_egress`) держит СВОЙ netstack исходящих сокетов
+# (netstack-smoltcp только listen'ит, active-open в нём нет), проекция `EgressIdentity`/`SteerDatapath` L2Glue.
+tun = ["dep:netstack-smoltcp", "dep:tokio-util", "dep:smoltcp", "dep:spin"]
 
 [dependencies]
 reflex-core = { path = "../core", features = ["tls"] }
@@ -25,6 +27,12 @@ aya = { version = "0.13", optional = true }
 reflex-linux-common = { path = "../linux-common", optional = true }
 netstack-smoltcp = { version = "0.1.4", optional = true } # tun→async-stream, движок smoltcp 0.12
 tokio-util = { version = "0.7", features = ["compat"], optional = true } # futures↔tokio AsyncRead мост
+# originate-нога держит СВОЙ netstack (active-open) — smoltcp напрямую, тот же движок/версия, что тянет
+# netstack-smoltcp (одна копия в дереве). medium-ip: tun даёт сырой IP, L2 клеит eBPF (не netstack).
+smoltcp = { version = "0.12", optional = true, default-features = false, features = [
+  "std", "medium-ip", "proto-ipv4", "socket-tcp",
+] }
+spin = { version = "0.9", optional = true } # SpinMutex общего control'а сокета (sync poll-луп ↔ async-стрим)
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -205,7 +205,11 @@ mod tests {
         assert_eq!(ip.len(), 20 + 8 + 8, "IP(20)+UDP(8)+payload(8)");
         assert_eq!(ip[0], 0x45, "IPv4 IHL=5");
         assert_eq!(ip[9], 17, "протокол UDP");
-        assert_eq!(u16::from_be_bytes([ip[2], ip[3]]) as usize, ip.len(), "IP total len");
+        assert_eq!(
+            u16::from_be_bytes([ip[2], ip[3]]) as usize,
+            ip.len(),
+            "IP total len"
+        );
         // UDP len = 8 + payload
         assert_eq!(u16::from_be_bytes([ip[24], ip[25]]), 16, "UDP len = 8+8");
         // IP чек-сумма над заголовком (со вписанной csum) сходится в 0.

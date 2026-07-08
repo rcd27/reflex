@@ -36,8 +36,9 @@ struct IfReq {
 }
 
 /// Открывает tun-устройство `dev` (создаёт при отсутствии), IPv4 (`IFF_TUN|IFF_NO_PI`), non-blocking.
-/// Требует CAP_NET_ADMIN. Возвращает владеющий fd.
-fn open_tun(dev: &str) -> io::Result<OwnedFd> {
+/// Требует CAP_NET_ADMIN. Возвращает владеющий fd. `pub(crate)` — originate-нога (`tun_egress`) качает
+/// пакеты через СВОЙ tun тем же механизмом (насосы read/write), не дублируя открытие устройства.
+pub(crate) fn open_tun(dev: &str) -> io::Result<OwnedFd> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -68,7 +69,7 @@ fn open_tun(dev: &str) -> io::Result<OwnedFd> {
 }
 
 /// Одно неблокирующее чтение пакета из tun (`EWOULDBLOCK` → AsyncFd повторит).
-async fn read_tun(fd: &AsyncFd<OwnedFd>, buf: &mut [u8]) -> io::Result<usize> {
+pub(crate) async fn read_tun(fd: &AsyncFd<OwnedFd>, buf: &mut [u8]) -> io::Result<usize> {
     loop {
         let mut guard = fd.readable().await?;
         let res = guard.try_io(|inner| {
@@ -93,7 +94,7 @@ async fn read_tun(fd: &AsyncFd<OwnedFd>, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 /// Одна неблокирующая запись пакета в tun.
-async fn write_tun(fd: &AsyncFd<OwnedFd>, pkt: &[u8]) -> io::Result<usize> {
+pub(crate) async fn write_tun(fd: &AsyncFd<OwnedFd>, pkt: &[u8]) -> io::Result<usize> {
     loop {
         let mut guard = fd.writable().await?;
         let res = guard.try_io(|inner| {

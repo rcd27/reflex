@@ -8,6 +8,8 @@ pub mod rawsend;
 pub mod tc;
 #[cfg(feature = "tun")]
 pub mod tun;
+#[cfg(feature = "tun")]
+pub mod tun_egress;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -20,6 +22,14 @@ use reflex_core::{CanInject, CanObserve};
 pub use capture::Capture;
 pub use inject::Injector;
 pub use rawsend::RawSender;
+
+// Контракт src-порт-метки анти-петли ловца (`SelfLoop.portmark`): eBPF-steer гейтит лифт по нему, а
+// потребитель (nevod) биндит src-порт из `PROBE_PORT_LO..=PROBE_PORT_HI` на direct-пробу. Реэкспорт —
+// nevod тянет `reflex-linux`, не `-common` напрямую.
+#[cfg(feature = "tc")]
+pub use reflex_linux_common::{
+    is_probe_port, is_probe_sport_hibyte, PROBE_PORT_HI, PROBE_PORT_LO, PROBE_SPORT_HIBYTE,
+};
 
 // --- AF_PACKET backend: CanObserve + CanInject ---
 

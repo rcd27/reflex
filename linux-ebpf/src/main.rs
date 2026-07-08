@@ -8,8 +8,8 @@ use aya_ebpf::{
 };
 use aya_ebpf_bindings::helpers::{bpf_redirect, bpf_skb_change_head, bpf_skb_store_bytes};
 use reflex_linux_common::{
-    FlowAction, FlowEvent, SteerStat, DIR_DOWNSTREAM, DIR_UPSTREAM, STEER_STAT_SLOTS, TCP_ACK,
-    TCP_FIN, TCP_RST, TCP_SYN,
+    is_probe_sport_hibyte, FlowAction, FlowEvent, SteerStat, DIR_DOWNSTREAM, DIR_UPSTREAM,
+    STEER_STAT_SLOTS, TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN,
 };
 
 const TC_ACT_OK: i32 = 0; // pass
@@ -23,6 +23,17 @@ static ACTION_TABLE: HashMap<u32, u8> = HashMap::with_max_entries(4096, 0);
 // 5-tuple: клиентский порт эфемерен, «завернуть всё к цели» выразимо лишь по назначению.
 #[map]
 static STEER_TARGETS: HashMap<u32, u8> = HashMap::with_max_entries(1024, 0);
+
+// Режим лифта: 0 = surgical (лишь dst ∈ STEER_TARGETS), !=0 = лифтить ВСЕ HTTPS(443) → SNI решает
+// ЛОВЕЦ (домен-ключ, не IP; CDN-robust, SOCKS5-модель). Userspace ставит из env STEER_ALL_443.
+#[map]
+static STEER_ALL: Array<u8> = Array::with_max_entries(1, 0);
+
+// Исключения лифта (dst-IP): egress пола (VLESS-сервер sing-box) идёт на :443, но НЕ порт-мечен
+// (его src-порт ставит sing-box) → в режиме all-443 зациклился бы сам в себя. Userspace кладёт
+// floor-сервер(ы) из env STEER_EXCLUDE. Box-origin пола = единственное «своё» на 443 без порт-метки.
+#[map]
+static STEER_EXCLUDE: HashMap<u32, u8> = HashMap::with_max_entries(64, 0);
 
 // MAC моста (br0) для L2-доставки: userspace ставит 6 байт перед attach. Заворот переписывает dst-MAC
 // целевого кадра на этот адрес → мост отдаёт кадр НАВЕРХ в локальный стек (br_pass_frame_up→ip_rcv),
@@ -271,21 +282,30 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
         return Ok(TC_ACT_OK); // не HTTPS → нативный транзит (Surgical)
     }
 
-    // STEER_TARGETS = ЗАБЛОЧЕННЫЕ цели, населяется inline-вердиктом (SniGate/Blackholed из наблюдения
-    // транзита, `inline_drive`). Surgical + ActOnPrior: лифтим ЛИШЬ известно-заблоченное; незаблоченное/
-    // неизвестное → нативный L2-транзит (коробка не трогает, BL-219 upstream-egress не возникает). Первый
-    // флоу к новой цели идёт нативно (witness классифицирует), СЛЕДУЮЩИЙ лифтится (приор прошлого флоу).
-    if STEER_TARGETS.get(&dst_be).is_none() {
-        // НЕ заблочено → наблюдаем upstream (witness классифицирует) + нативный транзит. Наблюдение
-        // ВСТРОЕНО в steer (не отдельный фильтр): на eth1-ingress `TC_ACT_OK` первого фильтра обрывает
-        // цепочку → observe_up рядом со steer не запускался (замерено). КЛЮЧ: наблюдаем ЛИШЬ здесь, до
-        // лифта — лифтнутый флоу идёт через netstack, и witness видел бы поведение netstack'а, а не
-        // сервера → петля переклассификации (замерено: 1336 ложных Blackholed на одной лифтнутой цели).
-        observe(ctx, DIR_UPSTREAM);
-        return Ok(TC_ACT_OK); // не заблочено → прозрачный транзит
+    // АНТИ-ПЕТЛЯ (`SelfLoop.portmark`): direct-проба ловца ушла вниз через роутер-потребитель с src-портом
+    // из зарезервированного диапазона [0xFF00..=0xFFFF]; роутер её NAT'ил (СОХРАНИВ порт — замер) и завернул
+    // назад в мост → она СЕЙЧАС хэйрпинит здесь. Узнаём по старшему байту src-порта (0xFF) и ПРОПУСКАЕМ —
+    // иначе re-лифт → self-loop. Проверяем ПЕРВЫМ (до режима лифта): проба не лифтится НИКОГДА.
+    if is_probe_sport_hibyte(*tcp_start) {
+        return Ok(TC_ACT_OK); // наша хэйрпин-проба → нативный транзит к цели, НЕ заворот (нет петли)
     }
 
-    bump(SteerStat::TargetHit); // HTTPS-флоу к заблоченной цели (∈ STEER_TARGETS) — под заворот
+    // ИСКЛЮЧЕНИЕ: egress пола (VLESS-сервер) на :443 НЕ порт-мечен (src-порт ставит sing-box) → в режиме
+    // all-443 зациклился бы сам в себя. Пропускаем нативно. Единственное «своё» на 443 без порт-метки.
+    if STEER_EXCLUDE.get(&dst_be).is_some() {
+        return Ok(TC_ACT_OK);
+    }
+
+    // РЕЖИМ ЛИФТА. all-443 (STEER_ALL≠0): лифтим ВСЕ HTTPS → SNI решает ЛОВЕЦ (домен-ключ, IP-агностично,
+    // CDN-robust). Surgical (0): лифтим ЛИШЬ dst ∈ STEER_TARGETS; незаблоченное → нативный транзит + observe
+    // (witness классифицирует; наблюдаем ДО лифта — лифтнутый идёт через netstack, иначе петля переклассиф.).
+    let lift_all = STEER_ALL.get(0).map(|v| *v != 0).unwrap_or(false);
+    if !lift_all && STEER_TARGETS.get(&dst_be).is_none() {
+        observe(ctx, DIR_UPSTREAM);
+        return Ok(TC_ACT_OK); // surgical: не заблочено → прозрачный транзит
+    }
+
+    bump(SteerStat::TargetHit); // HTTPS-флоу под заворот (all-443 ИЛИ dst ∈ STEER_TARGETS)
 
     // ВЫУЧИТЬ MAC downstream-next-hop: src-MAC Ethernet кадра (data[6..12]) = MAC роутера/клиента, к
     // которому `reflex_return` погонит ответ. Ключ = client-IP (src_be) — по нему возврат найдёт MAC по

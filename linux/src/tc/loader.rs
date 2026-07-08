@@ -207,6 +207,34 @@ impl TcProgram {
         Ok(())
     }
 
+    /// Режим лифта: `true` = лифтить ВСЕ HTTPS(443) → SNI решает ловец (домен-ключ, CDN-robust); `false`
+    /// = surgical (лишь dst ∈ STEER_TARGETS). Ставится из env `STEER_ALL_443` (`inline_up`).
+    pub fn set_steer_all(&mut self, on: bool) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u8> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("STEER_ALL")
+                .ok_or("STEER_ALL map not found")?,
+        )
+        .map_err(|e| format!("STEER_ALL type mismatch: {e}"))?;
+        m.set(0, on as u8, 0)
+            .map_err(|e| format!("STEER_ALL set: {e}"))?;
+        Ok(())
+    }
+
+    /// Исключить dst-IP из лифта (egress пола/VLESS-сервер: на :443, но не порт-мечен → в all-443
+    /// зациклился бы). Тот же ключ-формат, что `add_steer_target` (network-order байты).
+    pub fn add_steer_exclude(&mut self, dst: std::net::Ipv4Addr) -> Result<(), String> {
+        let mut m: HashMap<_, u32, u8> = HashMap::try_from(
+            self.bpf
+                .map_mut("STEER_EXCLUDE")
+                .ok_or("STEER_EXCLUDE map not found")?,
+        )
+        .map_err(|e| format!("STEER_EXCLUDE type mismatch: {e}"))?;
+        m.insert(u32::from_ne_bytes(dst.octets()), 1, 0)
+            .map_err(|e| format!("STEER_EXCLUDE insert: {e}"))?;
+        Ok(())
+    }
+
     /// ifindex устройства несущей (nevod0) для L2-РЕДИРЕКТА (`bpf_redirect`): eBPF отправит целевой
     /// кадр прямо в xmit устройства, минуя ip_rcv/ip_forward → обходит forward→tun дроп и
     /// conntrack-игнор лифтнутых кадров (L2-native, как AF_PACKET). 0 = fallback на MAC-lift.

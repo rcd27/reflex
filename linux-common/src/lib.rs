@@ -83,6 +83,36 @@ impl SteerStat {
     ];
 }
 
+/// ── АНТИ-ПЕТЛЯ ловца по ЗАРЕЗЕРВИРОВАННОМУ src-порту (проекция `model/wire/SelfLoop.tla` `portmark`,
+/// TLC GREEN) ── Direct-проба ловца уходит вниз через роутер-потребитель (default route); тот NAT'ит её
+/// и заворачивает обратно в мост (хэйрпин) → она RE-входит в `reflex_steer` на клиент-ingress. Без метки
+/// steer лифтит её заново (dst ∈ STEER_TARGETS) → self-loop (шторм, риск брика). МЕТКА: невод биндит
+/// пробе src-порт из [`PROBE_PORT_LO`..=`PROBE_PORT_HI`], steer узнаёт хэйрпин-пробу по нему и ПРОПУСКАЕТ.
+///
+/// ПОЧЕМУ ПОРТ, А НЕ TTL (замер рига 2026-07-08, `SelfLoop.perlegmark-ttl` RED): роутер ДЕКРЕМЕНТИРУЕТ
+/// TTL на форварде → сентинел-TTL не переживал NAT-хоп → проба не узнавалась → шторм. А src-порт роутер
+/// СОХРАНЯЕТ (замер tcpdump: 39168→39168, port-preserve). `MarkReliable` держится: (1) порт переживает
+/// NAT; (2) диапазон [0xFF00..=0xFFFF] ВЫШЕ клиентского эфемерного (`ip_local_port_range` max 60999) →
+/// коллизия с клиентом крайне редка (`SelfLoop.portmark-collision` — граница очерчена, не в дизайне;
+/// `portmark-symmetric-nat` — если роутер порт НЕ сохранит, гейт на целевом железе перепроверить).
+pub const PROBE_PORT_LO: u16 = 0xFF00; // 65280 — низ зарезервированного диапазона пробы
+pub const PROBE_PORT_HI: u16 = 0xFFFF; // 65535 — верх
+
+/// Старший байт src-порта пробы НА ПРОВОДЕ (big-endian): весь диапазон [0xFF00..=0xFFFF] имеет hi=0xFF.
+/// eBPF сравнивает СЫРОЙ байт (как dport-443) — без `from_ne_bytes`-неоднозначности на bpfel.
+pub const PROBE_SPORT_HIBYTE: u8 = 0xFF;
+
+/// userspace-узнавание порта пробы (симметрия контракта eBPF↔nevod; nevod биндит в диапазон).
+pub fn is_probe_port(sport: u16) -> bool {
+    sport >= PROBE_PORT_LO
+}
+
+/// eBPF-узнавание хэйрпин-пробы по СЫРОМУ старшему байту src-порта (big-endian) на проводе. Общий
+/// контракт eBPF (гейт лифта) ↔ userspace (nevod биндит src-порт из диапазона `PROBE_PORT_LO..=HI`).
+pub fn is_probe_sport_hibyte(hi: u8) -> bool {
+    hi == PROBE_SPORT_HIBYTE
+}
+
 /// Направление наблюдённого кадра относительно клиента — берётся ИЗ ХУКА, не из эвристики по
 /// подсети: на клиент-порту `ingress` = от клиента (Upstream), `egress` = к клиенту (Downstream).
 /// Общий контракт eBPF↔userspace (`FlowEvent.dir`).
@@ -190,6 +220,27 @@ mod tests {
         // Owned → Steer (eBPF заворачивает); Transit → Pass (fast-path транзит).
         assert_eq!(Fate::Owned.action(), FlowAction::Steer);
         assert_eq!(Fate::Transit.action(), FlowAction::Pass);
+    }
+
+    #[test]
+    fn probe_port_range_recognizes_hairpin_not_clients() {
+        // Проба биндит src-порт из [PROBE_PORT_LO..=PROBE_PORT_HI]; роутер СОХРАНЯЕТ порт через NAT
+        // (замер: 39168→39168) → узнаётся по нему на хэйрпине.
+        assert!(is_probe_port(PROBE_PORT_LO), "низ диапазона");
+        assert!(is_probe_port(PROBE_PORT_HI), "верх диапазона");
+        assert!(is_probe_port(65400), "внутри диапазона");
+        // Весь диапазон имеет старший байт провода 0xFF — eBPF матчит его сырым.
+        assert!(is_probe_sport_hibyte(PROBE_SPORT_HIBYTE));
+        assert_eq!((PROBE_PORT_LO >> 8) as u8, PROBE_SPORT_HIBYTE);
+        assert_eq!((PROBE_PORT_HI >> 8) as u8, PROBE_SPORT_HIBYTE);
+        // Клиентские эфемерные порты (ip_local_port_range, дефолт 32768..60999) НИКОГДА не в диапазоне
+        // (иначе резали бы клиента — ClientStillSteered). Их старший байт < 0xFF.
+        assert!(!is_probe_port(32768) && !is_probe_port(60999));
+        assert!(!is_probe_sport_hibyte((60999 >> 8) as u8)); // 0xEE ≠ 0xFF
+        assert!(
+            !is_probe_port(PROBE_PORT_LO - 1),
+            "ниже диапазона — не проба"
+        );
     }
 
     #[test]
