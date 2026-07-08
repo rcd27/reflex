@@ -63,6 +63,53 @@ impl TcProgram {
         ))
     }
 
+    /// Фаза 2: ОДИН `Ebpf` под ВЕСЬ inline-датаплейн — `reflex_observe` (наблюдение, eth1 in+eg) +
+    /// `reflex_steer` (лифт, eth1 ingress) + `reflex_return` (возврат, nevod0 ingress). Карты ОБЩИЕ,
+    /// и это КРИТИЧНО: вердикт witness'а населяет `STEER_TARGETS` (`add_steer_target`), который читает
+    /// `reflex_steer`; `CLIENT_MACS` пишет steer, читает return. Раздельная загрузка = изолированные
+    /// карты, вердикт не долетит до лифта. Возвращает держатель (Drop отцепит всё) + поток `FlowEvents`.
+    /// `client_iface` (eth1) несёт steer+observe; `return_iface` (nevod0) должен СУЩЕСТВОВАТЬ до вызова.
+    /// ifindex'ы/MAC'и ставит вызывающий (`set_steer_*`/`set_return_*`), цели — `add_steer_target`.
+    pub fn attach_inline(
+        client_iface: &str,
+        return_iface: &str,
+        bpf_bytes: &[u8],
+    ) -> Result<(Self, FlowEvents), String> {
+        let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
+        let _ = tc::qdisc_add_clsact(client_iface);
+        let _ = tc::qdisc_add_clsact(return_iface);
+        // ОДИН фильтр на eth1 ingress: `reflex_steer` САМ эмитит upstream-witness (observe встроен) —
+        // TC обрывает цепочку фильтров на `TC_ACT_OK`, два фильтра на одном хуке не сосуществуют
+        // (замерено: observe_up рядом со steer не давал событий). observe_down — отдельный хук
+        // (egress), конфликта нет. return — на nevod0.
+        Self::load_attach(
+            &mut bpf,
+            "reflex_steer",
+            client_iface,
+            TcAttachType::Ingress,
+        )?;
+        Self::load_attach(
+            &mut bpf,
+            "reflex_observe_down",
+            client_iface,
+            TcAttachType::Egress,
+        )?;
+        Self::load_attach(
+            &mut bpf,
+            "reflex_return",
+            return_iface,
+            TcAttachType::Ingress,
+        )?;
+        let events = FlowEvents::from_ebpf(&mut bpf)?;
+        Ok((
+            Self {
+                bpf,
+                interface: client_iface.to_string(),
+            },
+            events,
+        ))
+    }
+
     /// Грузит объект ОДИН раз и цепляет ОБА хука круга из ОДНОГО `Ebpf`: `reflex_steer` на INGRESS
     /// `steer_iface` (учит `CLIENT_MACS`) + `reflex_return` на INGRESS `return_iface` (читает её). Карты
     /// ОБЩИЕ — иначе (раздельная загрузка) две изолированные `CLIENT_MACS`, learned-MAC не шарится

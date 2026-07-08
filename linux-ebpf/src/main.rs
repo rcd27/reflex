@@ -264,19 +264,28 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     let sport_be = u16::from_ne_bytes([*tcp_start, *tcp_start.add(1)]);
     let dport_be = u16::from_ne_bytes([*tcp_start.add(2), *tcp_start.add(3)]);
 
-    // Кандидат перехвата = ВЕСЬ HTTPS (dport 443), БЕЗ per-domain списка блок-IP. Движок (nevod)
-    // сам крутит Ladder per-flow: direct-first → при отсутствии байтфлоу десинк → пол. Поэтому
-    // знать блокируемые домены ЗАРАНЕЕ не нужно — earned-routing открывает блок реактивно
-    // (project_earned_routing_pivot_bl188). isTarget модели TransparentIntercept проецируется на
-    // «HTTPS», не на «dst ∈ blocklist». Не-443 → на транзит (Surgical). STEER_TARGETS больше не гейт.
-    // dport 443 на проводе (big-endian) = байты [0x01, 0xBB]. Сравниваем СЫРЫЕ байты провода —
-    // без to_be()/from_ne_bytes-неоднозначности (та на bpfel НЕ матчила, хоть логически и верна:
-    // tcpdump подтвердил dport-443 SYN на ingress, а target_hit оставался 0).
+    // Гейт лифта = HTTPS (dport 443) ∧ dst ∈ STEER_TARGETS. dport 443 на проводе (big-endian) =
+    // байты [0x01, 0xBB]. Сравниваем СЫРЫЕ байты провода — без to_be()/from_ne_bytes-неоднозначности
+    // (та на bpfel НЕ матчила, хоть логически верна: tcpdump подтвердил dport-443 SYN, а target_hit=0).
     if *tcp_start.add(2) != 0x01 || *tcp_start.add(3) != 0xBB {
-        return Ok(TC_ACT_OK);
+        return Ok(TC_ACT_OK); // не HTTPS → нативный транзит (Surgical)
     }
 
-    bump(SteerStat::TargetHit); // HTTPS-флоу к тест-цели — кандидат перехвата
+    // STEER_TARGETS = ЗАБЛОЧЕННЫЕ цели, населяется inline-вердиктом (SniGate/Blackholed из наблюдения
+    // транзита, `inline_drive`). Surgical + ActOnPrior: лифтим ЛИШЬ известно-заблоченное; незаблоченное/
+    // неизвестное → нативный L2-транзит (коробка не трогает, BL-219 upstream-egress не возникает). Первый
+    // флоу к новой цели идёт нативно (witness классифицирует), СЛЕДУЮЩИЙ лифтится (приор прошлого флоу).
+    if STEER_TARGETS.get(&dst_be).is_none() {
+        // НЕ заблочено → наблюдаем upstream (witness классифицирует) + нативный транзит. Наблюдение
+        // ВСТРОЕНО в steer (не отдельный фильтр): на eth1-ingress `TC_ACT_OK` первого фильтра обрывает
+        // цепочку → observe_up рядом со steer не запускался (замерено). КЛЮЧ: наблюдаем ЛИШЬ здесь, до
+        // лифта — лифтнутый флоу идёт через netstack, и witness видел бы поведение netstack'а, а не
+        // сервера → петля переклассификации (замерено: 1336 ложных Blackholed на одной лифтнутой цели).
+        observe(ctx, DIR_UPSTREAM);
+        return Ok(TC_ACT_OK); // не заблочено → прозрачный транзит
+    }
+
+    bump(SteerStat::TargetHit); // HTTPS-флоу к заблоченной цели (∈ STEER_TARGETS) — под заворот
 
     // ВЫУЧИТЬ MAC downstream-next-hop: src-MAC Ethernet кадра (data[6..12]) = MAC роутера/клиента, к
     // которому `reflex_return` погонит ответ. Ключ = client-IP (src_be) — по нему возврат найдёт MAC по
