@@ -6,6 +6,7 @@
 //! operators. Anything that needs a clock, an OS signal, or a process-wide channel
 //! lives here.
 
+pub mod expand;
 pub mod ext;
 pub mod pid;
 pub mod signal;
@@ -13,6 +14,7 @@ pub mod stage;
 pub mod stream;
 pub mod subject;
 
+pub use expand::expand_effects;
 pub use ext::ReflexRuntimeExt;
 pub use pid::{PidError, PidGuard};
 pub use signal::shutdown_signal;
