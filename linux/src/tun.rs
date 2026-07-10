@@ -195,3 +195,137 @@ impl TunFlows {
         Some((stream, dst))
     }
 }
+
+/// Датаграммный сабстрат из tun (UDP-плоскость, BL-233): та же несущая, что `TunFlows`, но без
+/// терминации соединения — UDP без состояния. `recv` отдаёт `(payload, КЛИЕНТ, ИСТИННЫЙ dst)` (цель
+/// прямо из IP-заголовка, как `accept` у TunFlows); `send` ФОРЖИТ датаграмму с ПРОИЗВОЛЬНЫМ src —
+/// прозрачный релей «ответ клиенту от имени dest» (`send(payload, src=dest, dst=client)`).
+///
+/// Спайк netstack-smoltcp ЗЕЛЁНЫЙ (BL-233): `udp::WriteHalf` — stateless-форж (`PacketBuilder::ipv4`
+/// из отданных src/dst, БЕЗ bind/socket-table), arbitrary-src нативно, raw-inject не нужен. Ассоциация
+/// (обратная dst→client, idle-эвикт, гонка ног) — НЕ здесь: субстрат тупой, мозг в потребителе.
+///
+/// TODO(BL-233): один tun-девайс = один netstack. Совместный прогон с `TunFlows` на ОДНОМ устройстве
+/// (два netstack'а на одном fd делят пакеты пополам) требует общего стека (`enable_tcp+udp`, один
+/// listener + один udp-socket, «один стек оба потребителя», срез 3 эпика) — интеграция + rewire
+/// `main.rs`. Пока standalone (udp-only netstack), потребляется `serve_udp` на своём девайсе.
+pub struct TunDatagrams {
+    rx: netstack_smoltcp::udp::ReadHalf, // Stream<(payload, client_src, true_dst)>
+    tx: netstack_smoltcp::udp::WriteHalf, // Sink<(payload, src, dst)> — stateless-форж
+    _tasks: Vec<JoinHandle<()>>,         // держим насосы живыми, пока жив TunDatagrams
+}
+
+impl TunDatagrams {
+    /// Открывает `dev`, поднимает netstack (только UDP — runner/TCP-listener не нужны), спавнит два
+    /// насоса (tun↔стек). Требует CAP_NET_ADMIN.
+    pub fn bind(dev: &str) -> io::Result<Self> {
+        let fd = Arc::new(AsyncFd::new(open_tun(dev)?)?);
+        let (stack, _runner, udp, _listener) = StackBuilder::default()
+            .enable_tcp(false)
+            .enable_udp(true)
+            .enable_icmp(false)
+            .build()?;
+        let udp = udp.ok_or_else(|| io::Error::other("netstack собран без UDP-сокета"))?;
+        let (rx, tx) = udp.split();
+
+        let (mut to_stack, mut from_stack) = stack.split();
+        let mut tasks = Vec::new();
+
+        // Насос tun → стек: сырой пакет из устройства подаётся в netstack (маршрутизируется в UDP-плоскость).
+        {
+            let fd = fd.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match read_tun(&fd, &mut buf).await {
+                        Ok(n) if n > 0 => {
+                            if to_stack.send(buf[..n].to_vec()).await.is_err() {
+                                break; // стек закрылся
+                            }
+                        }
+                        _ => break, // EOF/сбой устройства
+                    }
+                }
+            }));
+        }
+
+        // Насос стек → tun: форжнутая датаграмма (WriteHalf → stack_tx → from_stack) пишется в устройство.
+        {
+            let fd = fd.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(pkt) = from_stack.next().await {
+                    match pkt {
+                        Ok(p) => {
+                            let _ = write_tun(&fd, &p).await;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }));
+        }
+
+        Ok(Self {
+            rx,
+            tx,
+            _tasks: tasks,
+        })
+    }
+
+    /// Следующая датаграмма клиента: `(payload, client_src, true_dst)`. `None` — стек закрылся.
+    pub async fn recv(&mut self) -> Option<(Vec<u8>, SocketAddr, SocketAddr)> {
+        self.rx.next().await
+    }
+
+    /// Форж датаграммы в tun с ПРОИЗВОЛЬНЫМ src. Прозрачный релей: `src`=цель, `dst`=клиент → клиент
+    /// видит ответ «от dest». v4/v6 не мешать (netstack вернёт InvalidData на разнотипье).
+    pub async fn send(
+        &mut self,
+        payload: Vec<u8>,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> io::Result<()> {
+        self.tx.send((payload, src, dst)).await
+    }
+
+    /// Разделяет на приём/отправку — драйвер держит их в РАЗНЫХ ветках `select!` без конфликта
+    /// заимствований (`recv` берёт только rx, `send` только tx). Насосы (`_tasks`) переезжают в tx.
+    pub fn split(self) -> (TunDatagramsRx, TunDatagramsTx) {
+        (
+            TunDatagramsRx { rx: self.rx },
+            TunDatagramsTx {
+                tx: self.tx,
+                _tasks: self._tasks,
+            },
+        )
+    }
+}
+
+/// Приёмная половина `TunDatagrams` (см. `split`): датаграммы клиента с истинным dst.
+pub struct TunDatagramsRx {
+    rx: netstack_smoltcp::udp::ReadHalf,
+}
+
+impl TunDatagramsRx {
+    /// Следующая датаграмма клиента: `(payload, client_src, true_dst)`. `None` — стек закрылся.
+    pub async fn recv(&mut self) -> Option<(Vec<u8>, SocketAddr, SocketAddr)> {
+        self.rx.next().await
+    }
+}
+
+/// Отправная половина `TunDatagrams` (см. `split`): форж датаграмм с произвольным src. Держит насосы.
+pub struct TunDatagramsTx {
+    tx: netstack_smoltcp::udp::WriteHalf,
+    _tasks: Vec<JoinHandle<()>>,
+}
+
+impl TunDatagramsTx {
+    /// Форж датаграммы в tun с ПРОИЗВОЛЬНЫМ src (`src`=цель, `dst`=клиент → «ответ от dest»).
+    pub async fn send(
+        &mut self,
+        payload: Vec<u8>,
+        src: SocketAddr,
+        dst: SocketAddr,
+    ) -> io::Result<()> {
+        self.tx.send((payload, src, dst)).await
+    }
+}
