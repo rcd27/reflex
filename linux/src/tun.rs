@@ -329,3 +329,80 @@ impl TunDatagramsTx {
         self.tx.send((payload, src, dst)).await
     }
 }
+
+/// ОДИН стек, ОБА потребителя (BL-233 срез 3): единственный netstack (`enable_tcp+udp`) над ОДНИМ
+/// tun-девайсом отдаёт И терминированные TCP-флоу (`TunFlows`), И UDP-датаграммы (`TunDatagrams`).
+/// Два netstack'а на одном fd делили бы пакеты пополам — потому плоскость поднимается РАЗ, а
+/// потребители (`serve_tun`, `serve_udp`) берут свою половину. Насосы (runner + tun↔стек) — детач-
+/// спавн: живут, пока жив рантайм (fd клонирован в задачи), потому `_tasks` у потребителей пусты.
+pub struct TunPlane;
+
+impl TunPlane {
+    /// Открывает `dev`, поднимает netstack с TCP И UDP, спавнит runner + два насоса (детач). Возвращает
+    /// TCP-источник и UDP-источник от ОДНОГО стека. Требует CAP_NET_ADMIN.
+    pub fn bind(dev: &str) -> io::Result<(TunFlows, TunDatagrams)> {
+        let fd = Arc::new(AsyncFd::new(open_tun(dev)?)?);
+        let (stack, runner, udp, listener) = StackBuilder::default()
+            .enable_tcp(true)
+            .enable_udp(true)
+            .enable_icmp(false)
+            .build()?;
+        let listener =
+            listener.ok_or_else(|| io::Error::other("netstack собран без TCP-listener"))?;
+        let udp = udp.ok_or_else(|| io::Error::other("netstack собран без UDP-сокета"))?;
+        let (rx, tx) = udp.split();
+
+        let (mut to_stack, mut from_stack) = stack.split();
+        let mut tasks = Vec::new();
+
+        if let Some(runner) = runner {
+            tasks.push(tokio::spawn(async move {
+                let _ = runner.await;
+            }));
+        }
+        // Насос tun → стек (один на плоскость; netstack сам разводит TCP/UDP по протоколу).
+        {
+            let fd = fd.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match read_tun(&fd, &mut buf).await {
+                        Ok(n) if n > 0 => {
+                            if to_stack.send(buf[..n].to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            }));
+        }
+        // Насос стек → tun (SYN-ACK/данные TCP И форжнутые UDP-ответы — оба через from_stack).
+        {
+            let fd = fd.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(pkt) = from_stack.next().await {
+                    match pkt {
+                        Ok(p) => {
+                            let _ = write_tun(&fd, &p).await;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }));
+        }
+
+        // Насосы держит TCP-источник (жив весь прогон в serve_tun); UDP-источник без своих задач.
+        Ok((
+            TunFlows {
+                listener,
+                _tasks: tasks,
+            },
+            TunDatagrams {
+                rx,
+                tx,
+                _tasks: Vec::new(),
+            },
+        ))
+    }
+}
