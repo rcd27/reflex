@@ -1,4 +1,4 @@
-//! Капабилити типизированного разбора (проекция `model/wire/TypedParse.tla`): сырой
+//! Капабилити типизированного разбора (проекция `model/wire/FamilyGate.tla`): сырой
 //! NFQUEUE-пакет парсится ОДИН раз на границе → семейство-гейт → типизированный вид
 //! доменному хендлеру. General-purpose: reflex-подложка, не домен.
 //!
@@ -28,7 +28,7 @@ pub enum L7 {
 }
 
 /// Типизированный вид пакета поддержанного семейства (парс ОДИН раз на границе).
-/// Доменный хендлер видит ЭТО, не сырые байты (`TypedParse.tla`: `delivered`).
+/// Доменный хендлер видит ЭТО, не сырые байты (`FamilyGate.tla`: `delivered`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WirePacket {
     /// Проводное направление src→dst (канонизацию — домену, если нужна).
@@ -51,7 +51,7 @@ pub trait WireHandler {
 
 /// Адаптер: реализует низкоуровневый `NfqHandler`, парся пакет ОДИН раз, применяя
 /// семейство-гейт (не-IPv4/TCP → down-shift Accept, хендлер не зовётся) и делегируя
-/// `WireHandler`. Проекция `TypedParse.tla` (Typed-гейт).
+/// `WireHandler`. Проекция `FamilyGate.tla` (Typed-гейт).
 pub struct TypedNfq<H> {
     inner: H,
 }
@@ -75,7 +75,7 @@ impl<H: WireHandler> NfqHandler for TypedNfq<H> {
 }
 
 /// Парс сырого IP-пакета в типизированный `WirePacket`. `None` = не IPv4+TCP (семейство-гейт
-/// down-shift). ЕДИНСТВЕННОЕ место проверки семейства (`TypedParse.tla`: `Supported`).
+/// down-shift). ЕДИНСТВЕННОЕ место проверки семейства (`FamilyGate.tla`: `Supported`).
 fn parse_wire(payload: &[u8]) -> Option<WirePacket> {
     // Семейство-гейт: версия=4 И протокол=TCP. Иначе None → down-shift.
     if payload.len() < 20 || (payload[0] >> 4) != 4 || payload[9] != 6 {
