@@ -244,8 +244,14 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     if ip_start.add(20) as usize > data_end as usize {
         return Ok(TC_ACT_OK);
     }
-    if *ip_start.add(9) != 6 {
-        return Ok(TC_ACT_OK); // не TCP
+    // Плоскость по протоколу: UDP(17) — PortClass-ветка (BL-234, проекция UdpSteerClassify.tobe);
+    // TCP(6) — существующий HTTPS-путь ниже (не тронут). Прочее — нативный транзит.
+    let proto = *ip_start.add(9);
+    if proto == 17 {
+        return Ok(try_steer_udp(ip_start, data, data_end));
+    }
+    if proto != 6 {
+        return Ok(TC_ACT_OK); // ни TCP, ни UDP
     }
 
     let ihl = ((*ip_start) & 0x0f) as usize * 4;
@@ -383,6 +389,82 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     let _ = (src_be, sport_be, dport_be, dst_be);
 
     Ok(TC_ACT_OK)
+}
+
+// ── UDP-ветка reflex_steer (BL-234, проекция `model/molecule/UdpSteerClassify.tobe`, TLC GREEN) ──
+// У UDP нет SNI, цель звонка (рефлектор) эфемерна и вне STEER_TARGETS → классификация по КЛАССУ ПОРТА,
+// НЕ по цели: гейт `dport ∉ {53,443}` (DNS остаётся direct — резолв/гео; QUIC/443 — десинк-нога BL-171).
+// Round-trip (доставка/возврат) и анти-петля порт-метки прото-агностичны (`SteerDatapath`/`SelfLoop`) —
+// реюзим as-is. Средство ШИРОКОГО профиля: транспорт, не per-app-семантика (MTProto — на десинк-ноге).
+// Самодостаточна (TCP-путь не трогает); MAC-learn + bpf_redirect дублируют лифт-tail TCP-пути осознанно.
+#[inline(always)]
+unsafe fn try_steer_udp(ip_start: *const u8, data: *const u8, data_end: *const u8) -> i32 {
+    let ihl = ((*ip_start) & 0x0f) as usize * 4;
+    if ihl < 20 {
+        return TC_ACT_OK;
+    }
+    let udp = ip_start.add(ihl);
+    if udp.add(4) as usize > data_end as usize {
+        return TC_ACT_OK; // нужны src+dst порты (по 2 байта) — границы для verifier
+    }
+
+    bump(SteerStat::Ipv4Tcp); // L4 распарсен с валидными границами (слот-имя legacy)
+
+    let dst_be = u32::from_ne_bytes([
+        *ip_start.add(16),
+        *ip_start.add(17),
+        *ip_start.add(18),
+        *ip_start.add(19),
+    ]);
+
+    // Анти-петля (`SelfLoop.PortMark`, прото-агностична): direct-нога `serve_udp` несёт зарезервированный
+    // src-порт → пропуск ПЕРВЫМ (своя нога не лифтится → нет self-loop). Ровно как TCP-проба.
+    if is_probe_sport_hibyte(*udp) {
+        return TC_ACT_OK;
+    }
+
+    // Исключение egress пола по dst-IP (как в TCP-пути): floor-сервер не лифтим.
+    if STEER_EXCLUDE.get(&dst_be).is_some() {
+        return TC_ACT_OK;
+    }
+
+    // PortClass-гейт: dport ∉ {53,443}. DNS(53)=[0x00,0x35] и QUIC(443)=[0x01,0xBB] — сырые байты провода
+    // (как HTTPS-гейт TCP, без from_ne-неоднозначности на bpfel). Оба остаются direct.
+    let dp_hi = *udp.add(2);
+    let dp_lo = *udp.add(3);
+    if (dp_hi == 0x00 && dp_lo == 0x35) || (dp_hi == 0x01 && dp_lo == 0xBB) {
+        return TC_ACT_OK; // DNS/QUIC → нативный транзит (direct)
+    }
+
+    // ЛИФТ в мозг (nevod0): выучить MAC downstream-next-hop (портируемый возврат) + bpf_redirect.
+    bump(SteerStat::TargetHit);
+    if data.add(12) as usize > data_end as usize {
+        return TC_ACT_OK; // границы eth src-MAC (data[6..12]) для verifier
+    }
+    let src_be = u32::from_ne_bytes([
+        *ip_start.add(12),
+        *ip_start.add(13),
+        *ip_start.add(14),
+        *ip_start.add(15),
+    ]);
+    let client_mac: [u8; 6] = [
+        *data.add(6),
+        *data.add(7),
+        *data.add(8),
+        *data.add(9),
+        *data.add(10),
+        *data.add(11),
+    ];
+    let _ = CLIENT_MACS.insert(&src_be, &client_mac, 0);
+
+    if let Some(ifx) = STEER_IFINDEX.get(0) {
+        let ifindex = *ifx;
+        if ifindex != 0 {
+            bump(SteerStat::Rewritten);
+            return bpf_redirect(ifindex, 0) as i32;
+        }
+    }
+    TC_ACT_OK // STEER_IFINDEX не задан → транзит (UDP L3-MAC-fallback не поддержан — legacy-путь)
 }
 
 // ── reflex_return (TC INGRESS на nevod0): ОБРАТНАЯ половина круга (L2RedirectEth1) ──
