@@ -388,20 +388,32 @@ impl TcProgram {
         Ok(line)
     }
 
-    /// Слить+СБРОСИТЬ UDP-throughput счётчики (`UDP_FLOW_BYTES`, BL-235): per-dst байты за ОКНО.
-    /// Неинвазивный observe — eBPF считает UDP на транзите (НЕ заворачивает, медиа цела L2-direct),
-    /// userspace опрашивает раз в окно → EarnedFloor-сэмплер. Возвращает `(dst __be32, байты)` по
-    /// активным флоу и обнуляет карту (следующее окно с нуля; молчащий флоу исчезает — авто-эвикт).
-    /// Read+remove; недо-счёт на гонке remove↔инкремент пренебрежим (throughput приблизителен).
+    /// Слить+СБРОСИТЬ UDP-АПЛИНК счётчики (`UDP_FLOW_BYTES`, BL-235): per-dst(сервер) исходящие байты
+    /// client→server за ОКНО. Неинвазивный observe — eBPF считает UDP на транзите (НЕ заворачивает,
+    /// медиа цела L2-direct), userspace опрашивает раз в окно. `(dst __be32, байты)`; молчащий флоу
+    /// исчезает (авто-эвикт). Аплинк = `client_active` сигнал EarnedFloor (шлёт ли клиент сейчас).
     pub fn drain_udp_flow_bytes(&mut self) -> Result<Vec<(u32, u64)>, String> {
+        self.drain_u32_u64_map("UDP_FLOW_BYTES")
+    }
+
+    /// Слить+СБРОСИТЬ UDP-ДАУНЛИНК счётчики (`UDP_RETURN_BYTES`, BL-235): per-src(сервер) возвратные
+    /// байты server→client за ОКНО (eth1-egress). Даунлинк = `sample` EarnedFloor против планки
+    /// (сигнал, деградирующий под троттлом). Ключ src симметричен dst-ключу аплинка → джойн по серверу.
+    pub fn drain_udp_return_bytes(&mut self) -> Result<Vec<(u32, u64)>, String> {
+        self.drain_u32_u64_map("UDP_RETURN_BYTES")
+    }
+
+    /// Общий слив-и-сброс `HashMap<u32,u64>`-счётчика окна: собрать ключи ДО мутации (нельзя remove во
+    /// время итерации по `keys()`), read+remove по каждому. Недо-счёт на гонке remove↔инкремент
+    /// пренебрежим (throughput приблизителен). Молчащий ключ исчезает — авто-эвикт следующего окна.
+    fn drain_u32_u64_map(&mut self, name: &str) -> Result<Vec<(u32, u64)>, String> {
         let mut map: aya::maps::HashMap<_, u32, u64> = aya::maps::HashMap::try_from(
             self.bpf
-                .map_mut("UDP_FLOW_BYTES")
-                .ok_or("UDP_FLOW_BYTES map not found")?,
+                .map_mut(name)
+                .ok_or_else(|| format!("{name} map not found"))?,
         )
-        .map_err(|e| format!("UDP_FLOW_BYTES type mismatch: {e}"))?;
+        .map_err(|e| format!("{name} type mismatch: {e}"))?;
 
-        // Ключи собираем ДО мутации (нельзя remove во время итерации по keys()).
         let keys: Vec<u32> = map.keys().filter_map(|k| k.ok()).collect();
         let out = keys
             .into_iter()
