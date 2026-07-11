@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::io;
 
-use aya::maps::{HashMap, MapData, RingBuf};
+use aya::maps::lpm_trie::Key;
+use aya::maps::{HashMap, LpmTrie, MapData, RingBuf};
 use aya::programs::{tc, SchedClassifier, TcAttachType};
 use aya::Ebpf;
 use reflex_linux_common::{steer_fate, Fate, FlowAction, FlowEvent, SteerStat, STEER_STAT_SLOTS};
@@ -207,6 +208,28 @@ impl TcProgram {
         Ok(())
     }
 
+    /// PRIOR-множество звонковых CIDR (act-on-prior, BL-235): UDP dst ∈ prefix → ПРОАКТИВНЫЙ лифт в
+    /// пол (`serve_udp` политика `PriorFloor`, детерминированно Floor). `net`/`prefix_len` = CIDR
+    /// (напр. 91.108.0.0/16 — звонковые релеи телеги). LPM-trie: ключ data = network-order байты (как
+    /// STEER_TARGETS), матч по longest-prefix. Зеркало `add_steer_target`, но по диапазону, не /32.
+    pub fn add_prior_floor(
+        &mut self,
+        net: std::net::Ipv4Addr,
+        prefix_len: u32,
+    ) -> Result<(), String> {
+        let mut trie: LpmTrie<_, u32, u8> = LpmTrie::try_from(
+            self.bpf
+                .map_mut("PRIOR_FLOOR")
+                .ok_or("PRIOR_FLOOR map not found")?,
+        )
+        .map_err(|e| format!("PRIOR_FLOOR type mismatch: {e}"))?;
+
+        let key = Key::new(prefix_len, u32::from_ne_bytes(net.octets()));
+        trie.insert(&key, 1u8, 0)
+            .map_err(|e| format!("PRIOR_FLOOR insert: {e}"))?;
+        Ok(())
+    }
+
     /// Режим лифта: `true` = лифтить ВСЕ HTTPS(443) → SNI решает ловец (домен-ключ, CDN-robust); `false`
     /// = surgical (лишь dst ∈ STEER_TARGETS). Ставится из env `STEER_ALL_443` (`inline_up`).
     pub fn set_steer_all(&mut self, on: bool) -> Result<(), String> {
@@ -247,6 +270,41 @@ impl TcProgram {
         .map_err(|e| format!("STEER_IFINDEX type mismatch: {e}"))?;
         m.set(0, ifindex, 0)
             .map_err(|e| format!("STEER_IFINDEX set: {e}"))?;
+        Ok(())
+    }
+
+    /// ifindex sing-box-tun для UDP-floor (BL-235, tun-двигатель): eBPF редиректит prior-матченную
+    /// UDP-датаграмму СЮДА (sing-box несёт VLESS'ом, минуя наш netstack). Ставится ПОСЛЕ старта
+    /// sing-box (тот создаёт tun). 0 = tun не готов → prior-UDP не лифтится (fail-open в L2-direct).
+    pub fn set_singbox_tun_ifindex(&mut self, ifindex: u32) -> Result<(), String> {
+        let mut m: aya::maps::Array<_, u32> = aya::maps::Array::try_from(
+            self.bpf
+                .map_mut("SINGBOX_TUN_IFINDEX")
+                .ok_or("SINGBOX_TUN_IFINDEX map not found")?,
+        )
+        .map_err(|e| format!("SINGBOX_TUN_IFINDEX type mismatch: {e}"))?;
+        m.set(0, ifindex, 0)
+            .map_err(|e| format!("SINGBOX_TUN_IFINDEX set: {e}"))?;
+        Ok(())
+    }
+
+    /// Доцепить УЖЕ ЗАГРУЖЕННЫЙ `reflex_return` ко ВТОРОМУ устройству (sing-box-tun) из ТОГО ЖЕ `Ebpf`
+    /// (BL-235, tun-двигатель): карты ОБЩИЕ — `CLIENT_MACS` выучен `reflex_steer` на eth1-ingress,
+    /// читается возвратом по dst-IP ответа. sing-box пишет ответ пола (сырой L3) в свой tun → он
+    /// приходит на INGRESS tun → `reflex_return` клеит Ethernet + `bpf_redirect(eth1)` клиенту (зеркало
+    /// возврата с nevod0). Программа уже `load()`'нута (в `attach_inline`) — здесь ТОЛЬКО `attach()`,
+    /// повторный `load()` нельзя. Устройство должно СУЩЕСТВОВАТЬ (sing-box поднял tun).
+    pub fn attach_return_extra(&mut self, device: &str) -> Result<(), String> {
+        let _ = tc::qdisc_add_clsact(device);
+        let program: &mut SchedClassifier = self
+            .bpf
+            .program_mut("reflex_return")
+            .ok_or("reflex_return not found in eBPF object")?
+            .try_into()
+            .map_err(|e| format!("not a SchedClassifier: {e}"))?;
+        program
+            .attach(device, TcAttachType::Ingress)
+            .map_err(|e| format!("attach reflex_return to {device} failed: {e}"))?;
         Ok(())
     }
 
