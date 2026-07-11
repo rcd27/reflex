@@ -388,6 +388,32 @@ impl TcProgram {
         Ok(line)
     }
 
+    /// Слить+СБРОСИТЬ UDP-throughput счётчики (`UDP_FLOW_BYTES`, BL-235): per-dst байты за ОКНО.
+    /// Неинвазивный observe — eBPF считает UDP на транзите (НЕ заворачивает, медиа цела L2-direct),
+    /// userspace опрашивает раз в окно → EarnedFloor-сэмплер. Возвращает `(dst __be32, байты)` по
+    /// активным флоу и обнуляет карту (следующее окно с нуля; молчащий флоу исчезает — авто-эвикт).
+    /// Read+remove; недо-счёт на гонке remove↔инкремент пренебрежим (throughput приблизителен).
+    pub fn drain_udp_flow_bytes(&mut self) -> Result<Vec<(u32, u64)>, String> {
+        let mut map: aya::maps::HashMap<_, u32, u64> = aya::maps::HashMap::try_from(
+            self.bpf
+                .map_mut("UDP_FLOW_BYTES")
+                .ok_or("UDP_FLOW_BYTES map not found")?,
+        )
+        .map_err(|e| format!("UDP_FLOW_BYTES type mismatch: {e}"))?;
+
+        // Ключи собираем ДО мутации (нельзя remove во время итерации по keys()).
+        let keys: Vec<u32> = map.keys().filter_map(|k| k.ok()).collect();
+        let out = keys
+            .into_iter()
+            .filter_map(|k| {
+                let bytes = map.get(&k, 0).ok()?;
+                let _ = map.remove(&k); // сброс окна
+                Some((k, bytes))
+            })
+            .collect();
+        Ok(out)
+    }
+
     pub fn interface(&self) -> &str {
         &self.interface
     }
