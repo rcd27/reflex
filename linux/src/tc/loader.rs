@@ -230,6 +230,29 @@ impl TcProgram {
         Ok(())
     }
 
+    /// Снять dst из PRIOR_FLOOR (реактивная отклейка пола, `NoLeakedFloor`): пульсар-драйвер зовёт на
+    /// idle флоу → дальнейшие датаграммы к dst снова идут L2-direct (не приклеен к dst-IP навсегда).
+    /// Пара к `add_prior_floor`; `prefix_len` = как при вставке (реактивный флип = /32). Промах ключа
+    /// (не было записи) не ошибка — idle мог наступить до флипа.
+    pub fn remove_prior_floor(
+        &mut self,
+        net: std::net::Ipv4Addr,
+        prefix_len: u32,
+    ) -> Result<(), String> {
+        let mut trie: LpmTrie<_, u32, u8> = LpmTrie::try_from(
+            self.bpf
+                .map_mut("PRIOR_FLOOR")
+                .ok_or("PRIOR_FLOOR map not found")?,
+        )
+        .map_err(|e| format!("PRIOR_FLOOR type mismatch: {e}"))?;
+
+        let key = Key::new(prefix_len, u32::from_ne_bytes(net.octets()));
+        match trie.remove(&key) {
+            Ok(()) => Ok(()),
+            Err(_) => Ok(()), // промах ключа = idle до флипа, не ошибка
+        }
+    }
+
     /// Режим лифта: `true` = лифтить ВСЕ HTTPS(443) → SNI решает ловец (домен-ключ, CDN-robust); `false`
     /// = surgical (лишь dst ∈ STEER_TARGETS). Ставится из env `STEER_ALL_443` (`inline_up`).
     pub fn set_steer_all(&mut self, on: bool) -> Result<(), String> {
