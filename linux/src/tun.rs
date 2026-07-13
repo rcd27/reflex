@@ -129,10 +129,26 @@ impl TunFlows {
     /// Открывает `dev`, поднимает netstack (только TCP), спавнит runner + два насоса (tun↔стек).
     pub fn bind(dev: &str) -> io::Result<Self> {
         let fd = Arc::new(AsyncFd::new(open_tun(dev)?)?);
+        // Буфер сокета 64КБ (окно TCP), не дефолтные 320КБ: netstack аллоцирует буфер на КАЖДЫЙ
+        // сокет (recv+send), 320КБ×N — корень утечки #74 (RSS ползёт, USB-нога голодает). 64КБ =
+        // ~10Мбит/с/флоу при RTT 50мс, агрегат многих флоу насыщает линк; память/сокет −5x. Контроль
+        // появился в netstack-smoltcp 0.2.4 (в 0.1.4 захардкожено). Прибор B стенда меряет реальный
+        // байт-на-флоу — увидим фактический выигрыш.
+        // 64КБ окно TCP. ЗАМЕР (стенд, прибор B): размер буфера памяти-НЕЙТРАЛЕН (320→64→4КБ = один RSS)
+        // — idle-флоу не пишут в буфер, страницы lazy-backed (mmap zero-COW), в RSS не входят. Держим
+        // 64КБ ради throughput (окно), не ради памяти.
+        // TODO(#74): утечка RSS НЕ локализована — теория «301×1.28МиБ netstack-сокетов» ОПРОВЕРГНУТА
+        // (ужали буфер 5x, RSS не сдвинулся). Растёт ~12МБ/с при live=300 плато → runaway-OOM; где —
+        // black-box не видит. След. сессия: прибор C (smaps heap-vs-mmap: наш код vs netstack), затем
+        // bracket-адаптер netstack в reflex (Drop=abort/RST гарантирует release, как eBPF-guard — сокет ⊆
+        // время жизни флоу, орфан невыразим). netstack-smoltcp=тонкий переходник (25★), движок smoltcp ок.
+        const TCP_WINDOW: u32 = 64 * 1024;
         let (stack, runner, _udp, listener) = StackBuilder::default()
             .enable_tcp(true)
             .enable_udp(false)
             .enable_icmp(false)
+            .tcp_recv_buffer_size(TCP_WINDOW)
+            .tcp_send_buffer_size(TCP_WINDOW)
             .build()?;
         let listener =
             listener.ok_or_else(|| io::Error::other("netstack собран без TCP-listener"))?;

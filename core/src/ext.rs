@@ -1,9 +1,10 @@
 use std::hash::Hash;
 
-use futures::Stream;
+use futures::{Future, Stream};
 
 use crate::stream::{
-    GroupByDomainStream, GroupByStream, ScanStream, SwitchMapStream, WithLatestFromStream,
+    GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream, SwitchMapStream,
+    WithLatestFromStream,
 };
 use crate::types::TcpSegment;
 
@@ -22,6 +23,20 @@ pub trait ReflexExt: Stream + Sized {
         Inner: Stream,
     {
         SwitchMapStream::new(self, f)
+    }
+
+    /// bounded-flatMap / mergeMap(`cap`) — потолок конкуррентности живых future.
+    ///
+    /// По future на айтем, одновременно живых НЕ больше `cap`; пока потолок занят,
+    /// источник не опрашивается (backpressure). Проекция молекулы `FlowPermit`
+    /// (nevod/model/molecule/FlowPermit.tla): permit = слот, `Terminate` = завершение
+    /// future. Порядок выхода не гарантирован.
+    fn merge_map_bounded<F, Fut>(self, cap: usize, f: F) -> MergeMapBounded<Self, F, Fut>
+    where
+        F: FnMut(Self::Item) -> Fut,
+        Fut: Future,
+    {
+        MergeMapBounded::new(self, cap, f)
     }
 
     fn with_latest_from<Other, F, R>(

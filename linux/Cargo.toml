@@ -25,7 +25,7 @@ thiserror = "2"
 libc = "0.2"
 aya = { version = "0.13", optional = true }
 reflex-linux-common = { path = "../linux-common", optional = true }
-netstack-smoltcp = { version = "0.1.4", optional = true } # tun→async-stream, движок smoltcp 0.12
+netstack-smoltcp = { version = "0.2.4", optional = true } # tun→async-stream, движок smoltcp 0.12; 0.2.4 даёт конфиг буфера сокета (tcp_recv/send_buffer_size) — контроль над 320КБ-дефолтом
 tokio-util = { version = "0.7", features = ["compat"], optional = true } # futures↔tokio AsyncRead мост
 # originate-нога держит СВОЙ netstack (active-open) — smoltcp напрямую, тот же движок/версия, что тянет
 # netstack-smoltcp (одна копия в дереве). medium-ip: tun даёт сырой IP, L2 клеит eBPF (не netstack).
