@@ -10,6 +10,8 @@ pub mod tc;
 pub mod tun;
 #[cfg(feature = "tun")]
 pub mod tun_egress;
+#[cfg(feature = "tun")]
+pub mod tun_listen;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

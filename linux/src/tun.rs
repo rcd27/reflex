@@ -137,15 +137,12 @@ impl TunFlows {
         // 64КБ окно TCP. ЗАМЕР (стенд, прибор B): размер буфера памяти-НЕЙТРАЛЕН (320→64→4КБ = один RSS)
         // — idle-флоу не пишут в буфер, страницы lazy-backed (mmap zero-COW), в RSS не входят. Держим
         // 64КБ ради throughput (окно), не ради памяти.
-        // TODO(#74): ПИВОТ — собственная имплементация TCP-в-туннель на reflex. netstack-smoltcp
-        // (тонкий переходник, 15★) не заточен под наши задачи: буфер/жизненный цикл/backpressure сокета
-        // не в нашей юрисдикции → утечку RSS локализовать нельзя (теория «301×1.28МиБ» ОПРОВЕРГНУТА —
-        // ужали буфер 5x, RSS не сдвинулся; растёт ~12МБ/с при live=300 плато, black-box не видит где).
-        // Чертёж — tailscale-rs/ts_netstack_smoltcp (тот же движок smoltcp, но обёрнут как надо): буфер
-        // 16КБ-конфиг, командный канал bounded(32), Drop-driven реап (pending_closes + потолок). Берём
-        // движок smoltcp, ВЛАДЕЕМ обёрткой в reflex: сокет ⊆ время жизни флоу (Drop=abort/RST гарантирует
-        // release, как eBPF-guard — орфан невыразим), FlowPermit-потолок, bounded-каналы. netstack-smoltcp
-        // → legacy (срезать по готовности своей обёртки). Разбор руды — коммент в issue #74.
+        // #74 ПРИЗЕМЛЁН: собственная TCP-в-туннель обёртка на движке smoltcp живёт в `tun_listen`
+        // (`TunFlows`/`TunStream` там). Сокет ⊆ время жизни флоу (Drop=abort/RST, орфан невыразим),
+        // FlowPermit-потолок на аллокации (на SYN), WitnessedLease byte-idle backstop, bounded-каналы —
+        // снимает корень #1 (орфан-сокет на таймере 2ч). Потребители (`serve_tun`, `main.rs`) переключены
+        // на `tun_listen::TunFlows`. ЭТОТ (`tun::TunFlows`/`TunPlane`/`TunDatagrams`, netstack-smoltcp) —
+        // LEGACY: жив ради UDP-половины (`TunDatagrams`, отдельный срез юрисдикции), для TCP не потребляется.
         const TCP_WINDOW: u32 = 64 * 1024;
         let (stack, runner, _udp, listener) = StackBuilder::default()
             .enable_tcp(true)
