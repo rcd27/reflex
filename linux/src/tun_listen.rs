@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -55,10 +55,10 @@ const LISTEN_MTU: usize = 1500;
 const IDLE_POLL: Duration = Duration::from_millis(50); // страховочный тик, если smoltcp не дал delay
 const FRAME_CHAN_CAP: usize = 256; // bounded пакетный канал (насос backpressure'ит на переполнении)
 const DEFAULT_FLOW_CAP: usize = 512; // FlowPermit-потолок по умолчанию (env NEVOD_FLOW_CAP переопределит)
-// WitnessedLease backstop: молчание байт-witness дольше этого → abort. СТРОГО ПОЗЖЕ релейного
-// `FLOW_IDLE`=120с (`nevod-poc catch.rs`): в норме флоу реапит релей (idle-splice) → Drop→abort;
-// backstop добивает лишь ЗАВИС-кейс (write_all под отвалившейся ногой, корень #3), которого релей не
-// достал. Раньше 120с рубил бы легитимно-idle соединения, что релей считает живыми. Не 2ч (анти-паттерн).
+                                     // WitnessedLease backstop: молчание байт-witness дольше этого → abort. СТРОГО ПОЗЖЕ релейного
+                                     // `FLOW_IDLE`=120с (`nevod-poc catch.rs`): в норме флоу реапит релей (idle-splice) → Drop→abort;
+                                     // backstop добивает лишь ЗАВИС-кейс (write_all под отвалившейся ногой, корень #3), которого релей не
+                                     // достал. Раньше 120с рубил бы легитимно-idle соединения, что релей считает живыми. Не 2ч (анти-паттерн).
 const BYTE_IDLE_MS: u64 = 180_000;
 
 // ── Общий control сокета: мост между sync poll-лупом (пишет буферы, будит) и async-стримом ──
@@ -261,13 +261,15 @@ fn wake(slot: &mut Option<Waker>) {
 /// Отдаёт ИСТИННЫЙ dst (цель клиента прямо из IP-заголовка — петля-на-себя невыразима). Не-SYN и
 /// не-TCP → `None` (кадр всё равно кормится стеку для существующих сокетов). Тотальна: `?`/`.ok()`,
 /// без `unwrap`; протокол сверяем равенством (не `_ =>`).
-fn parse_syn(frame: &[u8]) -> Option<SocketAddr> {
+fn parse_syn(frame: &[u8]) -> Option<SocketAddrV4> {
     let ip = Ipv4Packet::new_checked(frame).ok()?;
     if ip.next_header() != IpProtocol::Tcp {
         return None;
     }
     let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
-    (tcp.syn() && !tcp.ack()).then(|| SocketAddr::new(IpAddr::V4(ip.dst_addr()), tcp.dst_port()))
+    // SocketAddrV4 (не SocketAddr): `From<SocketAddrV4> for IpListenEndpoint` доступен при одном
+    // proto-ipv4 (SocketAddr-конверсия smoltcp требует ещё proto-ipv6 — не тянем, nevod0 IPv4-only).
+    (tcp.syn() && !tcp.ack()).then(|| SocketAddrV4::new(ip.dst_addr(), tcp.dst_port()))
 }
 
 /// Собрать smoltcp-iface для ПРОЗРАЧНОГО listen: medium-ip, placeholder-адрес `0.0.0.1/0` + дефолт-роут
@@ -385,7 +387,7 @@ fn ingest(
         };
         // accept-канал bounded == flow_cap → на потолке допуска Full невозможен; Err = потребитель
         // (`serve_tun`) ушёл → стрим дропнут в этой ветке → `abort`-флаг → сокет снимется следующим тиком.
-        let _ = accept_tx.try_send((stream, dst));
+        let _ = accept_tx.try_send((stream, SocketAddr::V4(dst)));
     }
     let _ = iface; // context не нужен для listen (в отличие от connect в egress) — держим сигнатуру симметричной
     device.rx.push_back(frame);
