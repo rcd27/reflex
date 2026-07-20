@@ -56,7 +56,7 @@ const IDLE_POLL: Duration = Duration::from_millis(50); // страховочны
 const FRAME_CHAN_CAP: usize = 256; // bounded пакетный канал (насос backpressure'ит на переполнении)
 const DEFAULT_FLOW_CAP: usize = 512; // FlowPermit-потолок по умолчанию (env NEVOD_FLOW_CAP переопределит)
                                      // WitnessedLease backstop: молчание байт-witness дольше этого → abort. СТРОГО ПОЗЖЕ релейного
-                                     // `FLOW_IDLE`=120с (`nevod-poc catch.rs`): в норме флоу реапит релей (idle-splice) → Drop→abort;
+                                     // `FLOW_IDLE`=120с (`nevod catch.rs`): в норме флоу реапит релей (idle-splice) → Drop→abort;
                                      // backstop добивает лишь ЗАВИС-кейс (write_all под отвалившейся ногой, корень #3), которого релей не
                                      // достал. Раньше 120с рубил бы легитимно-idle соединения, что релей считает живыми. Не 2ч (анти-паттерн).
 const BYTE_IDLE_MS: u64 = 180_000;
