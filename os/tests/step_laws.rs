@@ -157,3 +157,27 @@ fn a_consuming_step_is_caught_as_non_idempotent() {
         "накапливающий шаг притворился идемпотентным — закон слеп"
     );
 }
+
+// НЕОБЯЗАТЕЛЬНЫЙ шаг вне своей области — ТОЖДЕСТВО, а не преграда. Этот закон я
+// узнал провалом: подняв самогасящееся условие `mesh_bootstrap` в обычную охрану,
+// я превратил «нечего делать, проходим» в «не готовы, стоп» и уронил 12 тестов
+// Смотрителя. Охрана отвечает «действие применимо?», а не «идти ли дальше?».
+#[test]
+fn an_optional_step_outside_its_domain_is_the_identity() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let counted = ran.clone();
+    let step: Step<u8, u8, String> = Step::optional(Level::always(false), move |v| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(v + 100)
+    });
+
+    assert_eq!(step.attempt(7), StepOutcome::Advanced(7), "вход не пропущен");
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "неприменимый шаг выполнился");
+}
+
+// А внутри области — работает как обычный шаг.
+#[test]
+fn an_optional_step_inside_its_domain_acts() {
+    let step: Step<u8, u8, String> = Step::optional(Level::always(true), |v| Ok(v + 100));
+    assert_eq!(step.attempt(7), StepOutcome::Advanced(107));
+}
