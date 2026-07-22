@@ -22,7 +22,16 @@ use std::time::Duration;
 /// — но она маскирует поломку среды ровно там, где её и надо увидеть. Решение
 /// «жить дальше на одном поле» принимает вызывающий, одной видимой строкой.
 pub fn present(name: &str, floor: Duration) -> std::io::Result<Level<bool>> {
-    let probe = std::path::PathBuf::from("/sys/class/net").join(name);
+    present_at(std::path::PathBuf::from("/sys/class/net").join(name), floor)
+}
+
+/// То же, но проба задаётся путём явно.
+///
+/// Нужно там, где истина живёт не по каноническому адресу — прежде всего в тестовых
+/// харнессах, подставляющих свой корень. Подсказка при этом остаётся НАСТОЯЩЕЙ:
+/// подменяется источник истины, а не источник поводов, и потому подмена не делает
+/// тест зелёным даром.
+pub fn present_at(probe: std::path::PathBuf, floor: Duration) -> std::io::Result<Level<bool>> {
     let hint = link_group_socket()?;
     Ok(Level::hinted(hint, floor, move || {
         std::fs::metadata(&probe).is_ok()
@@ -80,6 +89,19 @@ mod tests {
         let level = present("lo", Duration::from_millis(50));
         assert!(level.is_ok());
         assert_eq!(level.map(|l| l.get()).ok(), Some(true));
+    }
+
+    // Проба по явному пути — истина берётся оттуда, куда указали, а не из канона.
+    #[test]
+    fn present_at_reads_the_given_path() {
+        let here = std::env::temp_dir();
+        let level = present_at(here, Duration::from_millis(50));
+        assert!(level.is_ok());
+        assert_eq!(level.map(|l| l.get()).ok(), Some(true));
+
+        let nowhere = std::path::PathBuf::from("/nevod/такого/пути/нет");
+        let level = present_at(nowhere, Duration::from_millis(50));
+        assert_eq!(level.map(|l| l.get()).ok(), Some(false));
     }
 
     // Заведомо несуществующее имя: уровень честно ложен, ожидание доходит до дедлайна.

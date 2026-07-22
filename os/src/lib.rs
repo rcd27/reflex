@@ -16,6 +16,9 @@
 //! покупает только латентность.**
 
 pub mod link;
+pub mod step;
+
+pub use step::{Step, StepOutcome};
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,9 +75,40 @@ impl<T> Level<T> {
         }
     }
 
+    /// Уровень, не зависящий от мира. ЕДИНИЦА встречи: пол `Duration::MAX` —
+    /// нейтрален к `min`, подсказок нет, значит `a ∧ ⊤` наблюдается как `a`.
+    /// Нужен затем, что «шаг без предусловий» обязан выражаться в той же алгебре,
+    /// а не особым случаем в коде потребителя.
+    pub fn always(value: T) -> Level<T>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        Level {
+            resync: Arc::new(move || value.clone()),
+            hints: Vec::new(),
+            floor: Duration::MAX,
+        }
+    }
+
     /// Истина прямо сейчас.
     pub fn get(&self) -> T {
         (self.resync)()
+    }
+
+    /// Функтор: истина преобразуется, наблюдение остаётся тем же.
+    ///
+    /// Подсказки и пол переезжают НЕТРОНУТЫМИ — в этом и смысл функторности:
+    /// `map` меняет то, ЧТО мы знаем, и не трогает то, ОТКУДА узнаём.
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + Send + Sync + 'static) -> Level<U>
+    where
+        T: 'static,
+    {
+        let inner = self.resync.clone();
+        Level {
+            resync: Arc::new(move || f(inner())),
+            hints: self.hints,
+            floor: self.floor,
+        }
     }
 
     /// Ждать, пока уровень удовлетворит предикату, но не дольше `deadline`.
@@ -151,6 +185,18 @@ impl<T> Level<T> {
         fds.iter()
             .filter(|slot| slot.revents & libc::POLLIN != 0)
             .for_each(|slot| drain(slot.fd));
+    }
+}
+
+/// Область определённости шага: уровень, отвечающий «готов / не готов».
+///
+/// Встреча (`∧`) НЕ пишется отдельно — она выводится из моноидального произведения
+/// `both` и функтора `map`. Это и есть проверка, что структура настоящая: будь
+/// `and` самостоятельной функцией со своей склейкой полей, законы пришлось бы
+/// обеспечивать руками; здесь они наследуются от `both`.
+impl Level<bool> {
+    pub fn and(self, other: Level<bool>) -> Level<bool> {
+        self.both(other).map(|(left, right)| left && right)
     }
 }
 
