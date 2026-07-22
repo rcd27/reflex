@@ -1,0 +1,14 @@
+[package]
+name = "reflex-os"
+version = "0.0.1"
+edition = "2021"
+description = "Состояние ОС как УРОВНИ: resync (истина) + hint (подсказка) + floor (пол)"
+license = "GPL-3.0-only"
+
+# Рантайма НЕТ сознательно (#152): примитив обязан быть потребляем субстратом
+# (bridge-box/warden), где tokio не нужен и вреден — гейт однопроходен. Адаптер
+# под tokio живёт в reflex-runtime, не здесь. libc — чистый shim (замерено: +0 байт
+# к nevod-warden на aarch64-musl).
+
+[dependencies]
+libc = "0.2"

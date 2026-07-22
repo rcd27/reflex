@@ -5,6 +5,7 @@ members = [
     "runtime",
     "linux",
     "linux-common",
+    "os",
     "examples/rst-injection",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately
