@@ -484,6 +484,49 @@ impl TcProgram {
         self.drain_u32_u64_map("UDP_RETURN_BYTES")
     }
 
+    /// ВОЗРАСТ последнего возвратного пакета per-src(сервер) — витнес столла по ШТАМПУ ПРИХОДА
+    /// (`UDP_RETURN_STAMP`), а не по «был ли байт в окне поллера». Разница принципиальна: окно
+    /// поллера короче суммы «RTT + фаза окна», поэтому у ЖИВОГО потока часть окон приходит пустыми, и
+    /// вердикт по окну оговаривает живой поток (#182 — игровые сессии рвались). Штамп ставится
+    /// приёмом пакета в eBPF, значит «поллер узнал позже» из вердикта уходит совсем.
+    ///
+    /// Часы снимаются ДО чтения карты НАМЕРЕННО: пакет, пришедший между двумя действиями, даст штамп
+    /// «из будущего» и прочтётся как нулевой возраст (эскалация опоздает на тик). Обратный порядок
+    /// завышал бы возраст на время чтения карты — то есть ошибался бы в сторону ложного пола.
+    ///
+    /// Карта — УРОВЕНЬ, не дельта: читаем БЕЗ сброса (сброс уничтожил бы сам возраст). Ключи снимает
+    /// потребитель при эвикте трека (`forget_udp_return_stamp`) — иначе штамп молчащего сервера
+    /// доживёт до следующего разговора с ним и оговорит свежий поток «молчит час».
+    pub fn udp_return_ages(&self) -> Result<Vec<(u32, std::time::Duration)>, String> {
+        let now = monotonic_now_ns()?;
+        let stamps: HashMap<_, u32, u64> = HashMap::try_from(
+            self.bpf
+                .map("UDP_RETURN_STAMP")
+                .ok_or("UDP_RETURN_STAMP map not found")?,
+        )
+        .map_err(|e| format!("UDP_RETURN_STAMP type mismatch: {e}"))?;
+
+        Ok(stamps
+            .iter()
+            .filter_map(|kv| kv.ok())
+            .map(|(key, stamp)| (key, stamp_age(now, stamp)))
+            .collect())
+    }
+
+    /// Снять штамп сервера (эвикт трека): карта ограничена 4096 ключами, и переполнение молча съело бы
+    /// новые сервера (`insert` в полную карту фейлится) — витнес исчез бы ровно у свежих потоков.
+    pub fn forget_udp_return_stamp(&mut self, key: u32) -> Result<(), String> {
+        let mut stamps: HashMap<_, u32, u64> = HashMap::try_from(
+            self.bpf
+                .map_mut("UDP_RETURN_STAMP")
+                .ok_or("UDP_RETURN_STAMP map not found")?,
+        )
+        .map_err(|e| format!("UDP_RETURN_STAMP type mismatch: {e}"))?;
+        stamps
+            .remove(&key)
+            .map_err(|e| format!("UDP_RETURN_STAMP remove: {e}"))
+    }
+
     /// Общий слив-и-сброс `HashMap<u32,u64>`-счётчика окна: собрать ключи ДО мутации (нельзя remove во
     /// время итерации по `keys()`), read+remove по каждому. Недо-счёт на гонке remove↔инкремент
     /// пренебрежим (throughput приблизителен). Молчащий ключ исчезает — авто-эвикт следующего окна.
@@ -509,6 +552,51 @@ impl TcProgram {
 
     pub fn interface(&self) -> &str {
         &self.interface
+    }
+}
+
+/// Монотонные часы В БАЗЕ eBPF-хелпера `bpf_ktime_get_ns()` — это `CLOCK_MONOTONIC` (время с
+/// загрузки, без учёта suspend). Сравнивать штамп ядра можно ТОЛЬКО с ним: `Instant`/`SystemTime`
+/// живут в других базах, а разница баз молча превратилась бы в постоянный сдвиг возраста.
+fn monotonic_now_ns() -> Result<u64, String> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // IO-край: часы ядра — сисколл, чистой альтернативы нет (Правило 5, мутация локальна вызову).
+    match unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) } {
+        0 => Ok((ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)),
+        _rc => Err(format!("clock_gettime: {}", io::Error::last_os_error())),
+    }
+}
+
+/// Возраст штампа в одной монотонной базе. `saturating_sub` — не «на всякий случай»: штамп ПОЗЖЕ
+/// «сейчас» законен (пакет пришёл между снятием часов и чтением карты) и означает самый свежий
+/// возврат, а вычитание u64 в лоб дало бы возраст в сотни лет и мгновенный ложный пол.
+fn stamp_age(now_ns: u64, stamp_ns: u64) -> std::time::Duration {
+    std::time::Duration::from_nanos(now_ns.saturating_sub(stamp_ns))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_age;
+    use std::time::Duration;
+
+    // Возраст = расстояние от МОМЕНТА ПРИХОДА пакета до «сейчас» в одной монотонной базе.
+    #[test]
+    fn age_is_distance_from_stamp_to_now() {
+        assert_eq!(
+            stamp_age(1_000_000_000, 300_000_000),
+            Duration::from_millis(700)
+        );
+    }
+
+    // Штамп «из будущего» (пакет пришёл между снятием часов и чтением карты) — это САМЫЙ свежий
+    // возврат, а не отрицательный возраст и не гигантский из-за переполнения u64. Направление ошибки
+    // выбрано намеренно: «только что отвечал» задержит эскалацию, а не оговорит живой поток.
+    #[test]
+    fn stamp_from_future_reads_as_fresh() {
+        assert_eq!(stamp_age(300_000_000, 1_000_000_000), Duration::ZERO);
     }
 }
 
