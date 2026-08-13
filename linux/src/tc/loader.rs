@@ -6,7 +6,7 @@ use aya::maps::{HashMap, LpmTrie, MapData, RingBuf};
 use aya::programs::{tc, SchedClassifier, TcAttachType};
 use aya::Ebpf;
 use reflex_linux_common::{
-    steer_fate, Fate, FlowAction, FlowEvent, SteerMode, SteerStat, STEER_STAT_SLOTS,
+    steer_fate, Fate, FlowAction, FlowEvent, Sighting, SteerMode, SteerStat, STEER_STAT_SLOTS,
 };
 use tokio::io::unix::AsyncFd;
 
@@ -77,7 +77,7 @@ impl TcProgram {
         client_iface: &str,
         return_iface: &str,
         bpf_bytes: &[u8],
-    ) -> Result<(Self, FlowEvents), String> {
+    ) -> Result<(Self, FlowEvents, Sightings), String> {
         let mut bpf = Ebpf::load(bpf_bytes).map_err(|e| format!("eBPF load failed: {e}"))?;
         let _ = tc::qdisc_add_clsact(client_iface);
         let _ = tc::qdisc_add_clsact(return_iface);
@@ -104,12 +104,14 @@ impl TcProgram {
             TcAttachType::Ingress,
         )?;
         let events = FlowEvents::from_ebpf(&mut bpf)?;
+        let sightings = Sightings::from_ebpf(&mut bpf)?;
         Ok((
             Self {
                 bpf,
                 interface: client_iface.to_string(),
             },
             events,
+            sightings,
         ))
     }
 
@@ -689,6 +691,63 @@ impl FlowEvents {
             if item.len() >= core::mem::size_of::<FlowEvent>() {
                 let ev = unsafe { core::ptr::read_unaligned(item.as_ptr() as *const FlowEvent) };
                 out.push_back(ev);
+            }
+        }
+    }
+}
+
+/// Async-поток НАБЛЮДЕНИЙ из кольца `SIGHT_EVENTS` — зрение без хвата (#249). eBPF копирует сюда
+/// начало рукопожатия НЕлифтнутого транзита; здесь читаем копии, чтобы наверху достать имя.
+///
+/// Отдельный поток, а не ветка `FlowEvents`: там 16-байтовые события КАЖДОГО кадра, здесь —
+/// полукилобайтовые копии редких рукопожатий. Общая очередь означала бы, что всплеск транзита
+/// вытесняет из кольца ровно то, ради чего зрение и заводилось.
+pub struct Sightings {
+    fd: AsyncFd<RingBuf<MapData>>,
+    pending: VecDeque<Sighting>,
+}
+
+impl Sightings {
+    fn from_ebpf(bpf: &mut Ebpf) -> Result<Self, String> {
+        let map = bpf
+            .take_map("SIGHT_EVENTS")
+            .ok_or("SIGHT_EVENTS map not found")?;
+        let ring: RingBuf<MapData> =
+            RingBuf::try_from(map).map_err(|e| format!("SIGHT_EVENTS not a RingBuf: {e}"))?;
+        let fd = AsyncFd::new(ring).map_err(|e| format!("AsyncFd(SIGHT_EVENTS): {e}"))?;
+        Ok(Self {
+            fd,
+            pending: VecDeque::new(),
+        })
+    }
+
+    /// Следующее наблюдение. Poll-страховка та же, что у `FlowEvents`, и по той же причине:
+    /// BPF-ringbuf подавляет epoll-wakeup, если считает потребителя отстающим, и чистый
+    /// `readable().await` тогда спит вечно, хоть записи копятся (замерено на риге).
+    pub async fn recv(&mut self) -> io::Result<Sighting> {
+        const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+        loop {
+            if let Some(s) = self.pending.pop_front() {
+                return Ok(s);
+            }
+            match tokio::time::timeout(POLL, self.fd.readable_mut()).await {
+                Ok(guard) => {
+                    let mut guard = guard?;
+                    Self::drain(guard.get_inner_mut(), &mut self.pending);
+                    guard.clear_ready();
+                }
+                Err(_elapsed) => Self::drain(self.fd.get_mut(), &mut self.pending),
+            }
+        }
+    }
+
+    /// Дренаж кольца в буфер. Запись короче контракта — битая, пропускаем: разбирать полутруп
+    /// рукопожатия значит кормить парсер чужими байтами.
+    fn drain(ring: &mut RingBuf<MapData>, out: &mut VecDeque<Sighting>) {
+        while let Some(item) = ring.next() {
+            if item.len() >= core::mem::size_of::<Sighting>() {
+                let s = unsafe { core::ptr::read_unaligned(item.as_ptr() as *const Sighting) };
+                out.push_back(s);
             }
         }
     }

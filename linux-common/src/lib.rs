@@ -98,10 +98,19 @@ pub enum SteerStat {
     /// Без этого мост форвардит цель по чужому MAC. Разница `TargetHit − Rewritten` = цели, что не
     /// удалось переписать (сбой `bpf_skb_store_bytes`).
     Rewritten = 3,
+    /// ЗРЕНИЕ (#249): транзитный (НЕлифтнутый) кадр, чей payload начинается как TLS-рукопожатие —
+    /// то есть имя в этом флоу вообще БЫЛО. Знаменатель всей наблюдаемости зрения.
+    SightGated = 4,
+    /// Копия начала рукопожатия уехала в кольцо — наблюдение состоялось и ждёт разбора.
+    SightCopied = 5,
+    /// Наблюдение ПОТЕРЯНО на краю: кольцо полно либо копия сорвалась. Отдельный слот, потому что
+    /// «имени не было» и «имя было, да мы его не донесли» — РАЗНЫЕ болезни с разным лечением, а
+    /// выглядят одинаково: тишина наверху (`SightBeforeSeizure`, витнес обязан различать).
+    SightLost = 6,
 }
 
 /// Число слотов `STEER_STATS` (размер Array-карты, общий eBPF↔userspace).
-pub const STEER_STAT_SLOTS: u32 = 4;
+pub const STEER_STAT_SLOTS: u32 = 7;
 
 impl SteerStat {
     /// Человекочитаемая метка слота — userspace-поллер печатает её в лог рига.
@@ -111,6 +120,9 @@ impl SteerStat {
             SteerStat::Ipv4Tcp => "ipv4_tcp",
             SteerStat::TargetHit => "target_hit",
             SteerStat::Rewritten => "rewritten",
+            SteerStat::SightGated => "sight_gated",
+            SteerStat::SightCopied => "sight_copied",
+            SteerStat::SightLost => "sight_lost",
         }
     }
 
@@ -120,6 +132,9 @@ impl SteerStat {
         SteerStat::Ipv4Tcp,
         SteerStat::TargetHit,
         SteerStat::Rewritten,
+        SteerStat::SightGated,
+        SteerStat::SightCopied,
+        SteerStat::SightLost,
     ];
 }
 
@@ -201,6 +216,66 @@ impl FlowEvent {
     pub fn is_upstream(&self) -> bool {
         self.dir == DIR_UPSTREAM
     }
+}
+
+/// Сколько байт начала рукопожатия копирует ЗРЕНИЕ. Потолок, а не «сколько поместится»: SNI лежит
+/// в расширениях ClientHello, и у живого браузера они начинаются за session_id + cipher_suites —
+/// замер на транзите даёт имя в пределах первых ~300 байт даже у Chrome с GREASE. Ровно 512
+/// выбрано, чтобы запись кольца (520 байт) оставалась степенью-дружелюбной и кольцо в 128 КиБ
+/// держало ~250 наблюдений: очередь разбора глубже секунды нам не нужна — знание протухает.
+pub const SIGHT_BYTES: usize = 512;
+
+/// Ниже этого копировать нечего: TLS-запись с ClientHello и SNI короче 64 байт не бывает
+/// (одни только record+handshake-заголовки и random занимают 43). Кадр короче — рукопожатие,
+/// разорванное по сегментам; наблюдается как потеря, а не как «имени не было».
+pub const SIGHT_MIN: usize = 64;
+
+/// НАБЛЮДЕНИЕ (`model/molecule/SightBeforeSeizure`, переменная `sightings`) — копия начала
+/// рукопожатия ТРАНЗИТНОГО флоу, того самого, который мы решили НЕ лифтить. Наш «лист 0» из канона
+/// ТСПУ (`docs/tspu-docs/chapters/08.md`): распознаём, фиксируем, кадр не трогаем.
+///
+/// ОТДЕЛЬНЫЙ тип и ОТДЕЛЬНОЕ кольцо, а не поле в `FlowEvent`: тот несёт два фолда (достижимость и
+/// ByteFlow), его `repr(C)`-раскладка в 16 байт зафиксирована тестом, и полкилобайта на КАЖДЫЙ
+/// наблюдённый кадр — это тот же лифт, только в кольце.
+///
+/// Наблюдение ПЕРЕЖИВАЕТ флоу (найдено моделью: `tobe` краснел, пока наблюдение уходило вместе с
+/// закрывшимся соединением). Оттого здесь лежит цель, а не ссылка на живой флоу: знание добыто и
+/// потоку больше не принадлежит.
+///
+/// Все многобайтовые поля — network order (`__be`, как на проводе): userspace канонизирует.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Sighting {
+    pub dst: u32,                 // __be32 — цель, ключ будущей отметки в STEER_TARGETS
+    pub dport: u16,               // __be16 — порт цели (443; поле есть, чтобы не додумывать)
+    pub len: u16,                 // сколько байт из `bytes` РЕАЛЬНО скопировано (≤ SIGHT_BYTES)
+    pub bytes: [u8; SIGHT_BYTES], // сырое начало upstream-payload: TLS-запись с ClientHello
+}
+
+impl Sighting {
+    /// Скопированные байты — ровно `len`, не весь буфер. Хвост буфера не инициализирован ничем
+    /// осмысленным, и отдать его разборщику значило бы кормить парсер мусором прошлой записи.
+    pub fn payload(&self) -> &[u8] {
+        let end = if (self.len as usize) < SIGHT_BYTES {
+            self.len as usize
+        } else {
+            SIGHT_BYTES
+        };
+        &self.bytes[..end]
+    }
+}
+
+/// ГЕЙТ ЗРЕНИЯ (eBPF, горячий путь): похоже ли начало payload на TLS-рукопожатие. Проверяем ДВА
+/// байта записи (тип 0x16 = Handshake, старший байт версии 0x03), а не полную сигнатуру
+/// ClientHello: в ядре у нас нет структурного разбора, и лишний байт версии — единственное, что
+/// дёшево отсекает поток ApplicationData, случайно начавшийся с 0x16. Полная проверка (тип
+/// рукопожатия 0x01 на пятом байте) делается наверху, где живёт настоящий парсер.
+///
+/// Цена названа: гейт пропускает наверх и не-ClientHello TLS-записи (ServerHello в чужом
+/// направлении, возобновление сессии). Это не молчаливая потеря, а лишняя запись в кольце —
+/// разборщик её отбросит и посчитает как «имя не извлеклось».
+pub fn looks_like_tls_handshake(payload: &[u8]) -> bool {
+    payload.len() >= 2 && payload[0] == 0x16 && payload[1] == 0x03
 }
 
 /// Guarded-решение перехвата (`model/wire/TransparentIntercept`, `.tobe` GREEN): снимаем кадр
@@ -300,6 +375,53 @@ mod tests {
             !is_probe_port(PROBE_PORT_LO - 1),
             "ниже диапазона — не проба"
         );
+    }
+
+    #[test]
+    fn sighting_layout_is_fixed() {
+        // Тот же контракт, что у FlowEvent: eBPF пишет байты, userspace читает ТЕМ ЖЕ типом.
+        // Заголовок 8 байт + буфер — без padding, иначе `bytes` разъедется между сторонами.
+        assert_eq!(core::mem::size_of::<Sighting>(), 8 + SIGHT_BYTES);
+        assert_eq!(core::mem::align_of::<Sighting>(), 4);
+    }
+
+    #[test]
+    fn sighting_payload_is_only_what_was_copied() {
+        // Короткое рукопожатие: отдаём ровно скопированное, а не весь буфер. Хвост — мусор
+        // прошлой записи кольца, и скормить его парсеру значило бы читать чужое имя.
+        let head = [0x16u8, 0x03, 0x01];
+        let s = Sighting {
+            dst: 0,
+            dport: 0,
+            len: 3,
+            // Хвост заполнен мусором намеренно: тест обязан отличить «скопировано 3» от «отдали всё».
+            bytes: core::array::from_fn(|i| match head.get(i) {
+                Some(b) => *b,
+                None => 0xAA,
+            }),
+        };
+        assert_eq!(s.payload(), &head);
+
+        // Битая запись (len врёт больше буфера) не должна ронять разборщик: обрезаем по буферу.
+        let broken = Sighting {
+            dst: 0,
+            dport: 0,
+            len: u16::MAX,
+            bytes: [0; SIGHT_BYTES],
+        };
+        assert_eq!(broken.payload().len(), SIGHT_BYTES);
+    }
+
+    #[test]
+    fn sight_gate_admits_handshake_and_rejects_the_rest() {
+        assert!(looks_like_tls_handshake(&[0x16, 0x03, 0x01, 0x02, 0x00]));
+        // ApplicationData (0x17) — уже установленная сессия, имени там нет.
+        assert!(!looks_like_tls_handshake(&[0x17, 0x03, 0x03]));
+        // 0x16 без версии TLS — не рукопожатие, а совпадение первого байта.
+        assert!(!looks_like_tls_handshake(&[0x16, 0x00]));
+        // Чистый ACK: смотреть не на что.
+        assert!(!looks_like_tls_handshake(&[]));
+        assert!(!looks_like_tls_handshake(&[0x16]));
     }
 
     #[test]
