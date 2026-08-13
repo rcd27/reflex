@@ -5,7 +5,9 @@ use aya::maps::lpm_trie::Key;
 use aya::maps::{HashMap, LpmTrie, MapData, RingBuf};
 use aya::programs::{tc, SchedClassifier, TcAttachType};
 use aya::Ebpf;
-use reflex_linux_common::{steer_fate, Fate, FlowAction, FlowEvent, SteerStat, STEER_STAT_SLOTS};
+use reflex_linux_common::{
+    steer_fate, Fate, FlowAction, FlowEvent, SteerMode, SteerStat, STEER_STAT_SLOTS,
+};
 use tokio::io::unix::AsyncFd;
 
 pub struct TcProgram {
@@ -253,17 +255,49 @@ impl TcProgram {
         }
     }
 
-    /// Режим лифта: `true` = лифтить ВСЕ HTTPS(443) → SNI решает ловец (домен-ключ, CDN-robust); `false`
-    /// = surgical (лишь dst ∈ STEER_TARGETS). Ставится из env `STEER_ALL_443` (`inline_up`).
-    pub fn set_steer_all(&mut self, on: bool) -> Result<(), String> {
+    /// Режим лифта (#227): `Surgical` (лишь `STEER_TARGETS`) · `All443` (весь HTTPS) · `ByMap`
+    /// (карта `STEER_MAP` ∨ выученное). Ставится из env при подъёме датаплейна.
+    ///
+    /// Имя карты осталось `STEER_ALL`, хотя значений теперь три, и это НЕ забытое переименование.
+    /// Троичность здесь — расширение прежнего булева ВВЕРХ: `0`/`1` означают ровно что означали, а
+    /// eBPF-блоб старой сборки читает поле как `*v != 0` и на коде `2` даёт `lift_all = true`.
+    /// То есть рассинхрон userspace и блоба вырождается в `All443` — в то же самое fail-safe, что
+    /// и неизвестный код в `steer_mode_of`. Переименование карты сломало бы это свойство ради
+    /// косметики: старый блоб просто не нашёл бы поля.
+    pub fn set_steer_mode(&mut self, mode: SteerMode) -> Result<(), String> {
         let mut m: aya::maps::Array<_, u8> = aya::maps::Array::try_from(
             self.bpf
                 .map_mut("STEER_ALL")
                 .ok_or("STEER_ALL map not found")?,
         )
         .map_err(|e| format!("STEER_ALL type mismatch: {e}"))?;
-        m.set(0, on as u8, 0)
+        m.set(0, mode as u8, 0)
             .map_err(|e| format!("STEER_ALL set: {e}"))?;
+        Ok(())
+    }
+
+    /// Вставить префикс в КАРТУ ЛИФТА (#227): `dst ∈ STEER_MAP` в режиме `ByMap` входит в датаплейн,
+    /// прочее остаётся в L2-мосте на скорости провода. Зеркало `add_prior_floor` — тот же тип карты
+    /// и тот же формат ключа, разница лишь в предмете (что ЛИФТИМ против того, что кладём в пол).
+    ///
+    /// Возвращает `Result` на КАЖДУЮ вставку намеренно, хотя записей десятки тысяч: переполнение
+    /// trie обязано быть слышимым. Молчаливая потеря хвоста карты выглядит как «этот сайт не
+    /// заблокирован» — то есть как штатная работа.
+    pub fn add_steer_map(
+        &mut self,
+        net: std::net::Ipv4Addr,
+        prefix_len: u32,
+    ) -> Result<(), String> {
+        let mut trie: LpmTrie<_, u32, u8> = LpmTrie::try_from(
+            self.bpf
+                .map_mut("STEER_MAP")
+                .ok_or("STEER_MAP map not found")?,
+        )
+        .map_err(|e| format!("STEER_MAP type mismatch: {e}"))?;
+
+        let key = Key::new(prefix_len, u32::from_ne_bytes(net.octets()));
+        trie.insert(&key, 1u8, 0)
+            .map_err(|e| format!("STEER_MAP insert: {e}"))?;
         Ok(())
     }
 
