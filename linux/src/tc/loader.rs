@@ -212,6 +212,41 @@ impl TcProgram {
         Ok(())
     }
 
+    /// Стоит ли адрес в целях лифта СЕЙЧАС. Читалка карты ядра: без неё «выучили» и «отпустили»
+    /// проверяются лишь по нашей же памяти, то есть знаком по знаку — а свидетелем обязана быть
+    /// сама карта, по которой датаплейн принимает решение.
+    pub fn has_steer_target(&self, dst: std::net::Ipv4Addr) -> Result<bool, String> {
+        let targets: HashMap<_, u32, u8> = HashMap::try_from(
+            self.bpf
+                .map("STEER_TARGETS")
+                .ok_or("STEER_TARGETS map not found")?,
+        )
+        .map_err(|e| format!("STEER_TARGETS type mismatch: {e}"))?;
+
+        Ok(targets.get(&u32::from_ne_bytes(dst.octets()), 0).is_ok())
+    }
+
+    /// Снять цель лифта — обратная половина `add_steer_target`, которой не существовало вовсе
+    /// (#249): карта только росла, и адрес, переставший цензурироваться, оставался лифтнутым
+    /// НАВСЕГДА. На языке `law/Mark` это `Renew = "Frozen"` — знак переживает землю, а платит за
+    /// это владелец: выигрыш `by-map` по CPU медленно утекает обратно.
+    ///
+    /// Промах по отсутствующему ключу — НЕ ошибка: снятие идемпотентно, а вымывание конкурирует
+    /// с перезаписью карты, и требовать присутствия значило бы падать на законной гонке.
+    pub fn remove_steer_target(&mut self, dst: std::net::Ipv4Addr) -> Result<(), String> {
+        let mut targets: HashMap<_, u32, u8> = HashMap::try_from(
+            self.bpf
+                .map_mut("STEER_TARGETS")
+                .ok_or("STEER_TARGETS map not found")?,
+        )
+        .map_err(|e| format!("STEER_TARGETS type mismatch: {e}"))?;
+
+        match targets.remove(&u32::from_ne_bytes(dst.octets())) {
+            Ok(()) => Ok(()),
+            Err(_absent) => Ok(()),
+        }
+    }
+
     /// PRIOR-множество звонковых CIDR (act-on-prior, BL-235): UDP dst ∈ prefix → ПРОАКТИВНЫЙ лифт в
     /// пол (`serve_udp` политика `PriorFloor`, детерминированно Floor). `net`/`prefix_len` = CIDR
     /// (напр. 91.108.0.0/16 — звонковые релеи телеги). LPM-trie: ключ data = network-order байты (как

@@ -3,6 +3,7 @@ pub mod capability;
 pub mod checksum;
 pub mod command;
 pub mod detector;
+pub mod expiring_set;
 pub mod ext;
 pub mod flow_table;
 pub mod guard;
