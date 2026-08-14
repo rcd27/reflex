@@ -426,15 +426,25 @@ mod tests {
     #[test]
     fn sight_gate_admits_client_hello_and_rejects_the_rest() {
         // ClientHello: запись 0x16, версия 0x03xx, тип рукопожатия 0x01 на пятом байте.
-        assert!(looks_like_client_hello(&[0x16, 0x03, 0x01, 0x02, 0x00, 0x01]));
+        assert!(looks_like_client_hello(&[
+            0x16, 0x03, 0x01, 0x02, 0x00, 0x01
+        ]));
         // ЗАМЕР В ПОЛЕ (0.3.5): клиентские записи TLS 1.2 — ClientKeyExchange (0x10) и Finished
         // (0x14) — идут ТЕМ ЖЕ типом 0x16 и раньше проходили гейт, давая половину `unnamed`.
-        assert!(!looks_like_client_hello(&[0x16, 0x03, 0x03, 0x00, 0x46, 0x10]));
-        assert!(!looks_like_client_hello(&[0x16, 0x03, 0x03, 0x00, 0x20, 0x14]));
+        assert!(!looks_like_client_hello(&[
+            0x16, 0x03, 0x03, 0x00, 0x46, 0x10
+        ]));
+        assert!(!looks_like_client_hello(&[
+            0x16, 0x03, 0x03, 0x00, 0x20, 0x14
+        ]));
         // ApplicationData (0x17) — уже установленная сессия, имени там нет.
-        assert!(!looks_like_client_hello(&[0x17, 0x03, 0x03, 0x00, 0x20, 0x01]));
+        assert!(!looks_like_client_hello(&[
+            0x17, 0x03, 0x03, 0x00, 0x20, 0x01
+        ]));
         // 0x16 без версии TLS — не рукопожатие, а совпадение первого байта.
-        assert!(!looks_like_client_hello(&[0x16, 0x00, 0x01, 0x02, 0x00, 0x01]));
+        assert!(!looks_like_client_hello(&[
+            0x16, 0x00, 0x01, 0x02, 0x00, 0x01
+        ]));
         // Короче шести байт: тип рукопожатия ещё не виден — судить не о чем.
         assert!(!looks_like_client_hello(&[]));
         assert!(!looks_like_client_hello(&[0x16, 0x03, 0x01, 0x02, 0x00]));

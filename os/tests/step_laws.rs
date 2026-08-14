@@ -171,7 +171,11 @@ fn an_optional_step_outside_its_domain_is_the_identity() {
         Ok(v + 100)
     });
 
-    assert_eq!(step.attempt(7), StepOutcome::Advanced(7), "вход не пропущен");
+    assert_eq!(
+        step.attempt(7),
+        StepOutcome::Advanced(7),
+        "вход не пропущен"
+    );
     assert_eq!(ran.load(Ordering::SeqCst), 0, "неприменимый шаг выполнился");
 }
 
