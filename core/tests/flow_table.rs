@@ -4,7 +4,7 @@ use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::Detector;
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 struct RstCounter {
@@ -45,9 +45,21 @@ fn make_segment(src_port: u16, dst_port: u16, flags: TcpFlags) -> TcpSegment {
     }
 }
 
+/// Простой заведомо длиннее прогона файла: тесты здесь — про АДРЕСАЦИЮ пакета в детектор
+/// (нормализация флоу, переиспользование, счёт), а не про эвикт мёртвых потоков. Эвикт покрыт
+/// юнит-тестами в `core/src/flow_table.rs` и вмешиваться сюда не должен.
+const IDLE: Duration = Duration::from_secs(3600);
+
+/// Единственная дверь к конструктору. Отдельная функция, потому что расширение
+/// `FlowTable::new` (idle-таймаут, 8d27bd1) отстало ровно здесь — девять одинаковых вызовов
+/// правились по одному, и файл остался несобираемым больше месяца.
+fn new_table() -> FlowTable<RstCounter> {
+    FlowTable::new(IDLE, |flow| RstCounter { count: 0, flow })
+}
+
 #[test]
 fn process_creates_detector_on_first_packet() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let seg = make_segment(12345, 443, TcpFlags::SYN);
     let signals = table.process(&seg, Instant::now());
     assert!(signals.is_empty());
@@ -56,7 +68,7 @@ fn process_creates_detector_on_first_packet() {
 
 #[test]
 fn process_reuses_detector_for_same_flow() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let rst = make_segment(12345, 443, TcpFlags::RST);
     let signals1 = table.process(&rst, Instant::now());
     assert_eq!(signals1.as_slice(), &[1]);
@@ -67,7 +79,7 @@ fn process_reuses_detector_for_same_flow() {
 
 #[test]
 fn process_normalizes_server_response_to_same_flow() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let syn = make_segment(12345, 443, TcpFlags::SYN);
     table.process(&syn, Instant::now());
 
@@ -92,7 +104,7 @@ fn process_normalizes_server_response_to_same_flow() {
 
 #[test]
 fn different_flows_get_different_detectors() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let rst1 = make_segment(11111, 443, TcpFlags::RST);
     let rst2 = make_segment(22222, 443, TcpFlags::RST);
     table.process(&rst1, Instant::now());
@@ -102,7 +114,7 @@ fn different_flows_get_different_detectors() {
 
 #[test]
 fn tick_visits_all_flows() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let syn1 = make_segment(11111, 443, TcpFlags::SYN);
     let syn2 = make_segment(22222, 443, TcpFlags::SYN);
     table.process(&syn1, Instant::now());
@@ -118,7 +130,7 @@ fn tick_visits_all_flows() {
 
 #[test]
 fn get_returns_detector_for_existing_flow() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
     let seg = make_segment(12345, 443, TcpFlags::RST);
     table.process(&seg, Instant::now());
 
@@ -129,14 +141,14 @@ fn get_returns_detector_for_existing_flow() {
 
 #[test]
 fn get_returns_none_for_missing_flow() {
-    let table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let table = new_table();
     let seg = make_segment(12345, 443, TcpFlags::SYN);
     assert!(table.get(&seg.flow).is_none());
 }
 
 #[test]
 fn multiple_flows_with_different_states() {
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
 
     let rst_a = make_segment(11111, 443, TcpFlags::RST);
     let rst_b = make_segment(22222, 443, TcpFlags::RST);
@@ -158,7 +170,7 @@ fn multiple_flows_with_different_states() {
 fn normalize_reverses_high_port_source() {
     // When src has a high port and dst has a high port (not 443, not <1024),
     // flow gets reversed for normalization. Verify they map to the same detector.
-    let mut table: FlowTable<RstCounter> = FlowTable::new(|flow| RstCounter { count: 0, flow });
+    let mut table = new_table();
 
     let seg_forward = make_segment(12345, 443, TcpFlags::SYN);
     table.process(&seg_forward, Instant::now());
