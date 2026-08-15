@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -257,11 +257,21 @@ fn wake(slot: &mut Option<Waker>) {
     }
 }
 
+/// ОБА КОНЦА нового флоу, взятые из одного IP-заголовка. Поля названы, а не разложены по позициям
+/// кортежа: концы — величины одного типа, и перепутать их местами кортеж позволяет молча (#258).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynEnds {
+    /// КТО открыл флоу — устройство в локальной сети владельца. До 15.08.2026 выбрасывался здесь же,
+    /// и потому весь TCP наблюдался без источника: жалоба «у такого-то не работает» не приземлялась.
+    pub src: SocketAddrV4,
+    /// Истинная цель клиента прямо из IP-заголовка — петля-на-себя невыразима.
+    pub dst: SocketAddrV4,
+}
+
 /// Разобрать входящий кадр: IPv4 + TCP + `SYN && !ACK` = первый пакет рукопожатия (новый флоу).
-/// Отдаёт ИСТИННЫЙ dst (цель клиента прямо из IP-заголовка — петля-на-себя невыразима). Не-SYN и
-/// не-TCP → `None` (кадр всё равно кормится стеку для существующих сокетов). Тотальна: `?`/`.ok()`,
-/// без `unwrap`; протокол сверяем равенством (не `_ =>`).
-fn parse_syn(frame: &[u8]) -> Option<SocketAddrV4> {
+/// Отдаёт ОБА конца ([`SynEnds`]). Не-SYN и не-TCP → `None` (кадр всё равно кормится стеку для
+/// существующих сокетов). Тотальна: `?`/`.ok()`, без `unwrap`; протокол сверяем равенством (не `_ =>`).
+fn parse_syn(frame: &[u8]) -> Option<SynEnds> {
     let ip = Ipv4Packet::new_checked(frame).ok()?;
     if ip.next_header() != IpProtocol::Tcp {
         return None;
@@ -269,7 +279,10 @@ fn parse_syn(frame: &[u8]) -> Option<SocketAddrV4> {
     let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
     // SocketAddrV4 (не SocketAddr): `From<SocketAddrV4> for IpListenEndpoint` доступен при одном
     // proto-ipv4 (SocketAddr-конверсия smoltcp требует ещё proto-ipv6 — не тянем, nevod0 IPv4-only).
-    (tcp.syn() && !tcp.ack()).then(|| SocketAddrV4::new(ip.dst_addr(), tcp.dst_port()))
+    (tcp.syn() && !tcp.ack()).then(|| SynEnds {
+        src: SocketAddrV4::new(ip.src_addr(), tcp.src_port()),
+        dst: SocketAddrV4::new(ip.dst_addr(), tcp.dst_port()),
+    })
 }
 
 /// Собрать smoltcp-iface для ПРОЗРАЧНОГО listen: medium-ip, placeholder-адрес `0.0.0.1/0` + дефолт-роут
@@ -294,7 +307,7 @@ fn build_iface(device: &mut ChannelDevice, seed: u64) -> Interface {
 /// поллит smoltcp, шаффлит буферы, будит стримы, реапит закрытые/abort/чёрствые. Спит до события
 /// (`notify` от стрима/насоса) либо smoltcp-delay.
 async fn drive(
-    accept_tx: Sender<(TunStream, SocketAddr)>,
+    accept_tx: Sender<(TunStream, SynEnds)>,
     mut inbound_rx: Receiver<Vec<u8>>,
     outbound_tx: Sender<Vec<u8>>,
     notify: Arc<Notify>,
@@ -353,13 +366,14 @@ fn ingest(
     sockets: &mut SocketSet<'static>,
     entries: &mut HashMap<SocketHandle, SockEntry>,
     device: &mut ChannelDevice,
-    accept_tx: &Sender<(TunStream, SocketAddr)>,
+    accept_tx: &Sender<(TunStream, SynEnds)>,
     notify: &Arc<Notify>,
     frame: Vec<u8>,
     now: SmolInstant,
     flow_cap: usize,
 ) {
-    if let Some(dst) = parse_syn(&frame) {
+    if let Some(ends) = parse_syn(&frame) {
+        let dst = ends.dst;
         // FlowPermit: inflight == entries.len(). Полно → дроп SYN (backpressure, НЕ shed).
         if entries.len() >= flow_cap {
             return;
@@ -387,7 +401,7 @@ fn ingest(
         };
         // accept-канал bounded == flow_cap → на потолке допуска Full невозможен; Err = потребитель
         // (`serve_tun`) ушёл → стрим дропнут в этой ветке → `abort`-флаг → сокет снимется следующим тиком.
-        let _ = accept_tx.try_send((stream, SocketAddr::V4(dst)));
+        let _ = accept_tx.try_send((stream, ends));
     }
     let _ = iface; // context не нужен для listen (в отличие от connect в egress) — держим сигнатуру симметричной
     device.rx.push_back(frame);
@@ -516,8 +530,8 @@ fn spawn_core(
     inbound_rx: Receiver<Vec<u8>>,
     outbound_tx: Sender<Vec<u8>>,
     flow_cap: usize,
-) -> (Receiver<(TunStream, SocketAddr)>, JoinHandle<()>) {
-    let (accept_tx, accept_rx) = channel::<(TunStream, SocketAddr)>(flow_cap);
+) -> (Receiver<(TunStream, SynEnds)>, JoinHandle<()>) {
+    let (accept_tx, accept_rx) = channel::<(TunStream, SynEnds)>(flow_cap);
     let notify = Arc::new(Notify::new());
     let task = tokio::spawn(drive(accept_tx, inbound_rx, outbound_tx, notify, flow_cap));
     (accept_rx, task)
@@ -528,7 +542,7 @@ fn spawn_core(
 /// отдаёт следующий поток + ИСТИННЫЙ dst. Публичный контракт байт-в-байт как у старого `TunFlows` →
 /// `serve_tun` не меняется.
 pub struct TunFlows {
-    accept_rx: Receiver<(TunStream, SocketAddr)>,
+    accept_rx: Receiver<(TunStream, SynEnds)>,
     _tasks: Vec<JoinHandle<()>>, // держим драйвер+насосы живыми, пока жив TunFlows
 }
 
@@ -579,7 +593,7 @@ impl TunFlows {
 
     /// Следующий терминированный флоу: `(поток, dst)`, где `dst` = ОРИГИНАЛЬНАЯ цель клиента (прямо из
     /// IP-заголовка SYN). `None` — драйвер закрылся (устройство/каналы умерли).
-    pub async fn accept(&mut self) -> Option<(TunStream, SocketAddr)> {
+    pub async fn accept(&mut self) -> Option<(TunStream, SynEnds)> {
         self.accept_rx.recv().await
     }
 }
@@ -637,13 +651,73 @@ mod tests {
         // SYN (первый пакет рукопожатия) → dst = цель клиента.
         let syn = build(TcpControl::Syn);
         assert_eq!(
-            parse_syn(&syn),
+            parse_syn(&syn).map(|e| e.dst),
             Some("93.184.216.34:443".parse().unwrap()),
             "SYN отдаёт истинный dst из IP-заголовка"
         );
         // не-SYN (голый ACK) → None (кадр существующего флоу, не новый допуск).
         let ack = build(TcpControl::None);
         assert_eq!(parse_syn(&ack), None, "не-SYN не порождает новый флоу");
+    }
+
+    /// ОБА КОНЦА, а не один (#258): источник лежит в том же IP-заголовке, что и цель, и до 15.08.2026
+    /// молча выбрасывался. Цена выброса измерена на живом отчёте из поля: спаны ловца не несли
+    /// устройство, и жалоба «у Дианы не работает» не приземлялась ни на что — весь TCP парка
+    /// наблюдался без того, КТО его открыл.
+    ///
+    /// Тест сверяет ИМЕННО ИСТОЧНИК и требует, чтобы концы не путались местами: `src` и `dst`
+    /// различаются и адресом, и портом, потому перестановка концов красит тест, а не проходит молча.
+    #[test]
+    fn parse_syn_extracts_source_end_too() {
+        use smoltcp::wire::{
+            IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr,
+            TcpSeqNumber,
+        };
+        let tcp_repr = TcpRepr {
+            src_port: 51000,
+            dst_port: 443,
+            control: TcpControl::Syn,
+            seq_number: TcpSeqNumber(0),
+            ack_number: None,
+            window_len: 64240,
+            window_scale: None,
+            max_seg_size: None,
+            sack_permitted: false,
+            sack_ranges: [None, None, None],
+            timestamp: None,
+            payload: &[],
+        };
+        let src = Ipv4Address::new(10, 42, 62, 99);
+        let dst = Ipv4Address::new(93, 184, 216, 34);
+        let ip_repr = Ipv4Repr {
+            src_addr: src,
+            dst_addr: dst,
+            next_header: IpProtocol::Tcp,
+            payload_len: tcp_repr.buffer_len(),
+            hop_limit: 64,
+        };
+        let mut frame = vec![0u8; ip_repr.buffer_len() + tcp_repr.buffer_len()];
+        let mut ip = Ipv4Packet::new_unchecked(&mut frame);
+        ip_repr.emit(&mut ip, &Default::default());
+        let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
+        tcp_repr.emit(
+            &mut tcp,
+            &src.into(),
+            &dst.into(),
+            &smoltcp::phy::ChecksumCapabilities::default(),
+        );
+
+        let ends = parse_syn(&frame).expect("SYN разобран");
+        assert_eq!(
+            ends.src,
+            "10.42.62.99:51000".parse::<SocketAddrV4>().unwrap(),
+            "источник взят из IP-заголовка вместе с портом — это и есть устройство в локалке"
+        );
+        assert_eq!(
+            ends.dst,
+            "93.184.216.34:443".parse::<SocketAddrV4>().unwrap(),
+            "цель не поехала: концы названы полями, а не позицией в кортеже"
+        );
     }
 
     /// Слушатель РЕАЛЬНО терминирует входящий TCP и гоняет байты — проверено IN-MEMORY: клиент = наш
@@ -710,12 +784,20 @@ mod tests {
         drop(stream);
 
         assert_eq!(resp, b"PONG", "клиент получил эхо слушателя");
-        let (got, dst_seen) = server.await.unwrap();
+        let (got, ends_seen) = server.await.unwrap();
         assert_eq!(got, b"PING", "слушатель принял hello клиента");
         assert_eq!(
-            dst_seen,
+            ends_seen.dst,
             "10.0.0.1:80".parse().unwrap(),
             "accept отдал ИСТИННЫЙ dst из SYN"
+        );
+        // #258: источник обязан ПЕРЕЖИТЬ путь SYN → ingest → канал → accept, а не только разбор
+        // кадра. Сверяется порт (40000 — тот, которым клиент открывался): адрес зависит от
+        // идентичности egress-стека, а порт назначен здесь же и потому различает.
+        assert_eq!(
+            ends_seen.src.port(),
+            40000,
+            "источник доехал до потребителя, а не потерялся в канале accept"
         );
     }
 
@@ -765,7 +847,7 @@ mod tests {
         };
 
         let (outbound_tx, _outbound_rx) = channel::<Vec<u8>>(FRAME_CHAN_CAP);
-        let (accept_tx, mut accept_rx) = channel::<(TunStream, SocketAddr)>(4);
+        let (accept_tx, mut accept_rx) = channel::<(TunStream, SynEnds)>(4);
         let notify = Arc::new(Notify::new());
         let mut device = ChannelDevice {
             rx: VecDeque::new(),
