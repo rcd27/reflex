@@ -231,3 +231,50 @@ impl TlsRecord {
         None
     }
 }
+
+/// Чего не хватает читателю, чтобы увидеть ПЕРВУЮ TLS-запись целиком.
+///
+/// Заведено по #3: `extract_sni` отвечает `None` и на «это не TLS», и на «TLS не дочитан», а
+/// читателю нужно решить прямо противоположное — ЖДАТЬ или ИДТИ. Слитый ответ стоил полю 815
+/// флоу из 1500 с `serve None`: в плечи уезжал обрезок, сервер ждал остаток записи и молчал, обе
+/// ноги при этом стояли `connected=true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordNeed {
+    /// Первая запись видна целиком — ждать нечего.
+    Complete,
+    /// Записи не хватает; сколько именно — известно ТОЧНО, когда прочитан заголовок (5 байт), и
+    /// СНИЗУ, пока он не прочитан.
+    More { at_least: usize },
+    /// Это не TLS-рукопожатие. Ждать продолжения НЕЛЬЗЯ: его не будет, а ожидание стало бы
+    /// задержкой на каждом не-TLS соединении.
+    NotTls,
+}
+
+/// Сколько ещё нужно байт, чтобы первая TLS-запись стала полной.
+///
+/// Судит ТОЛЬКО по объявленной длине — той же, по которой `TlsRecord::parse` отдаёт `None`.
+/// Отдельная функция, а не флаг у парсера, потому что вопросы разные: парсер отвечает «что это»,
+/// эта — «доколе читать».
+pub fn record_need(data: &[u8]) -> RecordNeed {
+    match data.first() {
+        // Пусто — заголовок целиком впереди; больше сказать нечего.
+        None => RecordNeed::More { at_least: 5 },
+        // Handshake. Только он может нести ClientHello, и только его стоит дочитывать.
+        Some(0x16) => match data.len() < 5 {
+            true => RecordNeed::More {
+                at_least: 5 - data.len(),
+            },
+            false => {
+                let declared = u16::from_be_bytes([data[3], data[4]]) as usize;
+                let whole = 5 + declared;
+                match data.len() < whole {
+                    true => RecordNeed::More {
+                        at_least: whole - data.len(),
+                    },
+                    false => RecordNeed::Complete,
+                }
+            }
+        },
+        Some(_) => RecordNeed::NotTls,
+    }
+}

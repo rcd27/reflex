@@ -1,6 +1,8 @@
 #![cfg(feature = "tls")]
 
-use reflex_core::tls::{TlsContentType, TlsFragment, TlsRecord, TlsVersion};
+use reflex_core::tls::{
+    record_need, RecordNeed, TlsContentType, TlsFragment, TlsRecord, TlsVersion,
+};
 
 // --- Helper: build a minimal ClientHello with SNI ---
 
@@ -301,4 +303,60 @@ fn sni_span_skips_decoy_hostname_in_session_id() {
     );
     assert_eq!(len, "rutracker.org".len());
     assert_eq!(&hello[offset..offset + len], b"rutracker.org");
+}
+
+// ── ПОЛНОТА ЗАПИСИ (#3): различить «не TLS» и «TLS не дочитан» ──────────────────────────────────
+//
+// Оплачено полем: 1500 флоу с `serve None`, у 815 SNI не извлёкся вовсе, у 765 из них прочитано
+// меньше 1400 байт, а плечи при этом ВСТАЛИ (`connected=true, Silent`). Соединение есть, данных
+// нет — сервер ждёт остаток записи. Причина: читатель звал `read()` один раз, а сколькими
+// сегментами придёт запись, решает TCP.
+//
+// `extract_sni` на оба случая отвечает `None`, и по этому ответу нельзя решить, ЖДАТЬ ли ещё.
+// Вопрос «сколько не хватает» — отдельный, и ответ на него обязан быть значением, а не догадкой.
+
+#[test]
+fn полная_запись_названа_полной() {
+    let rec = build_client_hello_record("example.com");
+    assert_eq!(record_need(&rec), RecordNeed::Complete);
+}
+
+#[test]
+fn обрезанная_запись_называет_сколько_не_хватает() {
+    let rec = build_client_hello_record("example.com");
+    let cut = 40;
+    assert_eq!(
+        record_need(&rec[..cut]),
+        RecordNeed::More {
+            at_least: rec.len() - cut
+        },
+        "обрезок обязан назвать НЕДОСТАЧУ числом — иначе читателю нечем решить, ждать ли"
+    );
+}
+
+#[test]
+fn заголовок_короче_пяти_байт_тоже_недостача() {
+    let rec = build_client_hello_record("example.com");
+    // Длина записи объявлена в байтах 3..5 — пока их нет, недостача известна лишь снизу.
+    assert_eq!(record_need(&rec[..3]), RecordNeed::More { at_least: 2 });
+    assert_eq!(record_need(&[]), RecordNeed::More { at_least: 5 });
+}
+
+#[test]
+fn не_tls_названо_не_tls_а_не_недостачей() {
+    // Ключевое различение: ждать продолжения тут НЕЛЬЗЯ — его не будет никогда, и ожидание
+    // превратилось бы в задержку на каждом не-TLS соединении.
+    assert_eq!(record_need(b"GET / HTTP/1.1\r\n"), RecordNeed::NotTls);
+    assert_eq!(
+        record_need(&[0xFF, 0x00, 0x00, 0x00, 0x01]),
+        RecordNeed::NotTls
+    );
+}
+
+#[test]
+fn запись_с_хвостом_полна() {
+    // За ClientHello может сразу идти следующая запись — это не мешает первой быть полной.
+    let mut rec = build_client_hello_record("example.com");
+    rec.extend_from_slice(&[0x17, 0x03, 0x03, 0x00, 0x05, 1, 2, 3, 4, 5]);
+    assert_eq!(record_need(&rec), RecordNeed::Complete);
 }
