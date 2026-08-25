@@ -1,5 +1,7 @@
+mod assembly;
 mod hello;
 
+pub use assembly::{Assembly, RecordAssembler, RecordChunk};
 pub use hello::build_client_hello;
 
 /// True if the TCP payload starts with a TLS 1.x ClientHello record.
