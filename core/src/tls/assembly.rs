@@ -66,6 +66,17 @@ pub enum Assembly {
     /// Срок вышел либо поток пошёл не так. Удержанное отдаётся НЕТРОНУТЫМ, техника не зовётся:
     /// поведение равно поведению без сборщика.
     Abandoned { seq: u32, record: Vec<u8> },
+    /// Клиент прислал ЗАНОВО байты записи, которую мы уже собрали и отдали. Значит сервер её не
+    /// подтвердил, и клиент считает данные потерянными.
+    ///
+    /// ПОЧЕМУ ЭТО ОТДЕЛЬНЫЙ СИГНАЛ, А НЕ ВЫВОД ПОТРЕБИТЕЛЯ. Снаружи повтор неотличим от нового
+    /// неполного hello: и то и другое выглядит как префикс TLS-записи в одном пакете. Отличает их
+    /// ровно одно знание — ПРОЛЁТ уже отданной записи, — и оно есть только здесь. Потребитель,
+    /// угадывающий повтор по соседству строк в журнале, свидетельствует больше, чем установил.
+    ///
+    /// `nth` — который это повтор по счёту. Величина, а не флаг: один повтор есть шум сети,
+    /// восемь с удвоением интервала есть минута ожидания человека, и это разные новости.
+    Retransmitted { seq: u32, nth: usize },
 }
 
 /// Состояние сборщика по ОДНОМУ потоку.
@@ -82,8 +93,17 @@ enum Hold {
         bytes: Vec<u8>,
         since: Instant,
     },
-    /// Решение по первой записи принято — дальше поток нас не касается.
+    /// Решение по первой записи принято, и сравнивать больше не с чем: запись мы не отдавали
+    /// (не TLS, либо отказались от удержания).
     Settled,
+    /// Запись собрана и отдана технике. Помним её ПРОЛЁТ — `[seq, seq+len)`, — потому что повтор
+    /// именно этих байт означает, что сервер собранную запись не подтвердил. Без пролёта повтор
+    /// неотличим от нового неполного hello.
+    Delivered {
+        seq: u32,
+        len: usize,
+        retransmits: usize,
+    },
 }
 
 /// Сигналы одним выражением: `SmallVec` собирается из итератора, потому что накопление через
@@ -131,6 +151,50 @@ impl RecordAssembler {
         (self.with(Hold::Settled), one(signal))
     }
 
+    /// Запись отдана: запоминаем её пролёт, чтобы отличить повтор ЭТИХ байт от нового содержимого.
+    fn delivered(&self, seq: u32, record: Vec<u8>, held: usize) -> (Self, SmallVec<[Assembly; 2]>) {
+        let len = record.len();
+        (
+            self.with(Hold::Delivered {
+                seq,
+                len,
+                retransmits: 0,
+            }),
+            one(Assembly::Assembled { seq, record, held }),
+        )
+    }
+
+    /// Пакет пришёл, когда запись уже отдана. Повтор её байт — новость: сервер не подтвердил.
+    fn after_delivery(
+        &self,
+        seq: u32,
+        len: usize,
+        retransmits: usize,
+        chunk: RecordChunk,
+    ) -> (Self, SmallVec<[Assembly; 2]>) {
+        // Сравнение по ПРОЛЁТУ, а не по равенству seq голове: клиент повторяет и хвостовой
+        // сегмент тоже, и он законная часть той же потери.
+        let внутри = chunk.seq.wrapping_sub(seq) < len as u32;
+        match внутри {
+            true => {
+                let nth = retransmits + 1;
+                (
+                    self.with(Hold::Delivered {
+                        seq,
+                        len,
+                        retransmits: nth,
+                    }),
+                    // Пакет ПРОПУСКАЕМ: наш эмит сервер не подтвердил, и повтор клиента —
+                    // единственный путь потока к восстановлению. Дропнуть его значило бы
+                    // добить соединение ради чистоты статистики.
+                    two(Assembly::Retransmitted { seq, nth }, Assembly::PassThrough),
+                )
+            }
+            // Поток ушёл дальше записи — наблюдать больше нечего.
+            false => (self.with(Hold::Settled), one(Assembly::PassThrough)),
+        }
+    }
+
     fn holding(&self, seq: u32, bytes: Vec<u8>, since: Instant) -> (Self, SmallVec<[Assembly; 2]>) {
         (
             self.with(Hold::Holding { seq, bytes, since }),
@@ -144,11 +208,7 @@ impl RecordAssembler {
             // Не рукопожатие — ждать продолжения нельзя, его не будет.
             RecordNeed::NotTls => self.settled(Assembly::PassThrough),
             // Запись уместилась в сегмент: держать нечего, отдаём сразу.
-            RecordNeed::Complete => self.settled(Assembly::Assembled {
-                seq: chunk.seq,
-                record: chunk.payload,
-                held: 0,
-            }),
+            RecordNeed::Complete => self.delivered(chunk.seq, chunk.payload, 0),
             RecordNeed::More { .. } => self.holding(chunk.seq, chunk.payload, at),
         }
     }
@@ -193,11 +253,7 @@ impl RecordAssembler {
         let held = bytes.len();
         let joined = [bytes, chunk.payload].concat();
         match record_need(&joined) {
-            RecordNeed::Complete => self.settled(Assembly::Assembled {
-                seq,
-                record: joined,
-                held,
-            }),
+            RecordNeed::Complete => self.delivered(seq, joined, held),
             // Заголовок уже прочитан и сказал «handshake»; сюда попасть нельзя иначе как при
             // порче потока. Ветка существует ради тотальности и ведёт себя как отказ: чужого не
             // удерживаем.
@@ -226,6 +282,14 @@ impl Detector for RecordAssembler {
                 // Голый ACK/FIN без данных записи не двигает — и не должен закрывать удержание.
                 (_, true) => (self.with(self.hold.clone()), SmallVec::new()),
                 (Hold::Settled, false) => (self.with(Hold::Settled), one(Assembly::PassThrough)),
+                (
+                    Hold::Delivered {
+                        seq,
+                        len,
+                        retransmits,
+                    },
+                    false,
+                ) => self.after_delivery(*seq, *len, *retransmits, input),
                 (Hold::Idle, false) => self.on_first(input, at),
                 (Hold::Holding { seq, bytes, since }, false) => {
                     self.on_more(*seq, bytes.clone(), *since, input, at)
@@ -242,7 +306,7 @@ impl Detector for RecordAssembler {
                         record: bytes.clone(),
                     })
                 }
-                Hold::Holding { .. } | Hold::Idle | Hold::Settled => {
+                Hold::Holding { .. } | Hold::Idle | Hold::Settled | Hold::Delivered { .. } => {
                     (self.with(self.hold.clone()), SmallVec::new())
                 }
             },
