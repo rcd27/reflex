@@ -18,5 +18,5 @@ pub use nft_guard::{NftConfig, NftGuard, NftGuardError, NftMarkGuard, SlotConfig
 /// Backward compatibility alias — remove after all consumers migrate.
 pub type FirewallGuard = NfqGuard;
 pub use pipeline::{NfqHandler, NfqPacket, NfqPipeline, NfqStep, NfqVerdict, NfqVerdictKind};
-pub use typed::{TypedNfq, WireHandler, WirePacket, L7};
+pub use typed::{classify_l7, TypedNfq, WireHandler, WirePacket, L7};
 pub use witness::FlowWitness;

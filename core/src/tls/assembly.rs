@@ -52,7 +52,17 @@ pub enum Assembly {
     /// Запись собрана целиком. `seq` — номер первого байта ЗАПИСИ, то есть seq ГОЛОВЫ, а не того
     /// пакета, на котором она сомкнулась (там же, ось 1: перепутать эти два значит уложить всю
     /// запись правее и лишить сервер её начала).
-    Assembled { seq: u32, record: Vec<u8> },
+    ///
+    /// `held` — сколько байт записи УЖЕ снято с провода к этому мигу. Величина, а не флаг, и
+    /// она меняет обязанность потребителя: `held = 0` значит «запись пришла одним пакетом,
+    /// никто никому не должен»; `held > 0` значит «начало записи уже снято нами, и если техника
+    /// за него не возьмётся, вернуть байты обязаны МЫ». Без этого числа два случая неразличимы,
+    /// и отказ техники по собранной записи тихо съедал бы её.
+    Assembled {
+        seq: u32,
+        record: Vec<u8>,
+        held: usize,
+    },
     /// Срок вышел либо поток пошёл не так. Удержанное отдаётся НЕТРОНУТЫМ, техника не зовётся:
     /// поведение равно поведению без сборщика.
     Abandoned { seq: u32, record: Vec<u8> },
@@ -137,6 +147,7 @@ impl RecordAssembler {
             RecordNeed::Complete => self.settled(Assembly::Assembled {
                 seq: chunk.seq,
                 record: chunk.payload,
+                held: 0,
             }),
             RecordNeed::More { .. } => self.holding(chunk.seq, chunk.payload, at),
         }
@@ -179,11 +190,13 @@ impl RecordAssembler {
         chunk: RecordChunk,
         at: Instant,
     ) -> (Self, SmallVec<[Assembly; 2]>) {
+        let held = bytes.len();
         let joined = [bytes, chunk.payload].concat();
         match record_need(&joined) {
             RecordNeed::Complete => self.settled(Assembly::Assembled {
                 seq,
                 record: joined,
+                held,
             }),
             // Заголовок уже прочитан и сказал «handshake»; сюда попасть нельзя иначе как при
             // порче потока. Ветка существует ради тотальности и ведёт себя как отказ: чужого не

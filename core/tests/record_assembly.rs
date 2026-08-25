@@ -48,7 +48,8 @@ fn запись_в_одном_сегменте_отдаётся_сразу() {
         signals.as_slice(),
         [Assembly::Assembled {
             seq: 1000,
-            record: whole
+            record: whole,
+            held: 0
         }]
     );
 }
@@ -73,7 +74,8 @@ fn запись_через_границу_собирается_и_адресуе
         second.as_slice(),
         [Assembly::Assembled {
             seq: 7000,
-            record: whole
+            record: whole,
+            held: 1400
         }],
         "seq — от ГОЛОВЫ (иначе запись ляжет правее и сервер не увидит её начала), \
          байты — точная склейка (иначе дубль или пропажа внутри записи)"
