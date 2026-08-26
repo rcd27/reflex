@@ -2,7 +2,7 @@ mod assembly;
 mod hello;
 
 pub use assembly::{Assembly, RecordAssembler, RecordChunk};
-pub use hello::build_client_hello;
+pub use hello::{build_client_hello, rewrite_sni};
 
 /// True if the TCP payload starts with a TLS 1.x ClientHello record.
 /// Cheap signature check: TLS record type 0x16 (Handshake) + handshake type 0x01 (ClientHello).
