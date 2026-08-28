@@ -4,8 +4,8 @@ use futures::{Future, Stream};
 
 use crate::detector::{Detector, DetectorEvent};
 use crate::stream::{
-    DetectPer, GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream, SwitchMapStream,
-    WithLatestFromStream,
+    DetectPer, FoldStream, GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream,
+    SwitchMapStream, TeeStream, WithLatestFromStream,
 };
 use crate::types::TcpSegment;
 
@@ -16,6 +16,33 @@ pub trait ReflexExt: Stream + Sized {
         F: FnMut(&mut State, Self::Item),
     {
         ScanStream::new(self, initial, f)
+    }
+
+    /// ЧИСТАЯ свёртка: `Fn(State, Item) -> State`.
+    ///
+    /// Предпочитать [`scan_state`](Self::scan_state), который правит состояние через `&mut` и
+    /// потому не мешает спрятать в шаге произвольный эффект. Здесь `Fn` запрещает мутацию
+    /// захваченного, а возврат состояния обязателен — нечистый шаг не соберётся.
+    ///
+    /// Цена: состояние передаётся по значению. Большому состоянию нужно структурное разделение.
+    fn fold_state<State, F>(self, seed: State, f: F) -> FoldStream<Self, State, F>
+    where
+        State: Clone,
+        F: Fn(State, Self::Item) -> State,
+    {
+        FoldStream::new(self, seed, f)
+    }
+
+    /// Раздвоение потока: элементы идут дальше, копия уходит в `sink`.
+    ///
+    /// Ветвление названо оператором, а не спрятано в `map` с побочным действием. Приёмник не
+    /// готов — копия теряется: основной поток не ждёт побочной ветки.
+    fn tee<K>(self, sink: K) -> TeeStream<Self, K>
+    where
+        Self::Item: Clone,
+        K: futures::Sink<Self::Item>,
+    {
+        TeeStream::new(self, sink)
     }
 
     fn switch_map<F, Inner>(self, f: F) -> SwitchMapStream<Self, F, Inner>
