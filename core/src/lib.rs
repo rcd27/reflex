@@ -22,7 +22,7 @@ pub mod tls;
 
 pub use capability::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
 pub use command::{Command, InjectablePacket, ModifyPacket};
-pub use detector::{Detector, DetectorEvent};
+pub use detector::{And, Detector, DetectorEvent, DetectorExt};
 pub use ext::ReflexExt;
 pub use guard::{CleanupReport, TrafficGuard};
 pub use reactor::{drive, drive_observed, group_by_reactor, Reactor, Transition};

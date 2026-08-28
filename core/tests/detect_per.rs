@@ -1,0 +1,286 @@
+//! Тесты `detect_per` и композиции детекторов.
+//!
+//! Оба примитива заведены ради одного требования: **доменный шаг обязан быть звеном цепочки, а
+//! не кодом внутри чужого шага**. Пока правило детекции живёт в теле `group_by`, добавить
+//! детекцию троттлинга UDP нельзя, не тронув существующий обработчик, — и цепочка перестаёт быть
+//! конструктором.
+
+use std::time::{Duration, Instant};
+
+use futures::{stream, StreamExt};
+use reflex_core::{Detector, DetectorEvent, DetectorExt, ReflexExt};
+use smallvec::{smallvec, SmallVec};
+
+/// Вход: адрес плюс что случилось. Свой тип, чтобы тест не зависел от словаря `TcpSegment`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Event {
+    addr: u8,
+    kind: Kind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Rst,
+    Byte,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    SawRst,
+    WentQuiet,
+    SawByte,
+}
+
+/// Детектор сброса: сигналит на каждый RST, времени не знает.
+#[derive(Debug, Clone, Copy, Default)]
+struct Rst;
+
+impl Detector for Rst {
+    type Input = Event;
+    type Signal = Signal;
+
+    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+        match event {
+            DetectorEvent::Packet {
+                input: Event { kind: Kind::Rst, .. },
+                ..
+            } => (self, smallvec![Signal::SawRst]),
+            DetectorEvent::Packet { .. } => (self, smallvec![]),
+            DetectorEvent::Tick { .. } => (self, smallvec![]),
+        }
+    }
+}
+
+/// Детектор тишины: сигналит по ТИКУ, если пакетов не было дольше порога.
+///
+/// Он и есть причина, по которой `Tick` обязан приходить во все живые состояния: тишина есть
+/// ОТСУТСТВИЕ пакетов, а отсутствие пакетов не порождает элементов потока.
+#[derive(Debug, Clone, Copy)]
+struct Quiet {
+    last: Option<Instant>,
+    after: Duration,
+    fired: bool,
+}
+
+impl Quiet {
+    fn after(after: Duration) -> Self {
+        Self {
+            last: None,
+            after,
+            fired: false,
+        }
+    }
+}
+
+impl Detector for Quiet {
+    type Input = Event;
+    type Signal = Signal;
+
+    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+        match event {
+            DetectorEvent::Packet { at, .. } => (
+                Self {
+                    last: Some(at),
+                    ..self
+                },
+                smallvec![],
+            ),
+            DetectorEvent::Tick { at } => match (self.last, self.fired) {
+                (Some(last), false) if at.duration_since(last) >= self.after => {
+                    (Self { fired: true, ..self }, smallvec![Signal::WentQuiet])
+                }
+                _ => (self, smallvec![]),
+            },
+        }
+    }
+}
+
+/// Третий детектор — существует, чтобы доказать, что цепочка `.and` РАСТЁТ, а не переписывается.
+#[derive(Debug, Clone, Copy, Default)]
+struct Bytes;
+
+impl Detector for Bytes {
+    type Input = Event;
+    type Signal = Signal;
+
+    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+        match event {
+            DetectorEvent::Packet {
+                input: Event { kind: Kind::Byte, .. },
+                ..
+            } => (self, smallvec![Signal::SawByte]),
+            DetectorEvent::Packet { .. } => (self, smallvec![]),
+            DetectorEvent::Tick { .. } => (self, smallvec![]),
+        }
+    }
+}
+
+fn packet(addr: u8, kind: Kind, at: Instant) -> DetectorEvent<Event> {
+    DetectorEvent::Packet {
+        input: Event { addr, kind },
+        at,
+    }
+}
+
+/// СОСТОЯНИЕ ЖИВЁТ ПО КЛЮЧУ и не смешивается между целями.
+#[tokio::test]
+async fn state_is_per_key() {
+    let t0 = Instant::now();
+    let got: Vec<(u8, Signal)> = stream::iter([
+        packet(1, Kind::Rst, t0),
+        packet(2, Kind::Byte, t0),
+        packet(1, Kind::Byte, t0),
+    ])
+    .detect_per(|e: &Event| e.addr, || Rst.and(Bytes))
+    .collect()
+    .await;
+
+    assert_eq!(
+        got,
+        vec![
+            (1, Signal::SawRst),
+            (2, Signal::SawByte),
+            (1, Signal::SawByte)
+        ]
+    );
+}
+
+/// ГЛАВНОЕ, РАДИ ЧЕГО ОПЕРАТОР СУЩЕСТВУЕТ: тик приходит ВО ВСЕ живые состояния.
+///
+/// Через `group_by` это невыразимо — он ключует каждый элемент, а у тика ключа нет. Детектор
+/// тишины без этого не сработал бы никогда.
+#[tokio::test]
+async fn tick_reaches_every_live_state() {
+    let t0 = Instant::now();
+    let later = t0 + Duration::from_secs(2);
+
+    let got: Vec<(u8, Signal)> = stream::iter([
+        packet(1, Kind::Byte, t0),
+        packet(2, Kind::Byte, t0),
+        DetectorEvent::Tick { at: later },
+    ])
+    .detect_per(|e: &Event| e.addr, || Quiet::after(Duration::from_secs(1)))
+    .collect()
+    .await;
+
+    assert_eq!(
+        got,
+        vec![(1, Signal::WentQuiet), (2, Signal::WentQuiet)],
+        "тик обязан дойти до обоих ключей, и в детерминированном порядке"
+    );
+}
+
+/// КОНТРОЛЬ: тик до истечения порога не сигналит. Без него тест выше зеленел бы и при
+/// детекторе, который сигналит на любой тик.
+#[tokio::test]
+async fn tick_before_threshold_is_silent() {
+    let t0 = Instant::now();
+    let got: Vec<(u8, Signal)> = stream::iter([
+        packet(1, Kind::Byte, t0),
+        DetectorEvent::Tick {
+            at: t0 + Duration::from_millis(500),
+        },
+    ])
+    .detect_per(|e: &Event| e.addr, || Quiet::after(Duration::from_secs(1)))
+    .collect()
+    .await;
+
+    assert!(got.is_empty(), "сработало раньше порога: {got:?}");
+}
+
+/// Тик до первого пакета не сигналит: состояний ещё нет, будить некого.
+#[tokio::test]
+async fn tick_without_any_state_is_silent() {
+    let got: Vec<(u8, Signal)> = stream::iter([DetectorEvent::Tick { at: Instant::now() }])
+        .detect_per(|e: &Event| e.addr, || Quiet::after(Duration::from_secs(1)))
+        .collect()
+        .await;
+
+    assert!(got.is_empty());
+}
+
+/// ОБА ДЕТЕКТОРА ВИДЯТ КАЖДОЕ СОБЫТИЕ — это независимые наблюдатели, а не цепочка фильтров.
+/// Порядок сигналов: сначала левый, затем правый.
+#[tokio::test]
+async fn composition_lets_both_observe() {
+    let t0 = Instant::now();
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Everything;
+    impl Detector for Everything {
+        type Input = Event;
+        type Signal = Signal;
+        fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+            match event {
+                DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawByte]),
+                DetectorEvent::Tick { .. } => (self, smallvec![]),
+            }
+        }
+    }
+
+    let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
+        .detect_per(|e: &Event| e.addr, || Rst.and(Everything))
+        .collect()
+        .await;
+
+    assert_eq!(got, vec![(1, Signal::SawRst), (1, Signal::SawByte)]);
+}
+
+/// ЦЕПОЧКА РАСТЁТ ДОПИСЫВАНИЕМ. Третий детектор добавлен `.and(Bytes)` — правила `Rst` и
+/// `Quiet` при этом не читались и не правились. Это и есть требование, ради которого оба
+/// примитива заведены.
+#[tokio::test]
+async fn chain_grows_by_appending() {
+    let t0 = Instant::now();
+    let later = t0 + Duration::from_secs(2);
+
+    let got: Vec<(u8, Signal)> = stream::iter([
+        packet(1, Kind::Rst, t0),
+        packet(1, Kind::Byte, t0),
+        DetectorEvent::Tick { at: later },
+    ])
+    .detect_per(
+        |e: &Event| e.addr,
+        || Rst.and(Quiet::after(Duration::from_secs(1))).and(Bytes),
+    )
+    .collect()
+    .await;
+
+    assert_eq!(
+        got,
+        vec![
+            (1, Signal::SawRst),
+            (1, Signal::SawByte),
+            (1, Signal::WentQuiet)
+        ]
+    );
+}
+
+/// СИГНАЛЫ НЕ ТЕРЯЮТСЯ, когда источник завершается сразу после события, породившего сразу два
+/// сигнала. Очередь обязана быть опустошена прежде, чем поток отдаст `None`.
+#[tokio::test]
+async fn signals_survive_source_completion() {
+    let t0 = Instant::now();
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Twice;
+    impl Detector for Twice {
+        type Input = Event;
+        type Signal = Signal;
+        fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+            match event {
+                DetectorEvent::Packet { .. } => {
+                    (self, smallvec![Signal::SawRst, Signal::SawByte])
+                }
+                DetectorEvent::Tick { .. } => (self, smallvec![]),
+            }
+        }
+    }
+
+    let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
+        .detect_per(|e: &Event| e.addr, || Twice)
+        .collect()
+        .await;
+
+    assert_eq!(got.len(), 2, "потерян сигнал на завершении источника");
+}

@@ -58,3 +58,58 @@ pub trait Detector: Sized {
 
     fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>);
 }
+
+/// Композиция двух детекторов над ОДНИМ входом и ОДНИМ словарём сигналов.
+///
+/// # Зачем
+///
+/// Детектор, живущий шагом внутри группировки, нельзя добавить или снять, не тронув соседний
+/// код: правило детекции оказывается вплавлено в обработчик. Композиция делает детекторы
+/// звеньями — новая болезнь заводится дописыванием `.and(…)`, и существующие правила при этом
+/// не читаются и не редактируются.
+///
+/// # Что гарантирует тип
+///
+/// `Input` у обоих обязан совпасть, и это не формальность: детектор троттлинга UDP-датаграмм
+/// физически не соберётся в цепочке над TCP-сегментами. Уровень стека проверяется компилятором,
+/// а не внимательностью.
+///
+/// # Порядок и цена
+///
+/// Оба детектора видят КАЖДОЕ событие — это независимые наблюдатели, а не цепочка фильтров.
+/// Сигналы выдаются в порядке `A`, затем `B`. Цена названа: событие клонируется по разу на
+/// детектор, потому `Input` обязан быть `Clone`, а очень длинная цепочка `.and` умножает
+/// клонирование на свою длину.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct And<A, B>(pub A, pub B);
+
+impl<A, B> Detector for And<A, B>
+where
+    A: Detector,
+    B: Detector<Input = A::Input, Signal = A::Signal>,
+    A::Input: Clone,
+{
+    type Input = A::Input;
+    type Signal = A::Signal;
+
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+        let (first, mut signals) = self.0.step(event.clone());
+        let (second, more) = self.1.step(event);
+        signals.extend(more);
+        (And(first, second), signals)
+    }
+}
+
+/// Комбинаторы детектора. Реализован для всех — писать `impl DetectorExt` не требуется.
+pub trait DetectorExt: Detector + Sized {
+    /// Наблюдать обоими. См. [`And`].
+    fn and<B>(self, other: B) -> And<Self, B>
+    where
+        B: Detector<Input = Self::Input, Signal = Self::Signal>,
+        Self::Input: Clone,
+    {
+        And(self, other)
+    }
+}
+
+impl<D: Detector> DetectorExt for D {}

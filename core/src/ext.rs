@@ -2,8 +2,9 @@ use std::hash::Hash;
 
 use futures::{Future, Stream};
 
+use crate::detector::{Detector, DetectorEvent};
 use crate::stream::{
-    GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream, SwitchMapStream,
+    DetectPer, GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream, SwitchMapStream,
     WithLatestFromStream,
 };
 use crate::types::TcpSegment;
@@ -37,6 +38,32 @@ pub trait ReflexExt: Stream + Sized {
         Fut: Future,
     {
         MergeMapBounded::new(self, cap, f)
+    }
+
+    /// Прогнать [`Detector`] по потоку, со своим состоянием на каждый ключ.
+    ///
+    /// Ключ берётся из ВХОДА события; `Tick` доставляется всем живым состояниям, потому что
+    /// таймер есть событие времени, а не одной цели — без этого детектор тишины не сработал бы
+    /// никогда. Детектор рождается `factory` на первом событии ключа.
+    ///
+    /// Правило детекции подставляется значением, а не вшивается в шаг группировки: добавить
+    /// новую болезнь значит дописать `.and(…)` к детектору, не читая и не правя соседние.
+    /// См. [`crate::DetectorExt::and`] и [`DetectPer`].
+    fn detect_per<D, K, KeyFn, Factory>(
+        self,
+        key_fn: KeyFn,
+        factory: Factory,
+    ) -> DetectPer<Self, D, K, KeyFn, Factory>
+    where
+        Self: Stream<Item = DetectorEvent<D::Input>> + Unpin,
+        D: Detector + Unpin,
+        D::Input: Clone,
+        D::Signal: Unpin,
+        K: Ord + Clone + Unpin,
+        KeyFn: Fn(&D::Input) -> K + Unpin,
+        Factory: Fn() -> D + Unpin,
+    {
+        DetectPer::new(self, key_fn, factory)
     }
 
     fn with_latest_from<Other, F, R>(
