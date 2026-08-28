@@ -4,17 +4,35 @@ use std::time::{Duration, Instant};
 use smallvec::SmallVec;
 
 use crate::detector::DetectorEvent;
-use crate::types::{Flow, TcpSegment};
+use crate::types::{Flow, HasFlow};
 use crate::Detector;
 
-pub struct FlowTable<D: Detector<Input = TcpSegment>> {
+/// КАРТА ДЕТЕКТОРОВ ПО ФЛОУ — состояние соединения как ПРИМИТИВ, а не как чужой `HashMap`.
+///
+/// # Почему обобщена по входу
+///
+/// До #135 таблица принимала ровно `TcpSegment`. Всякий, кому состояние по флоу нужно было для
+/// другого входа — разобранного пакета с L7, датаграммы, события края, — писал свою карту: в
+/// одном неводе таких копий пять, и ни одна не умеет того, ради чего примитив и заведён —
+/// эвикта по простою. Карта без эвикта есть склад на неограниченный рост, и растёт он ровно
+/// там, где соединений много.
+///
+/// Обобщение обратно совместимо: `Input = TcpSegment` остаётся частным случаем, потребители не
+/// правятся ни строкой.
+pub struct FlowTable<D: Detector>
+where
+    D::Input: HasFlow + Clone,
+{
     flows: HashMap<Flow, D>,
     last_seen: HashMap<Flow, Instant>, // последняя активность потока — для эвикта простоя
     idle_timeout: Duration,            // молчание дольше → поток мёртв (эвикт на тике)
     make_detector: Box<dyn Fn(Flow) -> D + Send>,
 }
 
-impl<D: Detector<Input = TcpSegment>> FlowTable<D> {
+impl<D: Detector> FlowTable<D>
+where
+    D::Input: HasFlow + Clone,
+{
     /// `idle_timeout` — сколько поток может молчать (без пакетов), прежде чем считается мёртвым и
     /// эвиктится на тике. Иначе завершённый/затихший поток тикается ВЕЧНО (детектор эмитит пустое
     /// окно на каждом тике) — утечка таблицы + спам наблюдаемости. Потребитель задаёт таймаут по
@@ -28,14 +46,14 @@ impl<D: Detector<Input = TcpSegment>> FlowTable<D> {
         }
     }
 
-    pub fn process(&mut self, segment: &TcpSegment, at: Instant) -> SmallVec<[D::Signal; 2]> {
-        let flow = normalize_flow(&segment.flow);
+    pub fn process(&mut self, input: &D::Input, at: Instant) -> SmallVec<[D::Signal; 2]> {
+        let flow = normalize_flow(input.flow());
         let detector = self
             .flows
             .remove(&flow)
             .unwrap_or_else(|| (self.make_detector)(flow.clone()));
         let (detector, signals) = detector.step(DetectorEvent::Packet {
-            input: segment.clone(),
+            input: input.clone(),
             at,
         });
         self.flows.insert(flow.clone(), detector);
@@ -114,12 +132,59 @@ fn normalize_flow(flow: &Flow) -> Flow {
 mod tests {
     use super::*;
     use crate::detector::Detector;
-    use crate::types::{Protocol, TcpFlags, TcpOptions};
+    use crate::types::{Protocol, TcpFlags, TcpOptions, TcpSegment};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
     const WINDOW: Duration = Duration::from_secs(3);
     const IDLE: Duration = Duration::from_secs(6); // 2 окна простоя → поток мёртв
+
+    /// ТАБЛИЦА ДЕРЖИТ СОСТОЯНИЕ И ДЛЯ НЕ-TCP ВХОДА — витнес самого обобщения (#135).
+    ///
+    /// Без этого теста обобщение остаётся утверждением: старые проверки все до одной идут на
+    /// `TcpSegment` и зеленели бы при таблице, по-прежнему прибитой к нему. Здесь вход —
+    /// `UdpDatagram`, у которого с TCP общего ровно то, что оба несут флоу.
+    #[test]
+    fn таблица_держит_состояние_для_любого_входа_с_флоу() {
+        use crate::types::UdpDatagram;
+
+        #[derive(Clone)]
+        struct Считалка(usize);
+
+        impl Detector for Считалка {
+            type Input = UdpDatagram;
+            type Signal = usize;
+
+            fn step(self, ev: DetectorEvent<UdpDatagram>) -> (Self, SmallVec<[usize; 2]>) {
+                match ev {
+                    DetectorEvent::Packet { .. } => {
+                        let счёт = self.0 + 1;
+                        (Считалка(счёт), SmallVec::from_slice(&[счёт]))
+                    }
+                    DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+                }
+            }
+        }
+
+        let датаграмма = |порт: u16| UdpDatagram {
+            flow: Flow {
+                src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), порт),
+                dst: SocketAddr::new(Ipv4Addr::new(1, 2, 3, 4).into(), 443),
+                protocol: Protocol::Udp,
+            },
+            ttl: 64,
+            payload: vec![],
+        };
+
+        let now = Instant::now();
+        let mut table = FlowTable::new(IDLE, |_flow| Считалка(0));
+
+        // ДВА РАЗНЫХ ФЛОУ СЧИТАЮТСЯ ПОРОЗНЬ: состояние принадлежит соединению, а не таблице.
+        assert_eq!(table.process(&датаграмма(1111), now).as_slice(), &[1]);
+        assert_eq!(table.process(&датаграмма(2222), now).as_slice(), &[1]);
+        assert_eq!(table.process(&датаграмма(1111), now).as_slice(), &[2]);
+        assert_eq!(table.flow_count(), 2);
+    }
 
     /// Тривиальный детектор: тик всегда эмитит сигнал — так видно, тикается ли поток (жив в таблице).
     #[derive(Clone)]
