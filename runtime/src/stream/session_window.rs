@@ -56,13 +56,18 @@ struct SessionEntry<State> {
 
 pin_project! {
     /// `Stream<T>` → `Stream<R>`: копит состояние на ключ, отдаёт агрегат при закрытии окна.
-    pub struct SessionWindowStream<S, K, State, KeyFn, Init, Step, Close, R> {
+    pub struct SessionWindowStream<S, K, State, KeyFn, Init, Step, CanClose, Close, R> {
         #[pin]
         source: S,
         config: SessionConfig,
         key_fn: KeyFn,
         init: Init,
         step: Step,
+        // МОЖНО ЛИ ЗАКРЫВАТЬ. Тишина ВКЛАДОВ не равна тишине ЭПИЗОДА: наблюдение о долгом
+        // участнике приходит лишь когда он кончился, и окно, закрытое по паузе раньше, теряет
+        // ровно то, ради чего заводилось. Предикат отдаёт решение состоянию — оно одно знает,
+        // осталось ли в эпизоде незавершённое. (`///` здесь нельзя: `pin_project!` их не берёт.)
+        can_close: CanClose,
         close: Close,
         sessions: HashMap<K, SessionEntry<State>>,
         ready: Vec<R>,
@@ -72,15 +77,17 @@ pin_project! {
     }
 }
 
-impl<S, K, State, KeyFn, Init, Step, Close, R>
-    SessionWindowStream<S, K, State, KeyFn, Init, Step, Close, R>
+impl<S, K, State, KeyFn, Init, Step, CanClose, Close, R>
+    SessionWindowStream<S, K, State, KeyFn, Init, Step, CanClose, Close, R>
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         source: S,
         config: SessionConfig,
         key_fn: KeyFn,
         init: Init,
         step: Step,
+        can_close: CanClose,
         close: Close,
     ) -> Self {
         let sweep_interval = config.sweep_interval;
@@ -90,6 +97,7 @@ impl<S, K, State, KeyFn, Init, Step, Close, R>
             key_fn,
             init,
             step,
+            can_close,
             close,
             sessions: HashMap::new(),
             ready: Vec::new(),
@@ -99,14 +107,15 @@ impl<S, K, State, KeyFn, Init, Step, Close, R>
     }
 }
 
-impl<S, T, K, State, KeyFn, Init, Step, Close, R> Stream
-    for SessionWindowStream<S, K, State, KeyFn, Init, Step, Close, R>
+impl<S, T, K, State, KeyFn, Init, Step, CanClose, Close, R> Stream
+    for SessionWindowStream<S, K, State, KeyFn, Init, Step, CanClose, Close, R>
 where
     S: Stream<Item = T>,
     K: Eq + Hash + Clone,
     KeyFn: Fn(&T) -> K,
     Init: Fn() -> State,
     Step: FnMut(&mut State, T),
+    CanClose: Fn(&State) -> bool,
     Close: Fn(K, State) -> R,
 {
     type Item = R;
@@ -136,6 +145,7 @@ where
                 .sessions
                 .iter()
                 .filter(|(_, entry)| now.duration_since(entry.last_seen) >= idle)
+                .filter(|(_, entry)| (this.can_close)(&entry.state))
                 .map(|(key, _)| key.clone())
                 .collect::<Vec<_>>();
             let закрытые = истёкшие
@@ -168,6 +178,9 @@ where
                             .min_by_key(|(_, entry)| entry.last_seen)
                             .map(|(старейший, _)| старейший.clone()),
                     };
+                // ВЫТЕСНЕНИЕ ПРЕДИКАТ НЕ СПРАШИВАЕТ, и это осознанно: сессия, которая никогда не
+                // разрешает себя закрыть (участник завис навсегда), иначе заняла бы место до конца
+                // процесса и вытеснила бы живых соседей. Здесь потолок — последнее слово.
                 let вытесненный = вытеснить.and_then(|старейший| {
                     this.sessions
                         .remove(&старейший)
@@ -214,6 +227,8 @@ mod tests {
             |item: &(u8, u32)| item.0,
             Vec::<u32>::new,
             |state: &mut Vec<u32>, item: (u8, u32)| state.push(item.1),
+            // Соседние тесты про окно и потолок: завершённость их не касается, закрывать можно всегда.
+            |_state: &Vec<u32>| true,
             |key: u8, state: Vec<u32>| (key, state.len(), state.iter().sum::<u32>()),
         )
     }
@@ -281,6 +296,61 @@ mod tests {
         assert_eq!(
             преждевременный, None,
             "сессия ещё идёт — агрегат выдавать НЕЛЬЗЯ: эпизод не кончился"
+        );
+    }
+
+    /// ПРЕДМЕТ (поле 28.08): тишина ВКЛАДОВ не равна тишине ЭПИЗОДА. Видео-флоу живёт 126–217 с и
+    /// отдаёт вклад лишь в конце; эпизод, закрытый по паузе раньше, теряет ровно то, ради чего
+    /// заводился, — сам контент. Отсюда предикат: окно не закрывается, пока состояние не скажет,
+    /// что в эпизоде не осталось незавершённого.
+    #[tokio::test]
+    async fn окно_не_закрывается_пока_состояние_не_разрешило() {
+        let (tx, rx) = mpsc::unbounded_channel::<(u8, u32)>();
+        // Состояние копит значения; «незавершённым» считаем ноль — пока он есть, закрывать нельзя.
+        // Модель ровно та, что будет в неводе: 0 = «участник начался» (эпизод держится открытым),
+        // ненулевое = «участник кончился и отчитался». Закрывать можно, когда открытых не осталось.
+        let поток = SessionWindowStream::new(
+            UnboundedReceiverStream::new(rx),
+            SessionConfig {
+                idle: Duration::from_millis(200),
+                max_sessions: 16,
+                sweep_interval: Duration::from_millis(50),
+            },
+            |item: &(u8, u32)| item.0,
+            || (Vec::<u32>::new(), 0i32),
+            |state: &mut (Vec<u32>, i32), item: (u8, u32)| match item.1 {
+                0 => state.1 += 1,
+                значение => {
+                    state.0.push(значение);
+                    state.1 -= 1;
+                }
+            },
+            |state: &(Vec<u32>, i32)| state.1 == 0,
+            |key: u8, state: (Vec<u32>, i32)| (key, state.0.len(), state.0.iter().sum::<u32>()),
+        );
+        tokio::pin!(поток);
+
+        let _ = tx.send((1u8, 0u32)); // незавершённое: флоу открылся, но ещё не отчитался
+        let _отправитель_жив = tx.clone();
+
+        let рано = time::timeout(Duration::from_millis(700), поток.next())
+            .await
+            .ok()
+            .flatten();
+        assert_eq!(
+            рано, None,
+            "пауза прошла, но в эпизоде осталось незавершённое — закрывать его рано"
+        );
+
+        let _ = tx.send((1u8, 5u32)); // незавершённого больше нет
+        let агрегат = time::timeout(Duration::from_secs(3), поток.next())
+            .await
+            .ok()
+            .flatten();
+        assert_eq!(
+            агрегат,
+            Some((1u8, 1usize, 5u32)),
+            "незавершённого не осталось — эпизод обязан закрыться по той же тишине"
         );
     }
 
