@@ -40,9 +40,11 @@ ip netns exec $NS_CLIENT ip link set veth-cl-ns up
 ip netns exec $NS_CLIENT ip link set lo up
 ip netns exec $NS_CLIENT ip route add default via 10.99.0.1
 
-# DNS: use public resolver (Docker's internal DNS not reachable from netns)
+# DNS: use public resolver (Docker's internal DNS not reachable from netns).
+# НЕ 8.8.8.8: с 26.08.2026 ТСПУ уводит UDP/53 к нему на резолвер НСДИ 195.208.5.1, и тот отдаёт
+# NXDOMAIN на youtube.com (замер 28.08: 5 перехватов из 6). Quad9 на том же вантаже чист 6/6.
 mkdir -p /etc/netns/$NS_CLIENT
-echo "nameserver 8.8.8.8" > /etc/netns/$NS_CLIENT/resolv.conf
+echo "nameserver 9.9.9.9" > /etc/netns/$NS_CLIENT/resolv.conf
 
 # --- Router namespace ---
 ip netns add $NS_ROUTER
