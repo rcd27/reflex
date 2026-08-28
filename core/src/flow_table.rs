@@ -145,30 +145,30 @@ mod tests {
     /// `TcpSegment` и зеленели бы при таблице, по-прежнему прибитой к нему. Здесь вход —
     /// `UdpDatagram`, у которого с TCP общего ровно то, что оба несут флоу.
     #[test]
-    fn таблица_держит_состояние_для_любого_входа_с_флоу() {
+    fn table_keeps_state_for_any_input_with_a_flow() {
         use crate::types::UdpDatagram;
 
         #[derive(Clone)]
-        struct Считалка(usize);
+        struct Counter(usize);
 
-        impl Detector for Считалка {
+        impl Detector for Counter {
             type Input = UdpDatagram;
             type Signal = usize;
 
             fn step(self, ev: DetectorEvent<UdpDatagram>) -> (Self, SmallVec<[usize; 2]>) {
                 match ev {
                     DetectorEvent::Packet { .. } => {
-                        let счёт = self.0 + 1;
-                        (Считалка(счёт), SmallVec::from_slice(&[счёт]))
+                        let next = self.0 + 1;
+                        (Counter(next), SmallVec::from_slice(&[next]))
                     }
                     DetectorEvent::Tick { .. } => (self, SmallVec::new()),
                 }
             }
         }
 
-        let датаграмма = |порт: u16| UdpDatagram {
+        let datagram = |port: u16| UdpDatagram {
             flow: Flow {
-                src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), порт),
+                src: SocketAddr::new(Ipv4Addr::new(10, 0, 0, 2).into(), port),
                 dst: SocketAddr::new(Ipv4Addr::new(1, 2, 3, 4).into(), 443),
                 protocol: Protocol::Udp,
             },
@@ -177,12 +177,12 @@ mod tests {
         };
 
         let now = Instant::now();
-        let mut table = FlowTable::new(IDLE, |_flow| Считалка(0));
+        let mut table = FlowTable::new(IDLE, |_flow| Counter(0));
 
         // ДВА РАЗНЫХ ФЛОУ СЧИТАЮТСЯ ПОРОЗНЬ: состояние принадлежит соединению, а не таблице.
-        assert_eq!(table.process(&датаграмма(1111), now).as_slice(), &[1]);
-        assert_eq!(table.process(&датаграмма(2222), now).as_slice(), &[1]);
-        assert_eq!(table.process(&датаграмма(1111), now).as_slice(), &[2]);
+        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[1]);
+        assert_eq!(table.process(&datagram(2222), now).as_slice(), &[1]);
+        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[2]);
         assert_eq!(table.flow_count(), 2);
     }
 
