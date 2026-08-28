@@ -11,9 +11,11 @@ pub mod parse;
 pub mod reactor;
 pub mod stream;
 pub mod tap;
+pub mod tempo;
 pub mod types;
 
 pub use tap::Tap;
+pub use tempo::Tempo;
 
 #[cfg(feature = "dns")]
 pub mod dns;
