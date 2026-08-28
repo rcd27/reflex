@@ -33,6 +33,15 @@ pub struct SessionConfig {
     pub max_sessions: usize,
     /// Как часто проверять истёкшие.
     pub sweep_interval: Duration,
+    /// ПОТОЛОК ЖИЗНИ ЭПИЗОДА — предохранитель против вечного `can_close = false`.
+    ///
+    /// Поле 28.08 показало, зачем: 18 % флоу живут дольше 120 с (упираются в таймаут), а
+    /// незавершённый участник запрещает закрывать окно. Эпизод, у которого всегда есть хоть один
+    /// такой, не закроется НИКОГДА — прибор молчит вместо того, чтобы врать, и это ничем не лучше.
+    ///
+    /// По истечении потолка окно закрывается НЕВЗИРАЯ на предикат. Цена названа: такая сводка
+    /// неполна — участники, не успевшие отчитаться, в неё не вошли.
+    pub max_lifetime: Duration,
 }
 
 impl Default for SessionConfig {
@@ -41,6 +50,9 @@ impl Default for SessionConfig {
             idle: Duration::from_secs(60),
             max_sessions: 4096,
             sweep_interval: Duration::from_secs(1),
+            // Пять минут: длиннее любого разумного «эпизода просмотра» и вдвое длиннее самого
+            // долгого нашего флоу (таймаут 120 с), то есть штатной работе не мешает.
+            max_lifetime: Duration::from_secs(300),
         }
     }
 }
@@ -52,6 +64,8 @@ impl Default for SessionConfig {
 struct SessionEntry<State> {
     state: State,
     last_seen: Instant,
+    /// Когда эпизод начался — для потолка жизни.
+    created: Instant,
 }
 
 pin_project! {
@@ -140,12 +154,16 @@ where
         // коробке не отдал НИ ОДНОЙ сводки при полностью зелёных тестах.
         while this.sweep_tick.as_mut().poll_tick(cx).is_ready() {
             let idle = this.config.idle;
+            let предел = this.config.max_lifetime;
             let now = Instant::now();
             let истёкшие = this
                 .sessions
                 .iter()
-                .filter(|(_, entry)| now.duration_since(entry.last_seen) >= idle)
-                .filter(|(_, entry)| (this.can_close)(&entry.state))
+                .filter(|(_, entry)| {
+                    // Либо тишина И состояние разрешило, либо потолок жизни — и тогда без спроса.
+                    (now.duration_since(entry.last_seen) >= idle && (this.can_close)(&entry.state))
+                        || now.duration_since(entry.created) >= предел
+                })
                 .map(|(key, _)| key.clone())
                 .collect::<Vec<_>>();
             let закрытые = истёкшие
@@ -191,6 +209,7 @@ where
                 let entry = this.sessions.entry(key).or_insert_with(|| SessionEntry {
                     state: (this.init)(),
                     last_seen: now,
+                    created: now,
                 });
                 entry.last_seen = now;
                 (this.step)(&mut entry.state, input);
@@ -244,6 +263,7 @@ mod tests {
                 idle: Duration::from_secs(60),
                 max_sessions: 16,
                 sweep_interval: Duration::from_secs(1),
+                max_lifetime: Duration::from_secs(300),
             },
         );
         tokio::pin!(поток);
@@ -280,6 +300,7 @@ mod tests {
                 idle: Duration::from_secs(60),
                 max_sessions: 16,
                 sweep_interval: Duration::from_secs(1),
+                max_lifetime: Duration::from_secs(300),
             },
         );
         tokio::pin!(поток);
@@ -315,6 +336,7 @@ mod tests {
                 idle: Duration::from_millis(200),
                 max_sessions: 16,
                 sweep_interval: Duration::from_millis(50),
+                max_lifetime: Duration::from_secs(300),
             },
             |item: &(u8, u32)| item.0,
             || (Vec::<u32>::new(), 0i32),
@@ -367,6 +389,7 @@ mod tests {
                 idle: Duration::from_millis(300),
                 max_sessions: 16,
                 sweep_interval: Duration::from_millis(50),
+                max_lifetime: Duration::from_secs(300),
             },
         );
         tokio::pin!(поток);
@@ -394,6 +417,50 @@ mod tests {
         );
     }
 
+    /// ПРЕДОХРАНИТЕЛЬ: эпизод, чьё состояние НИКОГДА не разрешает закрытие, всё равно закрывается
+    /// по потолку жизни. Поле 28.08: 18 % флоу упираются в таймаут 120 с, и предикат «пока висит
+    /// незавершённое» держал окно вечно — прибор молчал сутками. Молчащий прибор не лучше врущего.
+    #[tokio::test]
+    async fn вечно_незавершённый_эпизод_закрывается_по_потолку_жизни() {
+        let (tx, rx) = mpsc::unbounded_channel::<(u8, u32)>();
+        let поток = SessionWindowStream::new(
+            UnboundedReceiverStream::new(rx),
+            SessionConfig {
+                idle: Duration::from_millis(100),
+                max_sessions: 16,
+                sweep_interval: Duration::from_millis(50),
+                max_lifetime: Duration::from_millis(600),
+            },
+            |item: &(u8, u32)| item.0,
+            || (Vec::<u32>::new(), 0i32),
+            |state: &mut (Vec<u32>, i32), item: (u8, u32)| match item.1 {
+                0 => state.1 += 1,
+                значение => {
+                    state.0.push(значение);
+                    state.1 -= 1;
+                }
+            },
+            |state: &(Vec<u32>, i32)| state.1 == 0,
+            |key: u8, state: (Vec<u32>, i32)| (key, state.0.len(), state.0.iter().sum::<u32>()),
+        );
+        tokio::pin!(поток);
+
+        // Участник начался и НИКОГДА не отчитается — предикат навсегда против закрытия.
+        let _ = tx.send((1u8, 0u32));
+        let _отправитель_жив = tx.clone();
+
+        let агрегат = time::timeout(Duration::from_secs(4), поток.next())
+            .await
+            .ok()
+            .flatten();
+
+        assert_eq!(
+            агрегат,
+            Some((1u8, 0usize, 0u32)),
+            "потолок жизни вышел — эпизод обязан закрыться, пусть и неполным"
+        );
+    }
+
     /// Вытеснение по потолку ОБЯЗАНО эмитить. Молчаливое вытеснение (так делает `group_by_flow`)
     /// теряет под нагрузкой ровно самые длинные эпизоды — то есть самые тяжёлые для человека, —
     /// и прибор начинает врать в лучшую сторону именно тогда, когда правда нужнее всего.
@@ -406,6 +473,7 @@ mod tests {
                 idle: Duration::from_secs(600),
                 max_sessions: 2,
                 sweep_interval: Duration::from_secs(1),
+                max_lifetime: Duration::from_secs(300),
             },
         );
         tokio::pin!(поток);
