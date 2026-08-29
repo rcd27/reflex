@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use reflex_core::stream::Keys;
 use reflex_core::ReflexExt;
 use tokio_stream::iter;
 
@@ -15,6 +16,8 @@ async fn group_by_counts_per_key() {
                 *count += 1;
                 Some((item, *count))
             },
+            // Ключей в тесте перечислимо мало.
+            Keys::Finite,
         )
         .collect()
         .await;
@@ -48,6 +51,8 @@ async fn group_by_filters_via_none() {
             |item: &i32| *item % 3,
             || (),
             |_state, item| if item % 2 == 0 { Some(item) } else { None },
+            // Ключей в тесте перечислимо мало.
+            Keys::Finite,
         )
         .collect()
         .await;
@@ -60,7 +65,12 @@ async fn group_by_empty_stream() {
     let stream = iter(Vec::<i32>::new());
 
     let results: Vec<i32> = stream
-        .group_by(|item: &i32| *item, || (), |_, item| Some(item))
+        .group_by(
+            |item: &i32| *item,
+            || (),
+            |_, item| Some(item),
+            Keys::Finite,
+        )
         .collect()
         .await;
 
@@ -81,9 +91,77 @@ async fn group_by_accumulates_state_per_key() {
                 *sum += val;
                 Some((key, *sum))
             },
+            // Ключей в тесте перечислимо мало.
+            Keys::Finite,
         )
         .collect()
         .await;
 
     assert_eq!(results, vec![("x", 10), ("y", 20), ("x", 40), ("y", 25)]);
+}
+
+/// СОСТОЯНИЙ ГРУПП НЕ БОЛЬШЕ НАЗВАННОГО ПРЕДЕЛА (#295, срез 1).
+///
+/// # Чем это было
+///
+/// `group_by` копил `HashMap<K, State>` без предела — ТА ЖЕ утечка, что вылечена в `detect_per`
+/// (#294). Но там о ней хотя бы предупреждали в документации; здесь не было сказано ничего.
+///
+/// # Почему не «истечение по простою», как у соседа
+///
+/// У `group_by` НЕТ ЧАСОВ: он работает с обычным потоком, где время не приходит ни элементом, ни
+/// тиком. Отмерить простой нечем — и вариант политики здесь другой по природе, а не по вкусу.
+///
+/// # Цена вытеснения названа
+///
+/// Вытесненная группа теряет накопленное: вернувшись, она начинает с нуля. Это ХУЖЕ, чем истечение
+/// по простою, — уходит та, к которой дольше всего не обращались, а не та, что заведомо мертва. И
+/// это честнее, чем расти без границы: у долгоживущего процесса второе кончается падением.
+#[tokio::test]
+async fn groups_do_not_outgrow_the_declared_ceiling() {
+    // Ключи 1, 2, 3 при потолке 2: к моменту возврата единицы её состояние вытеснено.
+    let seen: Vec<u32> = futures::stream::iter([1u8, 2, 3, 1])
+        .group_by(
+            |k: &u8| *k,
+            || 0u32,
+            |count: &mut u32, _item| {
+                *count += 1;
+                Some(*count)
+            },
+            Keys::AtMost(2),
+        )
+        .collect()
+        .await;
+
+    assert_eq!(
+        seen.last(),
+        Some(&1),
+        "состояние вытесненной группы пережило вытеснение: {seen:?}"
+    );
+}
+
+/// КОНТРОЛЬ: заявленная конечность чтится — состояния живут, сколько бы ключей ни пришло.
+///
+/// Без него тест выше зеленел бы и на операторе, который забывает состояние всегда, — а такой
+/// оператор не группировка вовсе.
+#[tokio::test]
+async fn finite_keys_keep_their_state() {
+    let seen: Vec<u32> = futures::stream::iter([1u8, 2, 3, 1])
+        .group_by(
+            |k: &u8| *k,
+            || 0u32,
+            |count: &mut u32, _item| {
+                *count += 1;
+                Some(*count)
+            },
+            Keys::Finite,
+        )
+        .collect()
+        .await;
+
+    assert_eq!(
+        seen.last(),
+        Some(&2),
+        "заявленная конечность не почтена — состояние снято: {seen:?}"
+    );
 }

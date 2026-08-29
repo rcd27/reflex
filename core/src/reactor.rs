@@ -76,6 +76,7 @@ where
 /// second use-case — тогда обобщать, не раньше).
 pub fn group_by_reactor<R, K>(
     events: impl Stream<Item = (K, R::Event)>,
+    keys: crate::stream::Keys,
 ) -> impl Stream<Item = (K, R::Effect)>
 where
     R: Reactor,
@@ -89,5 +90,9 @@ where
             *state = next;
             fx.map(|f| (k, f))
         },
+        // ЗАЯВЛЕНИЕ ПЕРЕАДРЕСОВАНО ВЫЗЫВАЮЩЕМУ (#295): сколько бывает ключей, знает он, а не
+        // диспетчер реакторов. Здесь `Finite` было бы ложью для ключа-соединения и правдой для
+        // ключа-ноги — а различить их отсюда нечем.
+        keys,
     )
 }

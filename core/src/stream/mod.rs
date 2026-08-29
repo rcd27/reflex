@@ -11,7 +11,7 @@ mod with_latest_from;
 
 pub use detect_per::{DetectPer, Lifetime};
 pub use fold_state::FoldStream;
-pub use group_by::GroupByStream;
+pub use group_by::{GroupByStream, Keys};
 pub use group_by_domain::GroupByDomainStream;
 pub use merge_map_bounded::MergeMapBounded;
 pub use scan::ScanStream;

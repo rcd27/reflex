@@ -124,11 +124,16 @@ pub trait ReflexExt: Stream + Sized {
     }
 
     /// Group items by an arbitrary key, with per-group state.
+    /// ЧИСЛО ГРУПП ОГРАНИЧИВАЕТСЯ ЗАЯВЛЕНИЕМ (#295): `Finite` либо `AtMost(n)`.
+    ///
+    /// Часов у оператора нет, поэтому истечь по простою группа не может — единственная честная
+    /// граница здесь есть ЧИСЛО. Промолчать нельзя.
     fn group_by<K, State, KeyFn, Init, Step, R>(
         self,
         key_fn: KeyFn,
         init: Init,
         step: Step,
+        keys: crate::stream::Keys,
     ) -> GroupByStream<Self, K, State, KeyFn, Init, Step, R>
     where
         K: Hash + Eq + Clone,
@@ -136,7 +141,7 @@ pub trait ReflexExt: Stream + Sized {
         Init: Fn() -> State,
         Step: FnMut(&mut State, Self::Item) -> Option<R>,
     {
-        GroupByStream::new(self, key_fn, init, step)
+        GroupByStream::new(self, key_fn, init, step, keys)
     }
 
     /// Group TCP segments by domain name, with per-domain state.
