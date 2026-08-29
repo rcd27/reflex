@@ -79,3 +79,36 @@ async fn tap_observes_without_changing_the_stage() {
         "наблюдатель не увидел значений"
     );
 }
+
+/// КОМАНДЫ ДОЕЗЖАЮТ ДО ИНЪЕКТОРА, а не растворяются в терминальности.
+///
+/// Терминальность запрещает продолжать цепочку — это проверяют `compile_fail` в самом модуле. Здесь
+/// обратное: что морфизм в `1` действительно ИСПОЛНЯЕТСЯ. Без этого теста `inject` мог бы быть
+/// красивым способом выбросить поток.
+#[tokio::test]
+async fn injection_actually_emits_every_command() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static EMITTED: AtomicU32 = AtomicU32::new(0);
+    EMITTED.store(0, Ordering::SeqCst);
+
+    let end = Pipeline::of_packets(stream::iter([1u8, 5, 9]))
+        .map_signals(|byte| byte > 4)
+        .classify(|big| match big {
+            true => 100u32,
+            false => 1,
+        })
+        .react(|weight| weight * 2)
+        .materialize(|weight| weight + 1)
+        .inject(|command: u32| {
+            EMITTED.fetch_add(command, Ordering::SeqCst);
+        })
+        .drive()
+        .await;
+
+    assert_eq!(end, reflex_core::category::Terminal);
+    assert_eq!(
+        EMITTED.load(Ordering::SeqCst),
+        3 + 201 + 201,
+        "команды не доехали до инъектора"
+    );
+}
