@@ -80,6 +80,7 @@ pub trait ReflexExt: Stream + Sized {
         self,
         key_fn: KeyFn,
         factory: Factory,
+        lifetime: crate::stream::Lifetime,
     ) -> DetectPer<Self, D, K, KeyFn, Factory>
     where
         Self: Stream<Item = DetectorEvent<D::Input>> + Unpin,
@@ -90,7 +91,7 @@ pub trait ReflexExt: Stream + Sized {
         KeyFn: Fn(&D::Input) -> K + Unpin,
         Factory: Fn() -> D + Unpin,
     {
-        DetectPer::new(self, key_fn, factory)
+        DetectPer::new(self, key_fn, factory, lifetime)
     }
 
     /// БЕРИ, ПОКА ПРЕДИКАТ ДЕРЖИТ, ВКЛЮЧАЯ ТУ, ЧТО ЕГО СНЯЛА. См. [`TakeThroughStream`].

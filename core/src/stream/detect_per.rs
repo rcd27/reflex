@@ -21,13 +21,19 @@
 //!   опрашивается источник;
 //! * детектор не дёргает часы сам — время приходит в событии, потому тесты воспроизводимы.
 //!
-//! # Чего он НЕ делает
+//! # Политика жизни ключа НАЗЫВАЕТСЯ ВЫЗЫВАЮЩИМ, и промолчать нельзя
 //!
-//! Состояния не истекают: ключ, о котором забыли, занимает память до конца потока. Для потока
-//! соединений это утечка, и лечится она либо истечением по времени, либо внешним снятием ключа.
-//! Здесь не сделано намеренно — политика жизни ключа принадлежит потребителю, а не оператору,
-//! и угадывать её означало бы навязать одну всем. Потребителю: если ключей неограниченно много,
-//! оператор не подходит.
+//! Прежде здесь стояло предупреждение: «состояния не истекают… если ключей неограниченно много,
+//! оператор не подходит», — и политика оставалась на совести потребителя. **Так не сработало.**
+//! Первый же продуктовый вызов (`nevod2::pipe::alarms`) ключевал по 5-tuple соединения, то есть
+//! нарушал названное условие, и это осталось незамеченным до #294: состояние каждого флоу жило
+//! до конца процесса, а мёртвый флоу продолжал получать тики и получал улику в молчании,
+//! набранную из пауз ЧУЖОГО трафика.
+//!
+//! Урок общий: **предупреждение в документации не защищает** — его читают, когда пишут оператор,
+//! и не перечитывают, когда его применяют. Поэтому [`Lifetime`] стал обязательным аргументом:
+//! забыть политику невозможно, а `Bounded` есть ЗАЯВЛЕНИЕ «ключей здесь конечное число», а не
+//! умолчание.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
@@ -36,6 +42,24 @@ use std::task::{Context, Poll};
 use futures::Stream;
 
 use crate::detector::{Detector, DetectorEvent};
+use std::time::{Duration, Instant};
+
+/// СКОЛЬКО ЖИВЁТ СОСТОЯНИЕ КЛЮЧА. Обязательный аргумент [`DetectPer::new`].
+///
+/// Вариант типа, а не `Option<Duration>`: `None` читалось бы как «предела нет», то есть как
+/// умолчание, — а предмет здесь ровно в том, чтобы умолчания не было.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifetime {
+    /// КЛЮЧЕЙ КОНЕЧНОЕ ЧИСЛО — ноги, классы, порты. Состояние живёт до конца потока, и это
+    /// законно: расти ему некуда.
+    Bounded,
+    /// КЛЮЧЕЙ НЕОГРАНИЧЕННО МНОГО — соединения, цели, сессии. Состояние снимается, когда по
+    /// ключу не было НИ ОДНОГО события дольше срока.
+    ///
+    /// Срок берётся ЗАВЕДОМО БОЛЬШИМ, чем окна детекторов, которые в нём живут: снятое раньше
+    /// времени состояние теряет беду, о которой детектор ещё не успел сказать.
+    UntilIdle(Duration),
+}
 
 /// `Unpin` у источника требуется намеренно, вместо `pin_project`: поле с ассоциированным типом
 /// (`VecDeque<(K, D::Signal)>`) макрос не разбирает. Ограничение необременительно — источники
@@ -49,21 +73,25 @@ where
     factory: Factory,
     /// `BTreeMap`, а не `HashMap`: порядок доставки `Tick` обязан быть детерминированным,
     /// иначе тест, где два детектора сработали на один тик, зеленеет через раз.
-    states: BTreeMap<K, D>,
+    ///
+    /// Рядом с детектором — момент ПОСЛЕДНЕГО события по ключу: без него нечем отмерить простой.
+    states: BTreeMap<K, (D, Instant)>,
     pending: VecDeque<(K, D::Signal)>,
+    lifetime: Lifetime,
 }
 
 impl<S, D, K, KeyFn, Factory> DetectPer<S, D, K, KeyFn, Factory>
 where
     D: Detector,
 {
-    pub fn new(source: S, key_fn: KeyFn, factory: Factory) -> Self {
+    pub fn new(source: S, key_fn: KeyFn, factory: Factory, lifetime: Lifetime) -> Self {
         Self {
             source,
             key_fn,
             factory,
             states: BTreeMap::new(),
             pending: VecDeque::new(),
+            lifetime,
         }
     }
 }
@@ -99,11 +127,11 @@ where
                 Poll::Ready(Some(DetectorEvent::Packet { input, at })) => {
                     let key = (this.key_fn)(&input);
                     let detector = match this.states.remove(&key) {
-                        Some(existing) => existing,
+                        Some((existing, _)) => existing,
                         None => (this.factory)(),
                     };
                     let (next, signals) = detector.step(DetectorEvent::Packet { input, at });
-                    this.states.insert(key.clone(), next);
+                    this.states.insert(key.clone(), (next, at));
                     signals
                         .into_iter()
                         .for_each(|signal| this.pending.push_back((key.clone(), signal)));
@@ -115,12 +143,21 @@ where
                     keys.into_iter().for_each(|key| {
                         match this.states.remove(&key) {
                             None => (),
-                            Some(detector) => {
+                            Some((detector, seen_at)) => {
+                                // ТИК ДОСТАВЛЯЕТСЯ ПРЕЖДЕ, ЧЕМ РЕШАЕТСЯ СУДЬБА КЛЮЧА: снять
+                                // состояние, не дав ему сказать последнее слово, значит потерять
+                                // беду, о которой детектор уже знал.
                                 let (next, signals) = detector.step(DetectorEvent::Tick { at });
-                                this.states.insert(key.clone(), next);
-                                signals
-                                    .into_iter()
-                                    .for_each(|signal| this.pending.push_back((key.clone(), signal)));
+                                let idle = at.saturating_duration_since(seen_at);
+                                match this.lifetime {
+                                    Lifetime::UntilIdle(limit) if idle >= limit => (),
+                                    Lifetime::UntilIdle(_) | Lifetime::Bounded => {
+                                        this.states.insert(key.clone(), (next, seen_at));
+                                    }
+                                }
+                                signals.into_iter().for_each(|signal| {
+                                    this.pending.push_back((key.clone(), signal))
+                                });
                             }
                         };
                     });

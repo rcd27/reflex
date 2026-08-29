@@ -9,7 +9,7 @@ mod take_through;
 mod tee;
 mod with_latest_from;
 
-pub use detect_per::DetectPer;
+pub use detect_per::{DetectPer, Lifetime};
 pub use fold_state::FoldStream;
 pub use group_by::GroupByStream;
 pub use group_by_domain::GroupByDomainStream;
