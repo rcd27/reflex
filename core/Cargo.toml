@@ -8,10 +8,18 @@ license = "GPL-3.0-only"
 [features]
 default = []
 tls = []
+# QUIC-ОПОЗНАНИЕ: тянет `ring` (HKDF + AES-GCM + header-protection). Под фичей, чтобы крейт
+# оставался лёгким для тех, кому QUIC не нужен. Требует `tls`: имя достаётся из TLS-рукопожатия,
+# собранного из `CRYPTO`-фреймов.
+quic = ["dep:ring", "tls"]
 dns = []
 serde = ["dep:serde", "bitflags/serde"]
 
 [dependencies]
+# КРИПТА ДЛЯ QUIC-`Initial`: ключ выводится из DCID детерминированно (RFC 9001), то есть
+# шифрование здесь защищает от порчи, а не прячет от наблюдателя. Своя крипта была бы худшей из
+# возможных самоделок.
+ring = { version = "0.17", optional = true }
 futures = "0.3"
 pin-project-lite = "0.2"
 smallvec = "1"

@@ -19,6 +19,8 @@ pub use tempo::Tempo;
 
 #[cfg(feature = "dns")]
 pub mod dns;
+#[cfg(feature = "quic")]
+pub mod quic;
 #[cfg(feature = "tls")]
 pub mod tls;
 
