@@ -17,5 +17,5 @@ pub use merge_map_bounded::MergeMapBounded;
 pub use scan::ScanStream;
 pub use switch_map::SwitchMapStream;
 pub use take_through::TakeThroughStream;
-pub use tee::TeeStream;
+pub use tee::{Fanout, TeeStream};
 pub use with_latest_from::WithLatestFromStream;

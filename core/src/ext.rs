@@ -35,14 +35,17 @@ pub trait ReflexExt: Stream + Sized {
 
     /// Раздвоение потока: элементы идут дальше, копия уходит в `sink`.
     ///
-    /// Ветвление названо оператором, а не спрятано в `map` с побочным действием. Приёмник не
-    /// готов — копия теряется: основной поток не ждёт побочной ветки.
-    fn tee<K>(self, sink: K) -> TeeStream<Self, K>
+    /// Ветвление названо оператором, а не спрятано в `map` с побочным действием.
+    ///
+    /// ПОЛИТИКА ОБЯЗАТЕЛЬНА (#295): `Lossy` со счётчиком либо `Backpressure`. Прежде терялось
+    /// молча — и на живом движке при всплеске в 300 целей до расследования доходило 136.
+    fn tee<K>(self, sink: K, fanout: crate::stream::Fanout) -> TeeStream<Self, K>
     where
+        Self: Sized,
         Self::Item: Clone,
         K: futures::Sink<Self::Item>,
     {
-        TeeStream::new(self, sink)
+        TeeStream::new(self, sink, fanout)
     }
 
     fn switch_map<F, Inner>(self, f: F) -> SwitchMapStream<Self, F, Inner>
