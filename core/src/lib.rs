@@ -8,6 +8,10 @@ pub mod ext;
 pub mod flow_table;
 pub mod guard;
 pub mod parse;
+// ЗАПИСАННЫЙ ПРОВОД — симуляционный источник (#295, срез 0). Под фичей, потому что читать файлы
+// нужно не всякому потребителю: на коробке провод живой. Зависимостей нет — только `std`.
+#[cfg(feature = "pcap")]
+pub mod pcap;
 pub mod reactor;
 pub mod stream;
 pub mod tap;
