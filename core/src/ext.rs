@@ -106,16 +106,21 @@ pub trait ReflexExt: Stream + Sized {
         TakeThroughStream::new(self, predicate)
     }
 
+    /// НАЧАЛЬНОЕ ЗНАЧЕНИЕ ОБЯЗАТЕЛЬНО — оператор тотален (#295).
+    ///
+    /// Что будет до первого значения `other`, отвечает вызывающий: у оператора нет умолчания, а
+    /// прежняя молчаливая потеря элементов была частичностью, описанной лишь в чужом крейте.
     fn with_latest_from<Other, F, R>(
         self,
         other: Other,
+        initial: Other::Item,
         f: F,
     ) -> WithLatestFromStream<Self, Other, F>
     where
         Other: Stream,
         F: FnMut(Self::Item, &Other::Item) -> R,
     {
-        WithLatestFromStream::new(self, other, f)
+        WithLatestFromStream::new(self, other, initial, f)
     }
 
     /// Group items by an arbitrary key, with per-group state.
