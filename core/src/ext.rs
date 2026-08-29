@@ -5,7 +5,7 @@ use futures::{Future, Stream};
 use crate::detector::{Detector, DetectorEvent};
 use crate::stream::{
     DetectPer, FoldStream, GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream,
-    SwitchMapStream, TeeStream, WithLatestFromStream,
+    SwitchMapStream, TakeThroughStream, TeeStream, WithLatestFromStream,
 };
 use crate::types::TcpSegment;
 
@@ -91,6 +91,18 @@ pub trait ReflexExt: Stream + Sized {
         Factory: Fn() -> D + Unpin,
     {
         DetectPer::new(self, key_fn, factory)
+    }
+
+    /// БЕРИ, ПОКА ПРЕДИКАТ ДЕРЖИТ, ВКЛЮЧАЯ ТУ, ЧТО ЕГО СНЯЛА. См. [`TakeThroughStream`].
+    ///
+    /// Отличие от `take_while` не косметическое: тот роняет элемент, на котором предикат стал
+    /// ложным, а для ПОИСКА это ровно тот элемент, ради которого поиск затевался.
+    fn take_through<P>(self, predicate: P) -> TakeThroughStream<Self, P>
+    where
+        Self: Sized,
+        P: FnMut(&Self::Item) -> bool,
+    {
+        TakeThroughStream::new(self, predicate)
     }
 
     fn with_latest_from<Other, F, R>(

@@ -5,6 +5,7 @@ mod group_by_domain;
 mod merge_map_bounded;
 mod scan;
 mod switch_map;
+mod take_through;
 mod tee;
 mod with_latest_from;
 
@@ -15,5 +16,6 @@ pub use group_by_domain::GroupByDomainStream;
 pub use merge_map_bounded::MergeMapBounded;
 pub use scan::ScanStream;
 pub use switch_map::SwitchMapStream;
+pub use take_through::TakeThroughStream;
 pub use tee::TeeStream;
 pub use with_latest_from::WithLatestFromStream;
