@@ -112,3 +112,83 @@ async fn injection_actually_emits_every_command() {
         "команды не доехали до инъектора"
     );
 }
+
+/// ДЕТЕКЦИЯ С СОСТОЯНИЕМ — морфизм, а не отдельный слой (#295).
+///
+/// Флагманский морфизм таблицы §5 приехал в категорию позже объектов: срез 2 честно отложил его,
+/// а понадобился он в ту же минуту, когда продукт начал переезжать — первая же его ветвь есть
+/// ровно `detect_per`.
+#[tokio::test]
+async fn stateful_detection_is_a_morphism() {
+    use reflex_core::stream::Lifetime;
+    use reflex_core::{Detector, DetectorEvent};
+    use smallvec::{smallvec, SmallVec};
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Counting(u8);
+    impl Detector for Counting {
+        type Input = u8;
+        type Signal = u8;
+        fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[u8; 2]>) {
+            match event {
+                DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
+                DetectorEvent::Tick { .. } => (self, smallvec![self.0]),
+            }
+        }
+    }
+
+    let t0 = std::time::Instant::now();
+    let seen: Vec<(u8, u8)> = Pipeline::of_packets(stream::iter([
+        DetectorEvent::Packet { input: 1u8, at: t0 },
+        DetectorEvent::Packet { input: 1u8, at: t0 },
+        DetectorEvent::Tick { at: t0 },
+    ]))
+    .detect(
+        |k: &u8| *k,
+        Counting::default,
+        Lifetime::UntilIdle(std::time::Duration::from_secs(60)),
+    )
+    .into_stream()
+    .collect()
+    .await;
+
+    assert_eq!(seen, vec![(1u8, 2u8)], "детекция не досчитала: {seen:?}");
+}
+
+/// ЧАСТИЧНАЯ КЛАССИФИКАЦИЯ ОТСЕИВАЕТ — и это НАЗВАНО в имени морфизма.
+///
+/// Vision знает классификацию тотальную. Продукт показал, что в жизни она частична: не всякое
+/// наблюдение становится делом. Спрятать отсев внутрь `classify` значило бы сделать тотальный
+/// морфизм частичным молча.
+#[tokio::test]
+async fn partial_classification_drops_what_it_cannot_classify() {
+    let out: Vec<&str> = Pipeline::of_signals(stream::iter([1u8, 7, 2, 9]))
+        .classify_some(|signal| match signal > 4 {
+            true => Some("крупный"),
+            false => None,
+        })
+        .into_stream()
+        .collect()
+        .await;
+
+    assert_eq!(
+        out,
+        vec!["крупный", "крупный"],
+        "частичная классификация пропустила то, что классифицировать нечем: {out:?}"
+    );
+}
+
+/// КОНТРОЛЬ: тотальная классификация НИЧЕГО не отсеивает.
+///
+/// Без него предыдущий тест зеленел бы и на реализации, где `classify_some` просто равен
+/// `classify`, — а тогда частичность была бы именем без предмета.
+#[tokio::test]
+async fn total_classification_keeps_everything() {
+    let out: Vec<bool> = Pipeline::of_signals(stream::iter([1u8, 7, 2, 9]))
+        .classify(|signal| signal > 4)
+        .into_stream()
+        .collect()
+        .await;
+
+    assert_eq!(out.len(), 4, "тотальная классификация потеряла сигналы");
+}

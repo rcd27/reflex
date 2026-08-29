@@ -184,8 +184,7 @@ impl<S: Stream> Pipeline<Packets, S> {
     /// `PacketStream → SignalStream<S>` — простейшая форма детекции: наблюдение выводится из
     /// пакета без состояния.
     ///
-    /// Детекция С СОСТОЯНИЕМ живёт в `Detector`/`detect_per` и приедет сюда морфизмом, когда
-    /// стадии срастутся с ними; пока это отдельный слой, и притворяться, что он уже здесь, нельзя.
+    /// Детекция С СОСТОЯНИЕМ — отдельный морфизм [`Pipeline::detect`].
     pub fn map_signals<F, Sig>(self, f: F) -> Pipeline<Signals<Sig>, futures::stream::Map<S, F>>
     where
         F: FnMut(S::Item) -> Sig,
@@ -208,7 +207,93 @@ impl<S: Stream> Pipeline<Packets, S> {
     }
 }
 
+impl<I, S> Pipeline<Packets, S>
+where
+    S: futures::Stream<Item = crate::detector::DetectorEvent<I>> + Unpin,
+{
+    /// `PacketStream → SignalStream<S>` — ДЕТЕКЦИЯ С СОСТОЯНИЕМ, флагманский морфизм таблицы §5.
+    ///
+    /// # Почему он приехал позже объектов
+    ///
+    /// Срез 2 завёл стадии и честно отложил этот морфизм: детекция с состоянием жила в
+    /// `Detector`/`detect_per` отдельным слоем, и притворяться, что она уже в категории, было
+    /// нельзя. Понадобился он в ту же минуту, когда продукт начал переезжать: первая же его ветвь
+    /// (`nevod2::pipe::alarms`) есть ровно `detect_per` — то есть категория без этого морфизма
+    /// продукту не годилась вовсе.
+    ///
+    /// # Политика жизни ключа проходит НАСКВОЗЬ
+    ///
+    /// `Lifetime` не прячется за категорией и не получает умолчания: ключей у детекции столько же,
+    /// сколько было (#294), и категория не отменяет физики. Стадия говорит, ЧТО происходит;
+    /// сколько это стоит памяти — по-прежнему заявляет вызывающий.
+    pub fn detect<D, K, KeyFn, Factory>(
+        self,
+        key_fn: KeyFn,
+        factory: Factory,
+        lifetime: crate::stream::Lifetime,
+    ) -> Pipeline<Signals<(K, D::Signal)>, crate::stream::DetectPer<S, D, K, KeyFn, Factory>>
+    where
+        D: crate::detector::Detector<Input = I> + Unpin,
+        D::Signal: Unpin,
+        I: Clone,
+        K: Ord + Clone + Unpin,
+        KeyFn: Fn(&I) -> K + Unpin,
+        Factory: Fn() -> D + Unpin,
+    {
+        Pipeline::<Packets, _>::at(crate::stream::DetectPer::new(
+            self.inner, key_fn, factory, lifetime,
+        ))
+    }
+}
+
 impl<Sig, S: Stream<Item = Sig>> Pipeline<Signals<Sig>, S> {
+    /// ВВОД НА СТАДИИ СИГНАЛОВ — когда наблюдения добыты вне категории.
+    ///
+    /// Нужен переезду продукта: детекция там местами обвешана своими операторами (гашение,
+    /// счётчики), и требовать переписать их разом значило бы сделать категорию условием входа, а
+    /// не инструментом.
+    pub fn of_signals(inner: S) -> Self {
+        Pipeline {
+            inner,
+            stage: PhantomData,
+        }
+    }
+
+    /// `SignalStream<S> ⇀ ClassificationStream<C>` — ЧАСТИЧНАЯ классификация.
+    ///
+    /// # Почему отдельный морфизм, а не тот же `classify`
+    ///
+    /// Vision (§5) знает классификацию ТОТАЛЬНУЮ: каждому наблюдению — своя классификация. Первая
+    /// же переезжающая ветвь продукта показала, что в жизни это не так: узнанный протокол есть
+    /// наблюдение, но НЕ повод для следствия, и такие сигналы отсеиваются (`filter_map`).
+    ///
+    /// Спрятать это внутрь `classify` значило бы сделать тотальный морфизм частичным молча —
+    /// ровно та болезнь, которую эпик лечит с утра. Поэтому частичность НАЗВАНА: у морфизма своё
+    /// имя, и стрелка в доке своя (`⇀`, не `→`).
+    ///
+    /// Область определённости здесь задаёт сам вызывающий, возвращая `None`, — и это честно: что
+    /// именно не подлежит классификации, знает он, а не категория.
+    pub fn classify_some<F, C>(
+        self,
+        f: F,
+    ) -> Pipeline<
+        Classifications<C>,
+        futures::stream::FilterMap<
+            S,
+            futures::future::Ready<Option<C>>,
+            impl FnMut(Sig) -> futures::future::Ready<Option<C>>,
+        >,
+    >
+    where
+        F: FnMut(Sig) -> Option<C>,
+    {
+        let mut f = f;
+        Pipeline::<Signals<Sig>, _>::at(
+            self.inner
+                .filter_map(move |signal| futures::future::ready(f(signal))),
+        )
+    }
+
     /// `SignalStream<S> → ClassificationStream<C>`.
     pub fn classify<F, C>(self, f: F) -> Pipeline<Classifications<C>, futures::stream::Map<S, F>>
     where
