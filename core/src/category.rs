@@ -279,6 +279,23 @@ where
     }
 }
 
+/// `() → PacketStream` — ВВОД ИЗ БЭКЕНДА, начало всякой цепочки.
+///
+/// СПОСОБНОСТЬ ТРЕБУЕТСЯ, А НЕ ПРЕДПОЛАГАЕТСЯ: `CanObserve` здесь ограничение, и бэкенд, не
+/// заявивший наблюдения, цепочку не начнёт.
+///
+/// Свободная функция, а не метод: у метода компилятору нечего вывести — стадия и поток
+/// определяются бэкендом, а не вызовом.
+pub fn from_source<B>(backend: &mut B) -> Pipeline<Packets, B::Packets<'_>>
+where
+    B: crate::backend::Source + crate::capability::CanObserve,
+{
+    Pipeline {
+        inner: backend.packets(),
+        stage: PhantomData,
+    }
+}
+
 impl<K, S: Stream<Item = K>> Pipeline<Commands<K>, S> {
     /// `CommandStream<Κ> → 1` — терминальный морфизм.
     ///
@@ -291,6 +308,27 @@ impl<K, S: Stream<Item = K>> Pipeline<Commands<K>, S> {
         Injection {
             commands: self.inner,
             emit,
+        }
+    }
+
+    /// `CommandStream<Κ> → 1` ЧЕРЕЗ БЭКЕНД — терминальный морфизм, требующий способности вводить.
+    ///
+    /// Бэкенд, умеющий лишь наблюдать, сюда не подойдёт: `CanInject` есть ограничение, а не
+    /// пометка в документации. Прежде такая цепочка собиралась молча — и падала бы в поле.
+    ///
+    /// ОШИБКИ ИНЪЕКЦИИ ОСТАЮТСЯ У БЭКЕНДА, и это не небрежность: вернуть их наружу значило бы
+    /// завести морфизм ИЗ терминального объекта. Что делать с неотправленной командой, решает тот,
+    /// кто владеет каналом.
+    pub fn inject_into<B>(self, backend: B) -> Injection<S, impl FnMut(K)>
+    where
+        B: crate::backend::Sink<Command = K> + crate::capability::CanInject,
+    {
+        let mut backend = backend;
+        Injection {
+            commands: self.inner,
+            emit: move |command| {
+                let _ = backend.emit(command);
+            },
         }
     }
 }

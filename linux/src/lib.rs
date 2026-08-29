@@ -43,6 +43,28 @@ pub struct AfPacketBackend {
 impl CanObserve for AfPacketBackend {}
 impl CanInject for AfPacketBackend {}
 
+// ФУНКТОР В КАТЕГОРИЮ БЭКЕНДОВ (#295, срез 4). Реализация АДДИТИВНА: inherent-методы остаются,
+// и ни один существующий вызов не тронут. Смена бэкенда становится подстановкой типа там, где
+// цепочка написана через трейты, и остаётся правкой кода там, где через inherent, — переезд
+// потребителей отдельным шагом.
+impl reflex_core::backend::Source for AfPacketBackend {
+    type Packet = Vec<u8>;
+    type Packets<'a> = PacketStream<'a>;
+
+    fn packets(&mut self) -> Self::Packets<'_> {
+        AfPacketBackend::packets(self)
+    }
+}
+
+impl reflex_core::backend::Sink for AfPacketBackend {
+    type Command = Vec<u8>;
+    type Error = String;
+
+    fn emit(&mut self, command: Vec<u8>) -> Result<(), String> {
+        AfPacketBackend::inject(self, &command)
+    }
+}
+
 impl AfPacketBackend {
     pub fn open(interface: &str, snaplen: usize) -> Result<Self, String> {
         let capture = Capture::open(interface, snaplen, true)?;
@@ -79,6 +101,26 @@ pub struct TcAfPacketBackend {
     capture: Capture,
     injector: Injector,
     tc: tc::TcProgram,
+}
+
+#[cfg(feature = "tc")]
+impl reflex_core::backend::Source for TcAfPacketBackend {
+    type Packet = Vec<u8>;
+    type Packets<'a> = PacketStream<'a>;
+
+    fn packets(&mut self) -> Self::Packets<'_> {
+        TcAfPacketBackend::packets(self)
+    }
+}
+
+#[cfg(feature = "tc")]
+impl reflex_core::backend::Sink for TcAfPacketBackend {
+    type Command = Vec<u8>;
+    type Error = String;
+
+    fn emit(&mut self, command: Vec<u8>) -> Result<(), String> {
+        TcAfPacketBackend::inject(self, &command)
+    }
 }
 
 #[cfg(feature = "tc")]
