@@ -37,6 +37,45 @@ pub enum NfqVerdictKind {
     Modify,
 }
 
+/// СЧЁТЧИКИ ЖИВОГО ПАЙПА. Читаются НА ХОДУ, а не после выхода: `recv()` на пустой очереди
+/// блокируется, то есть цикл может не завершиться никогда, и посмертный отчёт не приходит.
+#[derive(Debug, Default)]
+pub struct NfqShared {
+    pub received: std::sync::atomic::AtomicU64,
+    pub mark_skipped: std::sync::atomic::AtomicU64,
+    pub handed: std::sync::atomic::AtomicU64,
+    pub again: std::sync::atomic::AtomicU64,
+    pub failed: std::sync::atomic::AtomicU64,
+}
+
+impl NfqShared {
+    pub fn snapshot(&self) -> NfqCounts {
+        use std::sync::atomic::Ordering;
+        NfqCounts {
+            received: self.received.load(Ordering::Relaxed),
+            mark_skipped: self.mark_skipped.load(Ordering::Relaxed),
+            handed: self.handed.load(Ordering::Relaxed),
+            again: self.again.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// ЧТО ПАЙП СДЕЛАЛ С ПОТОКОМ — величина, а не тишина.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NfqCounts {
+    /// Сообщений принято от ядра.
+    pub received: u64,
+    /// Из них замкнуто по собственной метке — обработчик НЕ звали.
+    pub mark_skipped: u64,
+    /// Из них отдано обработчику.
+    pub handed: u64,
+    /// Пустых чтений (`EAGAIN`).
+    pub again: u64,
+    /// Чтений, кончившихся ошибкой.
+    pub failed: u64,
+}
+
 /// Generic handler: receives packet, returns verdict + inject list.
 pub trait NfqHandler {
     fn handle(&mut self, packet: &NfqPacket) -> (NfqVerdict, Vec<InjectablePacket>);
@@ -53,6 +92,7 @@ pub struct NfqPipeline<H> {
     sender: RawSender,
     handler: H,
     our_fwmark: u32,
+    counts: std::sync::Arc<NfqShared>,
     tap: Option<Tap<NfqStep>>,
 }
 
@@ -70,6 +110,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
             sender,
             handler,
             our_fwmark: fwmark,
+            counts: std::sync::Arc::new(NfqShared::default()),
             tap: None,
         })
     }
@@ -81,24 +122,52 @@ impl<H: NfqHandler> NfqPipeline<H> {
         self
     }
 
+    /// СКОЛЬКО ПАКЕТОВ КУДА ДЕЛОСЬ (#287). Прежде пайп молчал о двух своих законных путях мимо
+    /// обработчика — короткое замыкание по метке и `EAGAIN`. «Обработчик не звали» и «пакета не
+    /// было» давали один выход, то есть тот самый прибор, чей «ничего не нашёл» неотличим от
+    /// «не запускался». Замер стенда: 29 идентификаторов у ядра против 17 вызовов обработчика.
+    pub fn counts(&self) -> NfqCounts {
+        self.counts.snapshot()
+    }
+
+    /// Ручка на счётчики, годная для чтения из СОСЕДНЕГО потока, пока цикл крутится.
+    pub fn counts_handle(&self) -> std::sync::Arc<NfqShared> {
+        self.counts.clone()
+    }
+
     pub fn step(&mut self) -> Result<bool, String> {
         let msg = match self.nfq.recv() {
             Ok(msg) => msg,
             Err(e) => {
                 if e.contains("EAGAIN") || e.contains("Resource temporarily unavailable") {
+                    self.counts
+                        .again
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(false);
                 }
+                self.counts
+                    .failed
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Err(e);
             }
         };
+        self.counts
+            .received
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let mark = msg.get_nfmark();
         let payload = msg.get_payload().to_vec();
 
         if mark == self.our_fwmark {
+            self.counts
+                .mark_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.nfq.accept(msg);
             return Ok(true);
         }
+        self.counts
+            .handed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let nfq_packet = NfqPacket {
             payload: payload.clone(),
