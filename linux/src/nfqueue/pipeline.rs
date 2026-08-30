@@ -37,6 +37,9 @@ pub enum NfqVerdictKind {
     Modify,
 }
 
+/// Сколько ждать на дескрипторе, прежде чем вернуть управление циклу для проверки его условия.
+const POLL_MILLIS: i32 = 100;
+
 /// СЧЁТЧИКИ ЖИВОГО ПАЙПА. Читаются НА ХОДУ, а не после выхода: `recv()` на пустой очереди
 /// блокируется, то есть цикл может не завершиться никогда, и посмертный отчёт не приходит.
 #[derive(Debug, Default)]
@@ -46,6 +49,7 @@ pub struct NfqShared {
     pub handed: std::sync::atomic::AtomicU64,
     pub again: std::sync::atomic::AtomicU64,
     pub failed: std::sync::atomic::AtomicU64,
+    pub blind: std::sync::atomic::AtomicU64,
 }
 
 impl NfqShared {
@@ -57,6 +61,7 @@ impl NfqShared {
             handed: self.handed.load(Ordering::Relaxed),
             again: self.again.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
+            blind: self.blind.load(Ordering::Relaxed),
         }
     }
 }
@@ -74,6 +79,8 @@ pub struct NfqCounts {
     pub again: u64,
     /// Чтений, кончившихся ошибкой.
     pub failed: u64,
+    /// Ожиданий вслепую — дескриптор очереди добыть не удалось.
+    pub blind: u64,
 }
 
 /// Generic handler: receives packet, returns verdict + inject list.
@@ -136,6 +143,25 @@ impl<H: NfqHandler> NfqPipeline<H> {
     }
 
     pub fn step(&mut self) -> Result<bool, String> {
+        // ЖДЁМ НА ДЕСКРИПТОРЕ, А НЕ КРУТИМ ЦИКЛ. `Blind` — ждать не на чем, и тогда лучше уснуть
+        // на миллисекунду, чем жечь ядро: это не оптимизация, а условие пригодности замера цены.
+        match self.nfq.wait(POLL_MILLIS) {
+            crate::nfqueue::Waited::Ready => (),
+            crate::nfqueue::Waited::Idle => {
+                self.counts
+                    .again
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(false);
+            }
+            crate::nfqueue::Waited::Blind => {
+                self.counts
+                    .blind
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                return Ok(false);
+            }
+        }
+
         let msg = match self.nfq.recv() {
             Ok(msg) => msg,
             Err(e) => {

@@ -7,7 +7,7 @@ mod preflight;
 mod typed;
 mod witness;
 
-pub use backend::NfqueueBackend;
+pub use backend::{NfqueueBackend, Waited};
 pub use combined::NfqAfPacketBackend;
 pub use guard::{
     ConnmarkConfig, Direction, FirewallRule, MarkMatch, NfqGuard, NfqGuardError, PolicyRoute,

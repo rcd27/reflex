@@ -30,8 +30,38 @@ fn set_cloexec_netlink_fds() {
     }
 }
 
+/// Какие сокеты открыты прямо сейчас. Нужен, чтобы РАЗНИЦЕЙ узнать дескриптор очереди: крейт
+/// `nfq` держит его приватным и `AsRawFd` не реализует, а без него ждать на нём нечем.
+fn open_sockets() -> std::collections::BTreeSet<i32> {
+    match std::fs::read_dir("/proc/self/fd") {
+        Err(_no_proc) => std::collections::BTreeSet::new(),
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|entry| {
+                let number = entry.file_name().to_string_lossy().parse::<i32>().ok()?;
+                let link = std::fs::read_link(entry.path()).ok()?;
+                match link.to_string_lossy().starts_with("socket:") {
+                    true => Some(number),
+                    false => None,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// ЧТО ДАЛО ОЖИДАНИЕ. `Blind` — дескриптор добыть не удалось, ждать не на чем; зовущий обязан
+/// сам не жечь процессор. Это ОТДЕЛЬНЫЙ вариант, а не «ничего не пришло»: у них разная починка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    Ready,
+    Idle,
+    Blind,
+}
+
 pub struct NfqueueBackend {
     queue: Queue,
+    /// Дескриптор очереди, добытый разницей при открытии. `None` — ждать не на чем.
+    watched: Option<i32>,
 }
 
 impl CanObserve for NfqueueBackend {}
@@ -42,7 +72,14 @@ impl CanDrop for NfqueueBackend {}
 
 impl NfqueueBackend {
     pub fn open(queue_num: u16) -> Result<Self, String> {
+        let before = open_sockets();
         let mut queue = Queue::open().map_err(|e| format!("failed to open nfqueue: {e}"))?;
+        let appeared: Vec<i32> = open_sockets().difference(&before).copied().collect();
+        // РОВНО ОДИН новый сокет — иначе не наш, и лучше ослепнуть, чем ждать на чужом.
+        let fresh = match appeared.as_slice() {
+            [only] => Some(*only),
+            _ambiguous => None,
+        };
         queue
             .bind(queue_num)
             .map_err(|e| format!("failed to bind queue {queue_num}: {e}"))?;
@@ -56,7 +93,34 @@ impl NfqueueBackend {
         // subsequent NFQUEUE binds even after daemon exits.
         set_cloexec_netlink_fds();
 
-        Ok(Self { queue })
+        Ok(Self {
+            queue,
+            watched: fresh,
+        })
+    }
+
+    /// ЖДАТЬ НА ДЕСКРИПТОРЕ, А НЕ КРУТИТЬСЯ. Прежде `recv()` в неблокирующем режиме возвращал
+    /// «пусто» мгновенно, и цикл звал его снова: замер стенда дал ~1100 холостых чтений НА ПАКЕТ.
+    /// Это не потеря пакетов, это сожжённое ядро — и оно делало непригодным всякий замер цены
+    /// обработки, потому что мерило оболочку.
+    ///
+    /// Неблокирующий режим при этом ОСТАЁТСЯ: без него цикл не может проверить своё условие
+    /// выхода и не заканчивается никогда на пустой очереди.
+    pub fn wait(&self, millis: i32) -> Waited {
+        match self.watched {
+            None => Waited::Blind,
+            Some(fd) => {
+                let mut watched = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                match unsafe { libc::poll(&mut watched, 1, millis) } {
+                    ready if ready > 0 => Waited::Ready,
+                    _nothing => Waited::Idle,
+                }
+            }
+        }
     }
 
     pub fn recv(&mut self) -> Result<nfq::Message, String> {
