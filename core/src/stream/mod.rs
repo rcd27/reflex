@@ -1,4 +1,5 @@
 mod detect_per;
+mod distinct_until_changed;
 mod fold_state;
 mod group_by;
 mod group_by_domain;
@@ -10,6 +11,7 @@ mod tee;
 mod with_latest_from;
 
 pub use detect_per::{DetectPer, Lifetime};
+pub use distinct_until_changed::DistinctUntilChangedStream;
 pub use fold_state::FoldStream;
 pub use group_by::{GroupByStream, Keys};
 pub use group_by_domain::GroupByDomainStream;

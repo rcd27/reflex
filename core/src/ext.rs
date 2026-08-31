@@ -4,8 +4,9 @@ use futures::{Future, Stream};
 
 use crate::detector::{Detector, DetectorEvent};
 use crate::stream::{
-    DetectPer, FoldStream, GroupByDomainStream, GroupByStream, MergeMapBounded, ScanStream,
-    SwitchMapStream, TakeThroughStream, TeeStream, WithLatestFromStream,
+    DetectPer, DistinctUntilChangedStream, FoldStream, GroupByDomainStream, GroupByStream,
+    MergeMapBounded, ScanStream, SwitchMapStream, TakeThroughStream, TeeStream,
+    WithLatestFromStream,
 };
 use crate::types::TcpSegment;
 
@@ -101,6 +102,21 @@ pub trait ReflexExt: Stream + Sized {
     ///
     /// Отличие от `take_while` не косметическое: тот роняет элемент, на котором предикат стал
     /// ложным, а для ПОИСКА это ровно тот элемент, ради которого поиск затевался.
+    /// ПОТОК ЗНАЧЕНИЙ → ПОТОК ПЕРЕХОДОВ. Повтор глотается, перемена проходит.
+    ///
+    /// Нужен там, где значение добывается ОПРОСОМ, а потребителю нужна смена: счётчик ядра,
+    /// состояние плагина, свидетельство применения. Без него частота отчётов привязана к частоте
+    /// опроса, и потолок CPU становится вопросом того, как часто мы спрашиваем.
+    ///
+    /// Первый элемент проходит всегда — ему не с чем совпадать. Оператор идемпотентен: `d ∘ d = d`.
+    fn distinct_until_changed(self) -> DistinctUntilChangedStream<Self, Self::Item>
+    where
+        Self: Sized,
+        Self::Item: PartialEq + Clone,
+    {
+        DistinctUntilChangedStream::new(self)
+    }
+
     fn take_through<P>(self, predicate: P) -> TakeThroughStream<Self, P>
     where
         Self: Sized,
