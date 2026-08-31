@@ -1,6 +1,6 @@
-use reflex_core::stream::Keys;
 use futures::StreamExt;
 use reflex_core::reactor::{drive, group_by_reactor, Reactor};
+use reflex_core::stream::Keys;
 
 /// Игрушечный reactor: счётчик, событие — дельта, эффект — новый итог.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,8 @@ async fn drive_skips_none_step_effects() {
 #[tokio::test]
 async fn group_by_reactor_tracks_independent_state_per_key() {
     let events = futures::stream::iter(vec![("a", 1), ("b", 10), ("a", 2)]);
-    let effects: Vec<(&str, i32)> = group_by_reactor::<Counter, _>(events, Keys::Finite).collect().await;
+    let effects: Vec<(&str, i32)> = group_by_reactor::<Counter, _>(events, Keys::Finite)
+        .collect()
+        .await;
     assert_eq!(effects, vec![("a", 1), ("b", 10), ("a", 3)]);
 }

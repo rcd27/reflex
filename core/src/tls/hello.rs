@@ -71,7 +71,7 @@ pub fn rewrite_sni(hello: &[u8], new_name: &str) -> Option<Vec<u8>> {
     };
 
     поправить16(&mut out, 3)?; // длина TLS-записи
-    // Длина handshake — ТРИ байта (u24), не два: правка её как u16 молча испортила бы старший.
+                               // Длина handshake — ТРИ байта (u24), не два: правка её как u16 молча испортила бы старший.
     let hs = u32::from_be_bytes([0, out[6], out[7], out[8]]) as isize + delta;
     let hs = u32::try_from(hs).ok()?;
     out[6..9].copy_from_slice(&hs.to_be_bytes()[1..4]);

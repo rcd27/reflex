@@ -42,12 +42,21 @@ fn rewrite_sni_replaces_name_and_stays_parsable() {
 #[test]
 fn rewrite_sni_keeps_all_declared_lengths_consistent() {
     let ch = build_client_hello("www.google.com");
-    for name in ["a.io", "очень-длинное-имя-домена-для-проверки.example.com"] {
+    for name in ["a.io", "очень-длинное-имя-домена-для-проверки.example.com"]
+    {
         let out = reflex_core::tls::rewrite_sni(&ch, name).expect("переписалось");
         let record = u16::from_be_bytes([out[3], out[4]]) as usize;
-        assert_eq!(5 + record, out.len(), "{name}: длина записи разошлась с фактом");
+        assert_eq!(
+            5 + record,
+            out.len(),
+            "{name}: длина записи разошлась с фактом"
+        );
         let hs = u32::from_be_bytes([0, out[6], out[7], out[8]]) as usize;
-        assert_eq!(4 + hs, record, "{name}: длина handshake разошлась с записью");
+        assert_eq!(
+            4 + hs,
+            record,
+            "{name}: длина handshake разошлась с записью"
+        );
         assert_eq!(reflex_core::tls::extract_sni(&out).as_deref(), Some(name));
     }
 }
