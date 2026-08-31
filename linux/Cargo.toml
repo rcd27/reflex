@@ -9,6 +9,9 @@ license = "GPL-3.0-only"
 default = []
 tc = ["dep:aya", "dep:reflex-linux-common"]
 nfqueue = ["dep:nfq"]
+# conntrack: чтение счётчиков ядра по каждому разговору через ctnetlink. Зависимостей сверх `libc`
+# нет намеренно: дверь узкая (один дамп-запрос), а крейты netlink тянут рантайм ради того же.
+conntrack = []
 # tun: userspace-терминация TCP из tun-устройства в async-потоки с ОРИГИНАЛЬНЫМ dst. СВОИ обёртки над
 # движком smoltcp (проекция model/wire/TransparentCapture.tla): `tun_listen` (входящие, passive-open) +
 # `tun_egress` (originate, active-open, `EgressIdentity`/`SteerDatapath` L2Glue). netstack-smoltcp срезан
@@ -52,3 +55,8 @@ required-features = ["nfqueue"]
 name = "nfq-fragment"
 path = "examples/nfq-fragment.rs"
 required-features = ["nfqueue"]
+
+[[example]]
+name = "ct-dump"
+path = "examples/ct-dump.rs"
+required-features = ["conntrack"]

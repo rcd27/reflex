@@ -1,4 +1,6 @@
 mod capture;
+#[cfg(feature = "conntrack")]
+pub mod conntrack;
 mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
