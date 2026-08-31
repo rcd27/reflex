@@ -139,6 +139,75 @@ pub fn sni(hello: &[u8]) -> Option<Sni> {
     None
 }
 
+/// ПРЕДЛОЖЕН ЛИ КЛИЕНТОМ ECH (#317) — и, значит, может ли читаемое имя быть НЕ ТЕМ.
+///
+/// # Почему тип, а не `bool`
+///
+/// Номер расширения меняется от черновика к черновику (`0xfe0d` — draft-13 и позже, `0xfe0e` и
+/// `0xfe0f` — раньше), и знать, КАКОЙ именно предложен, полезно: доля черновиков в поле есть
+/// прибор зрелости самого ECH. `bool` это выбросил бы, а вернуть потом было бы уже неоткуда —
+/// ряд наблюдений копится с сегодняшнего дня.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ech {
+    /// Расширения нет: имя в открытом hello есть имя цели.
+    Absent,
+    /// Расширение предложено. **Имя, прочитанное рядом, МОЖЕТ БЫТЬ внешним** (`public_name`
+    /// провайдера), а настоящее — в зашифрованном `ClientHelloInner`.
+    ///
+    /// Отличить это от `GREASE ECH` (фиктивное расширение при настоящем имени) снаружи НЕЛЬЗЯ —
+    /// в этом смысл GREASE. Потому вариант говорит «может быть внешним», а не «ложно».
+    Offered { draft: u16 },
+}
+
+/// Черновики ECH, встречающиеся в поле. Список закрытый: расширение с другим номером — не ECH,
+/// и записывать его сюда «на всякий случай» значило бы завысить долю, ничего об этом не сказав.
+const ECH_DRAFTS: [u16; 3] = [0xfe0d, 0xfe0e, 0xfe0f];
+
+/// Признак ECH тем же структурным проходом, что и `sni`.
+///
+/// ЗАВЕДЁН ДО ТОГО, КАК ПОНАДОБИЛСЯ, и это осознанно: ECH — то, ради чего SNI перестанет читаться,
+/// а узнаем мы об этом иначе только постфактум, по тому, что продукт перестал лечить цели. Признак
+/// стоит одного прохода по уже разбираемым расширениям и даёт РЯД: доля соединений с ECH во
+/// времени. К моменту, когда доля станет заметной, у нас будет история, а не нулевая отметка.
+pub fn ech(hello: &[u8]) -> Ech {
+    if hello.len() < 6 || hello[0] != 0x16 || hello[5] != 0x01 {
+        return Ech::Absent;
+    }
+    let mut pos = 5 + 38;
+    if pos >= hello.len() {
+        return Ech::Absent;
+    }
+    pos += 1 + hello[pos] as usize; // session_id
+
+    if pos + 2 > hello.len() {
+        return Ech::Absent;
+    }
+    pos += 2 + u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize; // cipher_suites
+
+    if pos >= hello.len() {
+        return Ech::Absent;
+    }
+    pos += 1 + hello[pos] as usize; // compression_methods
+
+    if pos + 2 > hello.len() {
+        return Ech::Absent;
+    }
+    let ext_total = u16::from_be_bytes([hello[pos], hello[pos + 1]]) as usize;
+    pos += 2;
+    let ext_end = (pos + ext_total).min(hello.len());
+
+    while pos + 4 <= ext_end {
+        let ext_type = u16::from_be_bytes([hello[pos], hello[pos + 1]]);
+        let ext_len = u16::from_be_bytes([hello[pos + 2], hello[pos + 3]]) as usize;
+        pos += 4;
+        if ECH_DRAFTS.contains(&ext_type) {
+            return Ech::Offered { draft: ext_type };
+        }
+        pos += ext_len;
+    }
+    Ech::Absent
+}
+
 /// SNI hostname как строка (без диапазона). Тонкая обёртка над `sni` — единый источник парса.
 pub fn extract_sni(data: &[u8]) -> Option<String> {
     sni(data).map(|s| s.name)
