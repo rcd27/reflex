@@ -17,6 +17,7 @@ pub mod parse;
 #[cfg(feature = "pcap")]
 pub mod pcap;
 pub mod reactor;
+pub mod role;
 pub mod stream;
 pub mod tap;
 pub mod tempo;
