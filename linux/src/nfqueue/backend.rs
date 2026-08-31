@@ -129,6 +129,18 @@ impl NfqueueBackend {
             .map_err(|e| format!("nfqueue recv error: {e}"))
     }
 
+    /// ПРОПУСТИТЬ, ПОСТАВИВ МЕТКУ. Метка уезжает в ядро ТЕМ ЖЕ сообщением, что и вердикт, — то
+    /// есть решение и его исполнение неразделимы, и «пометили, но не донесли» непредставимо.
+    ///
+    /// ПАКЕТ ПРОДОЛЖАЕТ ОБХОД С МЕСТА, ГДЕ ЕГО ЗАБРАЛИ: правило, читающее метку, обязано стоять
+    /// НИЖЕ по цепочке, чем правило очереди. Поставь его выше — метка встанет и не будет прочитана
+    /// никем, а прибор покажет «решение принято».
+    pub fn accept_marked(&mut self, mut msg: nfq::Message, mark: u32) {
+        msg.set_nfmark(mark);
+        msg.set_verdict(Verdict::Accept);
+        let _ = self.queue.verdict(msg);
+    }
+
     pub fn accept(&mut self, mut msg: nfq::Message) {
         msg.set_verdict(Verdict::Accept);
         let _ = self.queue.verdict(msg);

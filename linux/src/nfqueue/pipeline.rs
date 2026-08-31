@@ -18,6 +18,13 @@ pub enum NfqVerdict {
     Accept,
     Drop,
     Modify(Vec<u8>),
+    /// ПРОПУСТИТЬ, ПОСТАВИВ МЕТКУ (#317). Решение о пакете принимается ТАМ, ГДЕ ЕСТЬ ЗНАНИЕ —
+    /// в обработчике, на том самом пакете, — и уезжает в ядро вместе с вердиктом.
+    ///
+    /// Прежде такого вердикта не было, и метку приходилось ставить правилом ядра ПО АДРЕСУ, до
+    /// очереди: то есть решать раньше, чем узнаешь, кто цель. Живой прогон 31.08 это опроверг
+    /// числом — «пакетов ногой 0» при исправной петле, потому что цель ответила с другого адреса.
+    AcceptMarked(u32),
 }
 
 /// Типизированный исход шага пайпа (Rule 17): что пайп сделал с одним пакетом.
@@ -211,7 +218,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
 
         if let Some(tap) = &self.tap {
             let kind = match verdict {
-                NfqVerdict::Accept => NfqVerdictKind::Accept,
+                NfqVerdict::Accept | NfqVerdict::AcceptMarked(_) => NfqVerdictKind::Accept,
                 NfqVerdict::Drop => NfqVerdictKind::Drop,
                 NfqVerdict::Modify(_) => NfqVerdictKind::Modify,
             };
@@ -226,6 +233,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
             NfqVerdict::Accept => self.nfq.accept(msg),
             NfqVerdict::Drop => self.nfq.drop_packet(msg),
             NfqVerdict::Modify(new_payload) => self.nfq.modify(msg, &new_payload),
+            NfqVerdict::AcceptMarked(mark) => self.nfq.accept_marked(msg, mark),
         }
 
         Ok(true)
