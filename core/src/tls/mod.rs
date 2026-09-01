@@ -64,8 +64,19 @@ pub struct TlsVersion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsFragment {
-    ClientHello { sni: Option<String> },
+    ClientHello {
+        sni: Option<String>,
+    },
     ServerHello,
+    /// ТРЕВОГА С ЕЁ КОДОМ. Код обязателен, а не желателен: `unknown_ca` (48) и `handshake_failure`
+    /// (40) есть РАЗНЫЕ беды с разным лечением — первая говорит «я не доверяю этому сертификату»
+    /// (подмена личности, свой корень, MITM), вторая «мы не договорились о параметрах».
+    ///
+    /// Без кода прибор сообщал бы «клиент чем-то недоволен», то есть ответ, не сужающий круг.
+    Alert {
+        level: u8,
+        description: u8,
+    },
     Other,
 }
 
@@ -234,7 +245,16 @@ impl TlsRecord {
 
         let fragment = match content_type {
             TlsContentType::Handshake => Self::parse_handshake(body),
-            _ => TlsFragment::Other,
+            // ТЕЛО ТРЕВОГИ — РОВНО ДВА БАЙТА: уровень и описание (RFC 8446 §6). Короче — запись
+            // битая, и притворяться, что мы её поняли, вреднее молчания.
+            TlsContentType::Alert if body.len() >= 2 => TlsFragment::Alert {
+                level: body[0],
+                description: body[1],
+            },
+            TlsContentType::Alert
+            | TlsContentType::ChangeCipherSpec
+            | TlsContentType::ApplicationData
+            | TlsContentType::Other(_) => TlsFragment::Other,
         };
 
         Some(TlsRecord {
