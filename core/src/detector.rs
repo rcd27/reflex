@@ -62,14 +62,17 @@ pub trait Detector: Sized {
     fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>);
 }
 
-/// Два НЕЗАВИСИМЫХ наблюдателя одного потока (не конвейер: событие идёт в оба).
+/// Два НЕЗАВИСИМЫХ наблюдателя одного потока — не конвейер: событие идёт в оба.
+///
+/// Имя `And` было бы ложью: в логике `A AND B` значит «сработали оба», здесь — «слушают оба».
+/// Метод остаётся `.and(…)` как речь цепочки.
 ///
 /// ЦЕНА: событие клонируется по разу на детектор; цепочка из N звеньев клонирует N раз.
 /// ЦЕНА: словарь сигналов общий, поэтому после сложения не видно, кто сказал.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct And<A, B>(pub A, pub B);
+pub struct Both<A, B>(pub A, pub B);
 
-impl<A, B> Detector for And<A, B>
+impl<A, B> Detector for Both<A, B>
 where
     A: Detector,
     B: Detector<Input = A::Input, Signal = A::Signal>,
@@ -82,7 +85,7 @@ where
         let (first, mut signals) = self.0.step(event.clone());
         let (second, more) = self.1.step(event);
         signals.extend(more);
-        (And(first, second), signals)
+        (Both(first, second), signals)
     }
 }
 
@@ -331,15 +334,56 @@ where
     }
 }
 
+/// Показание, помнящее, кто его дал.
+///
+/// `and` складывает наблюдателей в один поток, и без имени два прибора с общим словарём
+/// (`Silence` и `Choked` оба говорят «байтов нет») дают неразличимые показания при разном
+/// лечении. Имя берётся из паспорта прибора, а не пишется у места сборки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Told<S> {
+    pub by: &'static str,
+    pub signal: S,
+}
+
+/// Приписать показаниям автора. См. [`Told`].
+pub struct By<D> {
+    inner: D,
+    by: &'static str,
+}
+
+impl<D: Detector> Detector for By<D> {
+    type Input = D::Input;
+    type Signal = Told<D::Signal>;
+
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+        let Self { inner, by } = self;
+        let (stepped, signals) = inner.step(event);
+        let told = signals
+            .into_iter()
+            .map(|signal| Told { by, signal })
+            .collect();
+        (Self { inner: stepped, by }, told)
+    }
+}
+
+impl<D: Clone> Clone for By<D> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            by: self.by,
+        }
+    }
+}
+
 /// Комбинаторы детектора. Реализован для всех — писать `impl DetectorExt` не требуется.
 pub trait DetectorExt: Detector + Sized {
-    /// Наблюдать обоими. См. [`And`].
-    fn and<B>(self, other: B) -> And<Self, B>
+    /// Наблюдать обоими. См. [`Both`].
+    fn and<B>(self, other: B) -> Both<Self, B>
     where
         B: Detector<Input = Self::Input, Signal = Self::Signal>,
         Self::Input: Clone,
     {
-        And(self, other)
+        Both(self, other)
     }
 
     /// Переименовать сигнал. См. [`RMap`].
@@ -366,6 +410,11 @@ pub trait DetectorExt: Detector + Sized {
             dress,
             context: None,
         }
+    }
+
+    /// Приписать показаниям автора. См. [`Told`].
+    fn by(self, by: &'static str) -> By<Self> {
+        By { inner: self, by }
     }
 
     /// Вынести наружу момент, в который прибор высказался. См. [`Timed`].

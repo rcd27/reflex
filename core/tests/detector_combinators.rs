@@ -455,6 +455,41 @@ fn timed_stamps_a_tick_signal_with_the_tick_moment() {
     assert_eq!(said, vec![(tick_at, Distress::Rst)]);
 }
 
+/// АВТОРСТВО ПЕРЕЖИВАЕТ СЛОЖЕНИЕ.
+///
+/// `and` складывает наблюдателей в один поток сигналов, и после сложения не видно, кто сказал.
+/// Для двух приборов с общим словарём (у нас `Silence` и `Choked` оба говорят `no_bytes`) это
+/// потеря РАЗЛИЧЕНИЯ: беды разные, лечение разное, показание одно.
+#[test]
+fn attribution_survives_composition() {
+    let said = run(
+        Rst.by("сброс")
+            .and(Level.rmap(|_| Distress::Rst).by("уровень")),
+        vec![packet(Kind::Rst)],
+    );
+
+    assert_eq!(
+        said.iter().map(|told| told.by).collect::<Vec<_>>(),
+        vec!["сброс", "уровень"],
+        "после сложения авторство потерялось: {said:?}"
+    );
+}
+
+/// АВТОРСТВО НЕ МЕНЯЕТ САМИХ ПОКАЗАНИЙ — только называет, кто их дал.
+#[test]
+fn attribution_changes_nothing_but_the_name() {
+    let bare = run(Rst, vec![packet(Kind::Rst), packet(Kind::Byte)]);
+    let named = run(Rst.by("сброс"), vec![packet(Kind::Rst), packet(Kind::Byte)]);
+
+    assert_eq!(
+        named
+            .into_iter()
+            .map(|told| told.signal)
+            .collect::<Vec<_>>(),
+        bare
+    );
+}
+
 /// КОНТРОЛЬ НЕВАКУУМНОСТИ к обоим законам выше: цепочка НЕ пуста и различает входы.
 ///
 /// Без него `rmap id = id` держался бы даром на детекторе, который всегда молчит.

@@ -36,7 +36,7 @@ pub mod tls;
 pub use capability::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
 pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{
-    And, Changes, Contextual, Detector, DetectorEvent, DetectorExt, LMap, RMap, Timed,
+    Both, By, Changes, Contextual, Detector, DetectorEvent, DetectorExt, LMap, RMap, Timed, Told,
 };
 pub use ext::ReflexExt;
 pub use guard::{CleanupReport, TrafficGuard};
