@@ -30,6 +30,11 @@ pub struct DnsAnswer {
 pub struct DnsMessage {
     pub id: u16,
     pub direction: DnsDirection,
+    /// Код ответа (`RCODE`): 0 — есть ответ, 3 — имени не существует.
+    ///
+    /// Без него «имя не существует» и «адрес вырезали из ответа» неразличимы, а лечение у них
+    /// противоположное: первое — норма поиска по суффиксам, второе — работа цензора.
+    pub rcode: u8,
     pub queries: Vec<DnsQuery>,
     pub answers: Vec<DnsAnswer>,
 }
@@ -101,6 +106,8 @@ impl DnsMessage {
         Some(DnsMessage {
             id,
             direction,
+            // Младшие четыре бита флагов и есть `RCODE`.
+            rcode: (flags & 0x000F) as u8,
             queries,
             answers,
         })
