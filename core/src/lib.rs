@@ -42,4 +42,4 @@ pub use detector::{
 pub use ext::ReflexExt;
 pub use guard::{CleanupReport, TrafficGuard};
 pub use reactor::{drive, drive_observed, group_by_reactor, Reactor, Transition};
-pub use stack::{AnyTransport, Reads, Tcp, Transport, Udp};
+pub use stack::{AnyProtocol, Dns, Http, Protocol, Quic, Reads, Tcp, Tls, Udp};
