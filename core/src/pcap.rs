@@ -31,17 +31,15 @@
 //! тело кадра. Читается вручную — формат стабилен тридцать лет, а зависимость ради сорока строк
 //! потянула бы за собой чужую модель ошибок.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Один снятый кадр: когда и что.
+/// Один снятый кадр.
 #[derive(Debug, Clone)]
 pub struct Frame {
-    /// Момент съёмки, отсчитанный от НАЧАЛА записи и приложенный к названному основанию.
-    ///
-    /// `Instant` из файла не восстановить — он монотонный и к календарю не привязан. Поэтому
-    /// сохраняется ОТНОСИТЕЛЬНОЕ время, а основание даёт вызывающий: так запись, снятая вчера на
-    /// коробке, проигрывается сегодня на dev с сохранением всех промежутков.
+    /// Для интервалов: отсчитан от начала записи и приложен к основанию вызывающего.
     pub at: Instant,
+    /// Для показа человеку: `Instant` в календарь не переводится.
+    pub wall: SystemTime,
     pub bytes: Vec<u8>,
 }
 
@@ -116,14 +114,13 @@ fn records(data: &[u8], base: Instant, swapped: bool) -> (Vec<Frame>, Option<Bro
         .filter_map(|offset| record_at(data, offset, swapped))
         .collect();
 
-    // Время отсчитывается от ПЕРВОЙ записи: абсолютный штамп из файла к монотонным часам не
-    // привязать, а промежутки между кадрами — единственное, что для проигрыша существенно.
     let first = taken.first().map(|(stamp, _)| *stamp).unwrap_or(0);
 
     let frames: Vec<Frame> = taken
         .iter()
         .map(|(stamp, bytes)| Frame {
             at: base + Duration::from_micros(stamp.saturating_sub(first)),
+            wall: UNIX_EPOCH + Duration::from_micros(*stamp),
             bytes: bytes.to_vec(),
         })
         .collect();
@@ -222,6 +219,23 @@ mod tests {
                 .chain(body.iter().copied())
                 .collect()
         })
+    }
+
+    /// ЗАПИСЬ ПОМНИТ, КОГДА СНЯТА.
+    ///
+    /// `Instant` монотонный: в календарь он не переводится, и лента по нему не скажет человеку
+    /// «18:42:07». Штамп в файле есть — до сих пор он отбрасывался на входе.
+    #[test]
+    fn a_frame_keeps_the_calendar_moment_it_was_captured_at() {
+        let (frames, _broken) = read(
+            &pcap_of(&[(1_756_000_000, 250_000, b"aaa")]),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            frames.first().map(|frame| frame.wall),
+            Some(std::time::UNIX_EPOCH + Duration::from_micros(1_756_000_000_250_000))
+        );
     }
 
     /// ВРЕМЯ ОТСЧИТЫВАЕТСЯ ОТ ПЕРВОЙ ЗАПИСИ, а промежутки сохраняются.
