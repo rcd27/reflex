@@ -342,6 +342,90 @@ where
     }
 }
 
+/// МОМЕНТ ВЫСКАЗЫВАНИЯ ВЫХОДИТ ВМЕСТЕ С СИГНАЛОМ.
+///
+/// # Дыра, которую он закрывает
+///
+/// `Signal` времени не несёт, а `detect_per` отдаёт наружу пару `(ключ, сигнал)` — момент
+/// остаётся внутри оператора и теряется на границе. Всякому, кому нужна ЛЕНТА (а не только
+/// текущее состояние), приходилось обходить оператор и катать детекторы руками, заводя рядом
+/// собственную память на ключ. То есть отсутствие этого комбинатора выталкивало потребителя из
+/// категории — ровно то, ради чего категория и заведена.
+///
+/// # Момент берётся у СОБЫТИЯ, включая тик
+///
+/// Прибор со своими часами (тишина, просадка) высказывается по тику, и пометить его беду
+/// временем последнего пакета значило бы соврать о том, КОГДА он заметил. Разница не косметическая:
+/// по ленте читают, сколько человек ждал.
+pub struct Timed<D> {
+    inner: D,
+}
+
+impl<D: Detector> Detector for Timed<D> {
+    type Input = D::Input;
+    type Signal = (Instant, D::Signal);
+
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+        let at = event.at();
+        let (stepped, signals) = self.inner.step(event);
+        let stamped = signals.into_iter().map(|signal| (at, signal)).collect();
+        (Self { inner: stepped }, stamped)
+    }
+}
+
+impl<D: Clone> Clone for Timed<D> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+/// `Clone` РУЧНОЙ, А НЕ ВЫВЕДЕННЫЙ: `derive` навесил бы `D: Clone` вместе с `Ctx: Clone` и
+/// прочими границами, которых требование не имеет. Комбинатор клонируется ровно тогда, когда
+/// клонируются его части, — а это и есть условие `detect_per`, размножающего цепочку по ключу.
+impl<D: Clone, F: Clone> Clone for RMap<D, F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+        }
+    }
+}
+
+impl<D: Clone, F: Clone, Wide> Clone for LMap<D, F, Wide> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+            wide: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<D: Clone, Ctx: Clone, Pick: Clone, Dress: Clone> Clone for Contextual<D, Ctx, Pick, Dress> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pick: self.pick.clone(),
+            dress: self.dress.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl<D: Detector + Clone> Clone for Changes<D>
+where
+    D::Signal: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            said: self.said.clone(),
+        }
+    }
+}
+
 /// Комбинаторы детектора. Реализован для всех — писать `impl DetectorExt` не требуется.
 pub trait DetectorExt: Detector + Sized {
     /// Наблюдать обоими. См. [`And`].
@@ -377,6 +461,11 @@ pub trait DetectorExt: Detector + Sized {
             dress,
             context: None,
         }
+    }
+
+    /// Вынести наружу момент, в который прибор высказался. См. [`Timed`].
+    fn timed(self) -> Timed<Self> {
+        Timed { inner: self }
     }
 
     /// Говорить только о смене показания. См. [`Changes`].

@@ -422,6 +422,39 @@ fn contextual_admits_when_there_is_no_context_yet() {
     assert_eq!(said, Vec::<Trouble>::new());
 }
 
+/// МОМЕНТ ВЫСКАЗЫВАНИЯ ВЫХОДИТ ВМЕСТЕ С СИГНАЛОМ.
+///
+/// Без этого комбинатора момент теряется на границе детектора: `Signal` времени не несёт, а
+/// `detect_per` отдаёт наружу пару `(ключ, сигнал)` — и всякий, кому нужна ЛЕНТА, вынужден
+/// обходить оператор и катать детекторы руками. Ровно та беда, ради которой заведены комбинаторы.
+#[test]
+fn timed_carries_the_moment_the_instrument_spoke() {
+    let start = std::time::Instant::now();
+    let at = start + std::time::Duration::from_millis(500);
+
+    let said = run(
+        Rst.timed(),
+        vec![DetectorEvent::Packet {
+            input: Kind::Rst,
+            at,
+        }],
+    );
+
+    assert_eq!(said, vec![(at, Distress::Rst)]);
+}
+
+/// МОМЕНТ БЕРЁТСЯ У ТИКА ТОЖЕ — иначе прибор со своими часами метил бы беду временем последнего
+/// пакета, то есть ВРАЛ БЫ О ТОМ, КОГДА ЗАМЕТИЛ.
+#[test]
+fn timed_stamps_a_tick_signal_with_the_tick_moment() {
+    let start = std::time::Instant::now();
+    let tick_at = start + std::time::Duration::from_secs(2);
+
+    let said = run(Clock.timed(), vec![DetectorEvent::Tick { at: tick_at }]);
+
+    assert_eq!(said, vec![(tick_at, Distress::Rst)]);
+}
+
 /// КОНТРОЛЬ НЕВАКУУМНОСТИ к обоим законам выше: цепочка НЕ пуста и различает входы.
 ///
 /// Без него `rmap id = id` держался бы даром на детекторе, который всегда молчит.

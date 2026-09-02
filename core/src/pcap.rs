@@ -308,11 +308,12 @@ pub fn with_ticks<T: Clone>(
     events: &[crate::detector::DetectorEvent<T>],
     window: Duration,
 ) -> Vec<crate::detector::DetectorEvent<T>> {
+    let start = events.first().and_then(moment);
     events
         .windows(2)
         .flat_map(|pair| {
             let tail = match (moment(&pair[0]), moment(&pair[1])) {
-                (Some(before), Some(after)) => between(before, after, window),
+                (Some(before), Some(after)) => on_grid(before, after, window, start),
                 (_, _) => Vec::new(),
             };
             std::iter::once(pair[0].clone()).chain(tail)
@@ -329,21 +330,44 @@ fn moment<T>(event: &crate::detector::DetectorEvent<T>) -> Option<Instant> {
     }
 }
 
-/// Тики, ложащиеся в паузу между двумя событиями. Пауза короче окна тиков не рождает.
-fn between<T>(
+/// ТИКИ СЕТКИ, ПОПАВШИЕ МЕЖДУ ДВУМЯ СОБЫТИЯМИ.
+///
+/// # Часы идут ОТ НАЧАЛА ЗАПИСИ, а не от предыдущего события
+///
+/// Прежняя редакция отмеряла тики от паузы: сколько окон уложилось между соседними событиями.
+/// На плотном потоке (скачивание — пакеты каждые 30 мс при окне 300 мс) пауз нужной длины нет ни
+/// одной, и часы не шли ВОВСЕ. Приборы, чей предмет виден только при идущем трафике — троттлинг,
+/// просадка, — молчали на таких записях всегда, и молчание это неотличимо от «беды нет» (#320).
+///
+/// Сетка отмеряется от первого события записи и не зависит от того, густо ли идут пакеты. Так
+/// тикает и поле: `edge-queue` берёт тики от собственных часов, а не от трафика. Прежде запись и
+/// поле расходились — то есть поверка и исполнение мерили разное.
+///
+/// Прежние законы при этом целы: пауза короче окна тиков по-прежнему не рождает (сетка в неё не
+/// попадает), а после последнего события ничего не дописывается — конец записи есть
+/// неизвестность, а не тишина.
+fn on_grid<T>(
     before: Instant,
     after: Instant,
     window: Duration,
+    start: Option<Instant>,
 ) -> Vec<crate::detector::DetectorEvent<T>> {
-    let gap = after.saturating_duration_since(before);
-    match window.as_millis() {
-        0 => Vec::new(),
-        w => (1..=(gap.as_millis() / w) as u32)
-            .map(|n| crate::detector::DetectorEvent::Tick {
-                at: before + window * n,
-            })
-            .collect(),
-    }
+    let start = match (start, window.as_millis()) {
+        (None, _) | (_, 0) => return Vec::new(),
+        (Some(start), _) => start,
+    };
+    // Номера узлов сетки, лежащих строго после первого события и не позже второго.
+    let step =
+        |moment: Instant| moment.saturating_duration_since(start).as_nanos() / window.as_nanos();
+    ((step(before) + 1)..=step(after))
+        .map(|n| crate::detector::DetectorEvent::Tick {
+            at: start + window * (n as u32),
+        })
+        .filter(|tick| match moment(tick) {
+            Some(at) => at > before && at <= after,
+            None => false,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -380,6 +404,39 @@ mod tick_tests {
             Duration::from_millis(100),
         );
         assert_eq!(got.iter().filter(|e| is_tick(e)).count(), 0);
+    }
+
+    /// ПЛОТНЫЙ ПОТОК ТОЖЕ ПОЛУЧАЕТ ЧАСЫ — и это главный случай, а не крайний.
+    ///
+    /// # Чем оплачено (#320, 02.09)
+    ///
+    /// Прежняя редакция рождала тики ТОЛЬКО в паузах длиннее окна. На записи скачивания
+    /// (`lab/pribor/fixtures/sag`, 2004 наблюдения) пауз такой длины нет ни одной — и тиков
+    /// выходило НОЛЬ. Приборы со своими часами (троттлинг, просадка) молчали на ней всегда, а
+    /// молчание это неотличимо от «беды нет».
+    ///
+    /// Беда там ровно та, что случается ПРИ ИДУЩЕМ ТРАФИКЕ: цель отдаёт, но втрое меньше
+    /// доказанного. То есть приёмка на записях была слепа именно к тому классу бед, ради которого
+    /// эти приборы заведены, — и слепа молча.
+    ///
+    /// В ПОЛЕ такого не было: `edge-queue` берёт тики от настоящих часов (`sleep(TICK)` в своей
+    /// ветке) и от трафика не зависит. Расходились ЗАПИСЬ и ПОЛЕ, то есть поверка и исполнение.
+    #[test]
+    fn a_busy_stream_still_gets_its_clock() {
+        let t0 = Instant::now();
+        let window = Duration::from_millis(100);
+        // Десять пакетов по 30 мс — три секунды плотного потока без единой паузы в окно.
+        let dense: Vec<_> = (0..100)
+            .map(|n| packet(t0 + Duration::from_millis(30 * n)))
+            .collect();
+
+        let got = with_ticks(&dense, window);
+
+        let ticks = got.iter().filter(|e| is_tick(e)).count();
+        assert!(
+            ticks >= 28,
+            "на трёх секундах плотного потока часы обязаны тикнуть около тридцати раз, а тикнули {ticks}"
+        );
     }
 
     /// КОНЕЦ ЗАПИСИ — НЕИЗВЕСТНОСТЬ, А НЕ ТИШИНА.
