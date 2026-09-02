@@ -1,4 +1,4 @@
-//! КОМБИНАТОРЫ ДЕТЕКТОРА — `rmap`, `lmap`, `changes`.
+//! КОМБИНАТОРЫ ДЕТЕКТОРА — `rmap`, `lmap`, `contextual`, `changes`.
 //!
 //! # Зачем они заведены
 //!
@@ -10,7 +10,12 @@
 //! `lmap` сужает вход, `rmap` переименовывает сигнал. Вместе они делают детектор ПРОФУНКТОРОМ:
 //! ядро прибора остаётся чистым про мир, а домен надевается снаружи отдельным звеном.
 //!
-//! `changes` — третий, и он про другое: переход вместо значения. Оператор потока
+//! `contextual` — третий, и он про память: сигнал одевается в то, что несло ПОСЛЕДНЕЕ
+//! наблюдение. Нужен там, где `rmap` бессилен по природе — прибор со своими часами
+//! высказывается по ТИКУ, когда наблюдения в этот момент нет вовсе. Сегодня эту роль играют
+//! поля `identity`/`leg` внутри самого `Silence`, то есть доменные поля в приборе о мире.
+//!
+//! `changes` — четвёртый, и он про другое: переход вместо значения. Оператор потока
 //! `distinct_until_changed` работает на потоке ЦЕЛИКОМ, а внутри `detect_per` экземпляр живёт
 //! НА КЛЮЧ — то есть переход считается по той цели, о которой высказывание. Две цели,
 //! чередуясь, прошли бы оператор потока насквозь.
@@ -306,6 +311,115 @@ fn changes_lets_the_very_first_reading_through() {
     let said = run(Level.changes(), vec![packet(Kind::Byte)]);
 
     assert_eq!(said, vec![Kind::Byte]);
+}
+
+/// КОНТЕКСТ БЕРЁТСЯ С ПОСЛЕДНЕГО НАБЛЮДЕНИЯ — сигнал одевается в то, чего прибор не знает.
+#[test]
+fn contextual_dresses_the_signal_in_what_the_last_observation_carried() {
+    let said = run(
+        Rst.lmap(|observed: &Wire| Some(observed.kind)).contextual(
+            |observed: &Wire| observed.flow,
+            |flow, distress| {
+                flow.map(|flow| Trouble {
+                    flow: *flow,
+                    distress,
+                })
+            },
+        ),
+        vec![wire(3, Kind::Rst)],
+    );
+
+    assert_eq!(
+        said,
+        vec![Trouble {
+            flow: 3,
+            distress: Distress::Rst
+        }]
+    );
+}
+
+/// СИГНАЛ ПО ТИКУ ОДЕВАЕТСЯ В КОНТЕКСТ ПОСЛЕДНЕГО ПАКЕТА.
+///
+/// Это главный случай, ради которого комбинатор заведён: прибор тишины высказывается ИМЕННО по
+/// тику, когда пакета в этот момент нет вовсе. Сегодня ради него `Silence` носит внутри
+/// `identity` и `leg` — доменные поля в приборе о мире, и только затем, чтобы назвать их в
+/// сигнале.
+#[test]
+fn contextual_remembers_across_the_tick() {
+    let said = run(
+        Clock
+            .lmap(|observed: &Wire| Some(observed.kind))
+            .contextual(
+                |observed: &Wire| observed.flow,
+                |flow, distress| {
+                    flow.map(|flow| Trouble {
+                        flow: *flow,
+                        distress,
+                    })
+                },
+            ),
+        vec![wire(5, Kind::Byte), tick()],
+    );
+
+    assert_eq!(
+        said,
+        vec![Trouble {
+            flow: 5,
+            distress: Distress::Rst
+        }],
+        "по тику сигнал обязан нести контекст последнего пакета"
+    );
+}
+
+/// КОНТЕКСТ ОБНОВЛЯЕТСЯ: одевается ПОСЛЕДНИЙ виденный, а не первый.
+#[test]
+fn contextual_dresses_in_the_latest_context_not_the_first() {
+    let said = run(
+        Rst.lmap(|observed: &Wire| Some(observed.kind)).contextual(
+            |observed: &Wire| observed.flow,
+            |flow, distress| {
+                flow.map(|flow| Trouble {
+                    flow: *flow,
+                    distress,
+                })
+            },
+        ),
+        vec![wire(1, Kind::Byte), wire(2, Kind::Rst)],
+    );
+
+    assert_eq!(
+        said,
+        vec![Trouble {
+            flow: 2,
+            distress: Distress::Rst
+        }]
+    );
+}
+
+/// КОНТЕКСТА ЕЩЁ НЕТ — И ЭТО ВИДНО ВЫЗЫВАЮЩЕМУ, а не решается за него молча.
+///
+/// Сигнал, случившийся до первого наблюдения (прибор со своими часами это умеет), одеть не во
+/// что. Комбинатор не выдумывает контекст и не роняет сигнал сам: он отдаёт `None` в одевалку, и
+/// та решает — потерять или сказать без контекста. Молчаливое решение здесь было бы потерей
+/// беды, которую никто бы не заметил.
+#[test]
+fn contextual_admits_when_there_is_no_context_yet() {
+    let said = run(
+        Clock
+            .lmap(|observed: &Wire| Some(observed.kind))
+            .contextual(
+                |observed: &Wire| observed.flow,
+                |flow, distress| {
+                    flow.map(|flow| Trouble {
+                        flow: *flow,
+                        distress,
+                    })
+                },
+            ),
+        vec![tick()],
+    );
+
+    assert_eq!(said, Vec::<Trouble>::new());
 }
 
 /// КОНТРОЛЬ НЕВАКУУМНОСТИ к обоим законам выше: цепочка НЕ пуста и различает входы.

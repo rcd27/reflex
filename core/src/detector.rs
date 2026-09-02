@@ -240,6 +240,71 @@ pub struct Changes<D: Detector> {
     said: Option<D::Signal>,
 }
 
+/// ОДЕЖДА СИГНАЛА ПО КОНТЕКСТУ НАБЛЮДЕНИЯ — то, чего прибор о своём предмете знать не должен.
+///
+/// # Зачем отдельно от [`RMap`]
+///
+/// Переименование сигнала есть чистая функция и памяти не имеет. А контекст берётся с ПОСЛЕДНЕГО
+/// наблюдения и нужен в момент, когда наблюдения нет вовсе: прибор со своими часами (тишина,
+/// просадка) высказывается по ТИКУ. Без памяти такой сигнал одеть не во что.
+///
+/// Сегодня эту роль играют поля внутри самих приборов: `Silence` носит `identity` и `leg`
+/// исключительно затем, чтобы назвать их в сигнале. То есть доменное знание живёт в приборе о
+/// мире — ровно та граница, которую комбинатор снимает.
+///
+/// # Отсутствие контекста НЕ РЕШАЕТСЯ МОЛЧА
+///
+/// Сигнал, случившийся до первого наблюдения, одеть не во что. Комбинатор не выдумывает контекст
+/// и не роняет сигнал сам — он отдаёт `None` в одевалку, и решает вызывающий. Молчаливое решение
+/// здесь было бы потерей беды, которой никто бы не заметил: прибор считался бы исправным.
+pub struct Contextual<D, Ctx, Pick, Dress> {
+    inner: D,
+    pick: Pick,
+    dress: Dress,
+    /// Последнее увиденное. `None` — наблюдений ещё не было.
+    context: Option<Ctx>,
+}
+
+impl<D, Ctx, Pick, Dress, Dressed> Detector for Contextual<D, Ctx, Pick, Dress>
+where
+    D: Detector,
+    D::Input: Clone,
+    Pick: Fn(&D::Input) -> Ctx,
+    Dress: Fn(Option<&Ctx>, D::Signal) -> Option<Dressed>,
+{
+    type Input = D::Input;
+    type Signal = Dressed;
+
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+        let Self {
+            inner,
+            pick,
+            dress,
+            context,
+        } = self;
+        // Контекст снимается ДО шага: сигнал, порождённый этим же наблюдением, обязан быть одет
+        // в него, а не в предыдущее. Иначе первая же беда пришла бы с чужой личностью.
+        let context = match &event {
+            DetectorEvent::Packet { input, .. } => Some(pick(input)),
+            DetectorEvent::Tick { .. } => context,
+        };
+        let (stepped, signals) = inner.step(event);
+        let dressed = signals
+            .into_iter()
+            .filter_map(|signal| dress(context.as_ref(), signal))
+            .collect();
+        (
+            Self {
+                inner: stepped,
+                pick,
+                dress,
+                context,
+            },
+            dressed,
+        )
+    }
+}
+
 impl<D> Detector for Changes<D>
 where
     D: Detector,
@@ -294,6 +359,24 @@ pub trait DetectorExt: Detector + Sized {
         F: Fn(Self::Signal) -> Renamed,
     {
         RMap { inner: self, f }
+    }
+
+    /// Одеть сигнал в контекст наблюдения. См. [`Contextual`].
+    fn contextual<Ctx, Pick, Dress, Dressed>(
+        self,
+        pick: Pick,
+        dress: Dress,
+    ) -> Contextual<Self, Ctx, Pick, Dress>
+    where
+        Pick: Fn(&Self::Input) -> Ctx,
+        Dress: Fn(Option<&Ctx>, Self::Signal) -> Option<Dressed>,
+    {
+        Contextual {
+            inner: self,
+            pick,
+            dress,
+            context: None,
+        }
     }
 
     /// Говорить только о смене показания. См. [`Changes`].
