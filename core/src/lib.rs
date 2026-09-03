@@ -5,6 +5,7 @@ pub mod capability;
 // ОБЪЕКТЫ И МОРФИЗМЫ КАТЕГОРИИ (#295, срез 2): стадия — тип, морфизм — метод на своей стадии.
 pub mod category;
 pub mod checksum;
+pub mod clock;
 pub mod command;
 pub mod detector;
 pub mod expiring_set;
