@@ -1,4 +1,4 @@
-use reflex_core::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
+use reflex_core::{CanDrop, CanHold, CanModify};
 
 use super::backend::NfqueueBackend;
 use crate::capture::Capture;
@@ -10,9 +10,9 @@ pub struct NfqAfPacketBackend {
     injector: Injector,
 }
 
-impl CanObserve for NfqAfPacketBackend {}
 // СНЯТО ПО ТОЙ ЖЕ ПРИЧИНЕ, ЧТО У `NfqueueBackend`: ни `Source`, ни `Sink` не реализованы, и
-// заявление о вводе было высказыванием без предмета. Инжектор у типа есть (`self.injector`) —
+// заявления о вводе и наблюдении были высказываниями без предмета. Инжектор у типа есть
+// (`self.injector`), и захват тоже (`self.capture`) —
 // именно поэтому снятие здесь особенно уместно: способность выглядела обеспеченной полем, но
 // категория до неё не дотягивалась.
 // TODO(#326): подключить к категории вместе с `NfqueueBackend`.

@@ -1,5 +1,5 @@
 use nfq::{Queue, Verdict};
-use reflex_core::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
+use reflex_core::{CanDrop, CanHold, CanModify};
 
 /// Set FD_CLOEXEC on all open file descriptors that are sockets.
 /// This prevents child processes (headless Chrome) from inheriting
@@ -64,11 +64,13 @@ pub struct NfqueueBackend {
     watched: Option<i32>,
 }
 
-impl CanObserve for NfqueueBackend {}
-// ЗАЯВЛЕНИЕ СНЯТО, ПОТОМУ ЧТО У НЕГО НЕ БЫЛО ПРЕДМЕТА (05.09.2026). Бэкенд не реализует ни
+// ЗАЯВЛЕНИЯ СНЯТЫ, ПОТОМУ ЧТО У НИХ НЕ БЫЛО ПРЕДМЕТА (05.09.2026). Бэкенд не реализует ни
 // `Source`, ни `Sink` — то есть в цепочку не встаёт ни при каких обстоятельствах, и «умею
-// вводить» здесь нельзя было ни подтвердить, ни опровергнуть. С обязательством `inject` это
-// стало ошибкой сборки, а не тихой пометкой.
+// вводить»/«умею наблюдать» здесь нельзя было ни подтвердить, ни опровергнуть. С обязательством
+// `inject` и супертрейтом `Source` это стало ошибкой сборки, а не тихой пометкой.
+//
+// ОСТАВШИЕСЯ ТРИ — ТАКИЕ ЖЕ ПУСТЫЕ, и держатся только тем, что до них ещё не дошёл микрошаг:
+// `CanHold`/`CanModify`/`CanDrop` сегодня без предмета и снимутся тем же способом.
 // TODO(#326): подключить очередь к категории — `NfqSource`/`DesyncSink` из целевого `main()`.
 // До тех пор способности этого типа не заявляются вовсе.
 impl CanHold for NfqueueBackend {}
