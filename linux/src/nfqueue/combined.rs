@@ -11,7 +11,11 @@ pub struct NfqAfPacketBackend {
 }
 
 impl CanObserve for NfqAfPacketBackend {}
-impl CanInject for NfqAfPacketBackend {}
+// СНЯТО ПО ТОЙ ЖЕ ПРИЧИНЕ, ЧТО У `NfqueueBackend`: ни `Source`, ни `Sink` не реализованы, и
+// заявление о вводе было высказыванием без предмета. Инжектор у типа есть (`self.injector`) —
+// именно поэтому снятие здесь особенно уместно: способность выглядела обеспеченной полем, но
+// категория до неё не дотягивалась.
+// TODO(#326): подключить к категории вместе с `NfqueueBackend`.
 impl CanHold for NfqAfPacketBackend {}
 impl CanModify for NfqAfPacketBackend {}
 impl CanDrop for NfqAfPacketBackend {}

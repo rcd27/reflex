@@ -30,7 +30,6 @@ mod counting {
 
 struct Loopback;
 impl CanObserve for Loopback {}
-impl CanInject for Loopback {}
 impl Source for Loopback {
     type Packet = u8;
     type Packets<'a> = stream::Iter<std::vec::IntoIter<u8>>;
@@ -39,18 +38,26 @@ impl Source for Loopback {
     }
 }
 impl Sink for Loopback {
-    type Command = u32;
+    // КОМАНДА НЕСЁТ КАДР, А НЕ ВЕС. Прежде здесь стоял `u32`, и заявление `CanInject` было
+    // выразимо над стоком, которым пакет физически не отправишь. С обязательством `inject`
+    // такой сток больше не собирается — игрушка обязана быть честной ровно так же, как живой
+    // бэкенд: привилегированной категории «это же тест» не существует.
+    type Command = Vec<u8>;
     type Error = ();
-    fn emit(&mut self, command: u32) -> Result<(), ()> {
-        counting::add(command);
+    fn emit(&mut self, command: Vec<u8>) -> Result<(), ()> {
+        counting::add(command.len() as u32);
         Ok(())
+    }
+}
+impl CanInject for Loopback {
+    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
+        packet.serialize()
     }
 }
 
 /// ДРУГОЙ бэкенд: другой источник, другая ошибка — и та же цепочка поверх.
 struct Recorded;
 impl CanObserve for Recorded {}
-impl CanInject for Recorded {}
 impl Source for Recorded {
     type Packet = u8;
     type Packets<'a> = stream::Iter<std::vec::IntoIter<u8>>;
@@ -59,18 +66,23 @@ impl Source for Recorded {
     }
 }
 impl Sink for Recorded {
-    type Command = u32;
+    type Command = Vec<u8>;
     type Error = String;
-    fn emit(&mut self, command: u32) -> Result<(), String> {
-        counting::add(command * 10);
+    fn emit(&mut self, command: Vec<u8>) -> Result<(), String> {
+        counting::add(command.len() as u32 * 10);
         Ok(())
+    }
+}
+impl CanInject for Recorded {
+    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
+        packet.serialize()
     }
 }
 
 /// ОДНА ЦЕПОЧКА, ЛЮБОЙ БЭКЕНД. Текст функции не знает, над чем исполняется.
 async fn run_over<B>(backend: &mut B) -> Terminal
 where
-    B: Source<Packet = u8> + Sink<Command = u32> + CanObserve + CanInject + Clone,
+    B: Source<Packet = u8> + Sink<Command = Vec<u8>> + CanObserve + CanInject + Clone,
     for<'a> B::Packets<'a>: Unpin,
 {
     let sink = backend.clone();
@@ -81,7 +93,9 @@ where
             false => 1,
         })
         .react(|weight| weight)
-        .materialize(|weight| weight)
+        // ВЕС СТАНОВИТСЯ КАДРОМ здесь, а не в стоке: материализация — последний шаг, на котором
+        // домен ещё говорит о смысле, и она обязана отдать стоку то, что сток умеет отправить.
+        .materialize(|weight: u32| vec![0u8; weight as usize])
         .inject_into(sink)
         .drive()
         .await

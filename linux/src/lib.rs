@@ -43,7 +43,16 @@ pub struct AfPacketBackend {
 }
 
 impl CanObserve for AfPacketBackend {}
-impl CanInject for AfPacketBackend {}
+
+// СЕРИАЛИЗАЦИЯ — ДЕЛО ФУНКТОРА БЭКЕНДА, А НЕ ПОТРЕБИТЕЛЯ (vision §1.3). Здесь она полная,
+// с ethernet-заголовком: сокет открыт `AF_PACKET`/`SOCK_RAW`, и `Injector::send` берёт
+// dst MAC из ПЕРВЫХ ШЕСТИ БАЙТ кадра (`inject.rs:59`). `serialize_ip` дал бы синтаксически
+// корректный вызов, кладущий на провод мусор, — то есть зелёный код и молчащий провод.
+impl CanInject for AfPacketBackend {
+    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
+        packet.serialize()
+    }
+}
 
 // ФУНКТОР В КАТЕГОРИЮ БЭКЕНДОВ (#295, срез 4). Реализация АДДИТИВНА: inherent-методы остаются,
 // и ни один существующий вызов не тронут. Смена бэкенда становится подстановкой типа там, где
@@ -128,7 +137,11 @@ impl reflex_core::backend::Sink for TcAfPacketBackend {
 #[cfg(feature = "tc")]
 impl CanObserve for TcAfPacketBackend {}
 #[cfg(feature = "tc")]
-impl CanInject for TcAfPacketBackend {}
+impl CanInject for TcAfPacketBackend {
+    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
+        packet.serialize()
+    }
+}
 #[cfg(feature = "tc")]
 impl CanDrop for TcAfPacketBackend {}
 #[cfg(feature = "tc")]

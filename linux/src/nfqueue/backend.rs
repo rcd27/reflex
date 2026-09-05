@@ -65,7 +65,12 @@ pub struct NfqueueBackend {
 }
 
 impl CanObserve for NfqueueBackend {}
-impl CanInject for NfqueueBackend {}
+// ЗАЯВЛЕНИЕ СНЯТО, ПОТОМУ ЧТО У НЕГО НЕ БЫЛО ПРЕДМЕТА (05.09.2026). Бэкенд не реализует ни
+// `Source`, ни `Sink` — то есть в цепочку не встаёт ни при каких обстоятельствах, и «умею
+// вводить» здесь нельзя было ни подтвердить, ни опровергнуть. С обязательством `inject` это
+// стало ошибкой сборки, а не тихой пометкой.
+// TODO(#326): подключить очередь к категории — `NfqSource`/`DesyncSink` из целевого `main()`.
+// До тех пор способности этого типа не заявляются вовсе.
 impl CanHold for NfqueueBackend {}
 impl CanModify for NfqueueBackend {}
 impl CanDrop for NfqueueBackend {}
