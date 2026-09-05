@@ -150,12 +150,29 @@ fn parse_application_data() {
     assert_eq!(parsed.fragment, TlsFragment::Other);
 }
 
+/// ТРЕВОГА РАЗБИРАЕТСЯ ДО КОДА, а не сводится к «что-то иное» (исправлено 06.09.2026).
+///
+/// Тест ждал `Other` и был прав ровно до того дня, когда у `TlsFragment` появился вариант `Alert`
+/// с уровнем и кодом. Расхождение прожило незамеченным, потому что весь файл стоит под
+/// `#![cfg(feature = "tls")]`, а фича не включалась ни в одном обычном прогоне: `cargo test -p
+/// reflex-core --test tls_sni` давал `0 passed` — то есть проверка была написана и НЕ ЗВАЛАСЬ.
+///
+/// Обнажилось переездом `reflex-instrument` в workspace: он требует `reflex-core` с `tls`, фичи в
+/// workspace объединяются, и мёртвый файл ожил целиком. Ровно та причина, по которой прибор
+/// доверия `unknown_ca` (48) от `handshake_failure` (40) и отличает — без кода тревоги ответ не
+/// сужает круг.
 #[test]
 fn parse_alert_record() {
     let data = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28]; // fatal, handshake_failure
     let parsed = TlsRecord::parse(&data).unwrap();
     assert_eq!(parsed.content_type, TlsContentType::Alert);
-    assert_eq!(parsed.fragment, TlsFragment::Other);
+    assert_eq!(
+        parsed.fragment,
+        TlsFragment::Alert {
+            level: 2,
+            description: 40
+        }
+    );
 }
 
 #[test]

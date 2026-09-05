@@ -1,0 +1,98 @@
+dataplane	dataplane/src/watch.rs	50	Watch	1	1	dataplane-nfq/src/bin/plane-queue.rs	OK	1
+dataplane	dataplane/src/meter.rs	49	Freshness	0	0		OK	0
+dataplane	dataplane/src/lib.rs	28	Dir	2	2	dataplane-nfq/src/parse.rs,dataplane-nfq/src/plane.rs	OK	2
+dataplane	dataplane/src/lib.rs	141	Ordered	0	0		OK	1
+dataplane	dataplane/src/lib.rs	149	Told	0	0		OK	1
+dataplane	dataplane/src/lib.rs	157	Basis	1	1	dataplane-nfq/src/plane.rs	OK	1
+dataplane	dataplane/src/lib.rs	171	Executor	0	0		OK	1
+dataplane	dataplane/src/lib.rs	177	Programme	1	1	dataplane-nfq/src/plane.rs	OK	2
+dataplane	dataplane/src/lib.rs	233	Cursor	2	2	dataplane-nfq/src/plane.rs,dataplane-nfq/src/record.rs	OK	1
+dataplane	dataplane/src/lib.rs	250	Act	1	1	dataplane-nfq/src/plane.rs	OK	2
+dataplane	dataplane/src/lib.rs	260	Sighting	1	1	dataplane-nfq/src/plane.rs	OK	1
+dataplane	dataplane/src/row.rs	41	Naming	3	0	dataplane/src/lib.rs,dataplane/src/step.rs,dataplane/src/watch.rs	OK	3
+dataplane	dataplane/src/row.rs	63	TargetKey	2	2	dataplane-nfq/src/plane.rs,dataplane-nfq/src/record.rs	OK	2
+dataplane	dataplane/src/row.rs	84	Sight	1	1	dataplane-nfq/src/record.rs	OK	1
+dataplane	dataplane/src/row.rs	95	Told	1	1	dataplane-nfq/src/record.rs	OK	1
+dataplane	dataplane/src/row.rs	109	Answered	2	0	dataplane/src/lib.rs,dataplane/src/step.rs	OK	1
+dataplane-nfq	dataplane-nfq/src/kernel.rs	36	Agreement	0	0		OK	0
+dataplane-nfq	dataplane-nfq/src/parse.rs	20	Head	1	0	dataplane-nfq/src/plane.rs	OK	1
+dataplane-nfq	dataplane-nfq/src/parse.rs	52	Read	2	1	dataplane-nfq/src/bin/plane-queue.rs,nevod2-runtime/src/bin/edge-loop.rs	OK	2
+dataplane-nfq	dataplane-nfq/src/record.rs	37	Watched	0	0		OK	0
+nevod2	nevod2/src/target.rs	17	Proto	4	0	nevod2/src/finding.rs,nevod2/src/priors.rs,nevod2/src/right.rs,nevod2/src/wire.rs	OK	4
+nevod2	nevod2/src/target.rs	40	Identity	8	0	nevod2/src/chart.rs,nevod2/src/flow.rs,nevod2/src/investigation.rs,nevod2/src/naming.rs,nevod2/src/pipe.rs,nevod2/src/priors.rs,nevod2/src/serve.rs,nevod2/src/wire.rs	OK	7
+nevod2	nevod2/src/target.rs	59	TargetKey	9	0	nevod2/src/finding.rs,nevod2/src/ground.rs,nevod2/src/link.rs,nevod2/src/naming.rs,nevod2/src/pipe.rs,nevod2/src/priors.rs,nevod2/src/right.rs,nevod2/src/route.rs,nevod2/src/serve.rs	OK	8
+nevod2	nevod2/src/naming.rs	27	Naming	2	0	nevod2/src/pipe.rs,nevod2/src/target.rs	OK	2
+nevod2	nevod2/src/leg.rs	9	Leg	11	0	nevod2/src/finding.rs,nevod2/src/flow.rs,nevod2/src/ground.rs,nevod2/src/investigation.rs,nevod2/src/offer.rs,nevod2/src/pipe.rs,nevod2/src/priors.rs,nevod2/src/route.rs,nevod2/src/serve.rs,nevod2/src/session.rs,nevod2/src/wire.rs	OK	11
+nevod2	nevod2/src/finding.rs	20	Distress	2	0	nevod2/src/investigation.rs,nevod2/src/wire.rs	OK	2
+nevod2	nevod2/src/finding.rs	35	Trigger	2	0	nevod2/src/investigation.rs,nevod2/src/pipe.rs	OK	2
+nevod2	nevod2/src/finding.rs	54	Finding	3	0	nevod2/src/ground.rs,nevod2/src/investigation.rs,nevod2/src/pipe.rs	OK	3
+nevod2	nevod2/src/wire.rs	69	Seen	2	0	nevod2/src/flow.rs,nevod2/src/link.rs	OK	2
+nevod2	nevod2/src/wire.rs	153	Notice	1	0	nevod2/src/pipe.rs	OK	1
+nevod2	nevod2/src/session.rs	61	TimeToContent	1	0	nevod2/src/ground.rs	OK	1
+nevod2	nevod2/src/session.rs	275	Subject	2	0	nevod2/src/ground.rs,nevod2/src/pipe.rs	OK	2
+nevod2	nevod2/src/investigation.rs	33	Measured	1	1	nevod2-runtime/src/lib.rs	OK	1
+nevod2	nevod2/src/investigation.rs	129	Measure	1	1	nevod2-runtime/src/lib.rs	OK	1
+nevod2	nevod2/src/priors.rs	39	UniversalFact	4	0	nevod2/src/chart.rs,nevod2/src/finding.rs,nevod2/src/right.rs,nevod2/src/serve.rs	OK	4
+nevod2	nevod2/src/pipe.rs	715	Beat	0	0		OK	0
+nevod2	nevod2/src/pipe.rs	869	Outcome	0	0		OK	0
+nevod2	nevod2/src/offer.rs	62	Offered	1	0	nevod2/src/pipe.rs	OK	1
+nevod2-runtime	nevod2-runtime/src/quicstep.rs	53	Path	1	0	nevod2-runtime/src/bin/edge-quic.rs	OK	1
+nevod2-runtime	nevod2-runtime/src/wire.rs	82	Carried	3	0	nevod2-runtime/src/bin/ech-watch.rs,nevod2-runtime/src/bin/edge-queue.rs,nevod2-runtime/src/bin/quic-peek.rs	OK	3
+nevod2-runtime	nevod2-runtime/src/executor.rs	79	DesyncCarriage	1	0	nevod2-runtime/src/bin/edge-serve.rs	OK	1
+zond	zond/src/desync/nfqws2.rs	49	Fidelity	0	0		OK	0
+zond	zond/src/desync/nfqws2.rs	136	Unparsed	0	0		OK	0
+zond	zond/src/desync/capability.rs	17	Capability	0	0		OK	0
+zond	zond/src/desync/capability.rs	25	Technique	0	0		OK	0
+zond	zond/src/desync/fooling.rs	13	FoolingKind	2	0	zond/src/desync/nfqws2.rs,zond/src/desync/strategy.rs	OK	2
+zond	zond/src/desync/fooling.rs	25	Fooling	0	0		OK	0
+zond	zond/src/desync/strategy.rs	29	Blob	2	0	zond/src/desync/capability.rs,zond/src/desync/nfqws2.rs	OK	2
+zond	zond/src/desync/strategy.rs	61	Overlap	2	0	zond/src/desync/capability.rs,zond/src/desync/nfqws2.rs	OK	2
+zond	zond/src/desync/strategy.rs	112	Decoy	2	0	zond/src/desync/capability.rs,zond/src/desync/nfqws2.rs	OK	2
+zond	zond/src/desync/split.rs	13	Order	3	0	zond/src/desync/capability.rs,zond/src/desync/nfqws2.rs,zond/src/desync/strategy.rs	OK	3
+zond	zond/src/desync/split.rs	85	Landmark	1	0	zond/src/desync/nfqws2.rs	OK	1
+zond	zond/src/verify.rs	21	Content	1	0	zond/src/matrix.rs	OK	1
+zond	zond/src/tempo.rs	51	Tempo	1	0	zond/src/bin/zond-tempo.rs	OK	1
+zond	zond/src/tempo.rs	139	Verdict	2	1	nevod2/src/investigation.rs,zond/src/bin/zond-tempo.rs	OK	2
+zond	zond/src/search.rs	96	Blindness	1	0	zond/src/lib.rs	OK	1
+zond	zond/src/search.rs	174	Attempt	2	1	nevod2-runtime/src/bin/edge-search.rs,zond/src/bin/zond-corpus.rs	OK	2
+zond	zond/src/search.rs	185	Report	2	1	nevod2-runtime/src/bin/edge-search.rs,zond/src/bin/zond-corpus.rs	OK	2
+zond	zond/src/search.rs	197	Finding	1	1	nevod2-runtime/src/assign.rs	OK	1
+zond	zond/src/search.rs	697	Verdict	3	2	nevod2-runtime/src/answer.rs,nevod2-runtime/src/assign.rs,zond/src/bin/zond-corpus.rs	OK	3
+zond	zond/src/fate.rs	22	Fate	0	0		OK	0
+zond	zond/src/fate.rs	50	Observed	2	2	nevod2/src/flow.rs,nevod2/src/session.rs	OK	2
+zond	zond/src/fate.rs	122	Delivery	1	1	nevod2/src/flow.rs	OK	1
+zond	zond/src/lib.rs	76	Profile	3	1	nevod2-runtime/src/lib.rs,zond/src/bin/zond-probe.rs,zond/src/bin/zond-sweep.rs	OK	3
+zond	zond/src/lib.rs	176	Outcome	4	1	nevod2/src/investigation.rs,zond/src/bin/zond-corpus.rs,zond/src/bin/zond-probe.rs,zond/src/bin/zond-sweep.rs	OK	2
+zond	zond/src/lib.rs	256	Bound	3	3	nevod2-runtime/src/bin/edge-loop.rs,nevod2-runtime/src/bin/edge-search.rs,nevod2-runtime/src/bin/probe-marked.rs	OK	3
+zond	zond/src/via.rs	33	Via	2	0	zond/src/lib.rs,zond/src/tempo.rs	OK	1
+zond	zond/src/via.rs	51	Detour	0	0		OK	0
+zond	zond/src/history.rs	67	Shift	1	0	zond/src/bin/zond-sweep.rs	OK	1
+reflex/core	reflex/core/src/dns/mod.rs	8	DnsDirection	0	0		NOT_BUILT	0
+reflex/core	reflex/core/src/stream/detect_per.rs	52	Lifetime	1	0	reflex/core/src/stream/mod.rs	OK	1
+reflex/core	reflex/core/src/stream/tee.rs	45	Fanout	1	0	reflex/core/src/stream/mod.rs	OK	1
+reflex/core	reflex/core/src/stream/group_by.rs	26	Keys	1	0	reflex/core/src/stream/mod.rs	OK	1
+reflex/core	reflex/core/src/detector.rs	10	DetectorEvent	7	0	reflex/core/src/category.rs,reflex/core/src/ext.rs,reflex/core/src/flow_table.rs,reflex/core/src/lib.rs,reflex/core/src/pcap.rs,reflex/core/src/stream/detect_per.rs,reflex/core/src/tls/assembly.rs	OK	6
+reflex/core	reflex/core/src/tls/assembly.rs	45	Assembly	1	0	reflex/core/src/tls/mod.rs	OK	1
+reflex/core	reflex/core/src/tls/mod.rs	39	TlsContentType	0	0		OK	0
+reflex/core	reflex/core/src/tls/mod.rs	66	TlsFragment	0	0		OK	0
+reflex/core	reflex/core/src/tls/mod.rs	151	Ech	1	1	nevod2-runtime/src/bin/ech-watch.rs	OK	1
+reflex/core	reflex/core/src/tls/mod.rs	332	RecordNeed	0	0		OK	1
+reflex/core	reflex/core/src/pcap.rs	51	Broken	0	0		OK	0
+reflex/core	reflex/core/src/command.rs	5	Command	1	0	reflex/core/src/lib.rs	OK	1
+reflex/core	reflex/core/src/command.rs	22	InjectablePacket	1	0	reflex/core/src/lib.rs	OK	1
+reflex/core	reflex/core/src/types/ethertype.rs	2	EtherType	3	0	reflex/core/src/parse/ipv4.rs,reflex/core/src/types/ethernet.rs,reflex/core/src/types/mod.rs	OK	3
+reflex/core	reflex/core/src/types/protocol.rs	2	IpProtocol	4	0	reflex/core/src/parse/tcp.rs,reflex/core/src/parse/udp.rs,reflex/core/src/types/ipv4.rs,reflex/core/src/types/mod.rs	OK	4
+reflex/core	reflex/core/src/types/protocol.rs	31	Protocol	6	0	reflex/core/src/parse/from_ip.rs,reflex/core/src/types/connection_id.rs,reflex/core/src/types/flow.rs,reflex/core/src/types/mod.rs,reflex/core/src/types/tcp.rs,reflex/core/src/types/udp.rs	OK	6
+reflex/core	reflex/core/src/expiring_set.rs	23	Marking	1	1	zond/src/search.rs	OK	1
+reflex/linux	reflex/linux/src/nfqws/process.rs	18	NfqwsError	1	0	reflex/linux/src/nfqws/mod.rs	OK	1
+reflex/linux	reflex/linux/src/nfqueue/pipeline.rs	17	NfqVerdict	3	0	reflex/linux/src/nfqueue/mod.rs,reflex/linux/src/nfqueue/typed.rs,reflex/linux/src/nfqueue/witness.rs	OK	3
+reflex/linux	reflex/linux/src/nfqueue/pipeline.rs	41	NfqVerdictKind	1	0	reflex/linux/src/nfqueue/mod.rs	OK	1
+reflex/linux	reflex/linux/src/nfqueue/backend.rs	55	Waited	1	0	reflex/linux/src/nfqueue/mod.rs	OK	1
+reflex/linux	reflex/linux/src/nfqueue/typed.rs	20	L7	1	0	reflex/linux/src/nfqueue/mod.rs	OK	1
+reflex/linux	reflex/linux/src/nfqueue/guard.rs	27	Direction	2	0	reflex/linux/src/nfqueue/mod.rs,reflex/linux/src/nfqueue/nft_guard.rs	OK	2
+reflex/linux	reflex/linux/src/nfqueue/guard.rs	33	MarkMatch	2	0	reflex/linux/src/nfqueue/mod.rs,reflex/linux/src/nfqueue/nft_guard.rs	OK	2
+reflex/linux	reflex/linux/src/nfqueue/guard.rs	43	RuleAction	2	0	reflex/linux/src/nfqueue/mod.rs,reflex/linux/src/nfqueue/nft_guard.rs	OK	2
+reflex/linux	reflex/linux/src/nfqueue/guard.rs	50	RuleProtocol	2	0	reflex/linux/src/nfqueue/mod.rs,reflex/linux/src/nfqueue/nft_guard.rs	OK	2
+reflex/linux	reflex/linux/src/nfqueue/preflight.rs	9	PreflightError	0	0		OK	0
+reflex/linux	reflex/linux/src/conntrack/wire.rs	71	Chunk	2	0	reflex/linux/src/conntrack/dump.rs,reflex/linux/src/conntrack/mod.rs	OK	2
+reflex/linux	reflex/linux/src/conntrack/dump.rs	24	DumpError	1	0	reflex/linux/src/conntrack/mod.rs	OK	1
