@@ -21,7 +21,7 @@ set -u
 # каталоги искались относительно рабочего, и после переезда `continue` пропускал бы их МОЛЧА:
 # аудит отчитался бы «кандидатов нет», не прочитав ни одного файла.
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-CRATES="reflex/engine reflex/engine-nfq nevod2 nevod2-runtime zond reflex/core reflex/linux"
+CRATES="reflex/engine reflex/engine-nfq domain app zond reflex/core reflex/linux"
 
 for crate_dir in $CRATES; do
   # ИСЧЕЗНУВШИЙ КРЕЙТ КРАСНЕЕТ, А НЕ ПРОПУСКАЕТСЯ: «нет каталога» и «нет кандидатов» дают

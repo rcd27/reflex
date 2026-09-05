@@ -310,7 +310,7 @@ fn main() {
 //             val case = from<flow T>(tcpPackets) <- слушатель IO
 //                         .extract(SNI)
 //                         .detect(rstDetector) <- реагируем на окружающий мир
-//                         .raise(flow: T -> nevod2::commandFor(flow)) <- поднимаем в домен
+//                         .raise(flow: T -> domain::commandFor(flow)) <- поднимаем в домен
 //                         .collect<Command<T>(it); <- терминальый морфизм
 //         }
 //     }
