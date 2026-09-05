@@ -220,7 +220,13 @@ impl Beats for OsClock {
     /// видна как величина.
     fn beats(&self, every: Duration) -> impl Iterator<Item = Instant> {
         let began = Instant::now();
-        (1u64..).filter_map(move |nth| {
+        // ВЫРОЖДЕННАЯ СЕТКА ПУСТА, а не бесконечна. У шага в ноль узлов нет, и прежняя редакция
+        // на таком шаге крутила бы поток без единого сна, выдавая один и тот же момент.
+        let nodes = match every.is_zero() {
+            true => 1u64..1,
+            false => 1u64..u64::MAX,
+        };
+        nodes.filter_map(move |nth| {
             let due = crate::grid::node(began, every, nth);
             match due.checked_duration_since(Instant::now()) {
                 // Узел уже позади — мы отстали; выдаём его без сна, но и без залпа: следующий
