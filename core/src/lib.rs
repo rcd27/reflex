@@ -12,6 +12,7 @@ pub mod expiring_set;
 pub mod ext;
 pub mod flow_table;
 pub mod guard;
+pub mod meter;
 pub mod parse;
 pub mod stack;
 pub mod step;
