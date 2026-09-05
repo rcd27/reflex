@@ -15,10 +15,19 @@
 # СМЕРТЬ: кандидаты выводятся механически крейтом приборов (паспорт как трейт) — скрипт снимается.
 set -u
 
-CRATES="dataplane dataplane-nfq nevod2 nevod2-runtime zond reflex/core reflex/linux"
+# ПУТИ ОБНОВЛЕНЫ ПОСЛЕ ПЕРЕЕЗДА (06.09.2026, #326): движок и приборы живут в фундаменте.
+#
+# Пути даны ОТ КОРНЯ репозитория, а скрипт лежит теперь в подмодуле — оттого и `ROOT`. Прежде
+# каталоги искались относительно рабочего, и после переезда `continue` пропускал бы их МОЛЧА:
+# аудит отчитался бы «кандидатов нет», не прочитав ни одного файла.
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+CRATES="reflex/engine reflex/engine-nfq nevod2 nevod2-runtime zond reflex/core reflex/linux"
 
 for crate_dir in $CRATES; do
-  [ -d "$crate_dir/src" ] || continue
+  # ИСЧЕЗНУВШИЙ КРЕЙТ КРАСНЕЕТ, А НЕ ПРОПУСКАЕТСЯ: «нет каталога» и «нет кандидатов» дают
+  # одинаково пустой вывод, и переезд обнулял бы аудит незаметно.
+  [ -d "$ROOT/$crate_dir/src" ] || { echo "нет крейта: $crate_dir — список разошёлся с деревом" >&2; exit 2; }
+  crate_dir="$ROOT/$crate_dir"
   grep -rn --include=*.rs -E "^[[:space:]]*pub enum [A-Za-z_]" "$crate_dir/src" 2>/dev/null \
     | sed -E "s#^([^:]+):([0-9]+):[[:space:]]*pub enum ([A-Za-z_0-9]+).*#${crate_dir}\t\1\t\2\t\3#"
 done
