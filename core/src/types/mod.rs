@@ -1,4 +1,5 @@
 mod connection_id;
+mod dir;
 mod ethernet;
 mod ethertype;
 mod flow;
@@ -11,6 +12,7 @@ mod tcp_options;
 mod udp;
 
 pub use connection_id::{ConnectionId, HasConnectionId};
+pub use dir::Dir;
 pub use ethernet::EthernetFrame;
 pub use ethertype::EtherType;
 pub use flow::{Flow, HasFlow};
