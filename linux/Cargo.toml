@@ -55,18 +55,8 @@ path = "examples/certify.rs"
 required-features = ["certify"]
 
 [[example]]
-name = "l2_steer"
-path = "examples/l2_steer.rs"
-required-features = ["tc"]
-
-[[example]]
 name = "nfq-passthrough"
 path = "examples/nfq-passthrough.rs"
-required-features = ["nfqueue"]
-
-[[example]]
-name = "nfq-fragment"
-path = "examples/nfq-fragment.rs"
 required-features = ["nfqueue"]
 
 [[example]]

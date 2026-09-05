@@ -345,30 +345,6 @@ fn extract_from_handshake(handshake: &[u8]) -> Option<String> {
     crate::tls::extract_sni(&record)
 }
 
-/// ГДЕ ИМЕННО РВЁТСЯ ЧТЕНИЕ — для отладки, не для решений.
-///
-/// `sni` возвращает `None` на четырёх разных причинах и не различает их намеренно: вызывающему с
-/// ними делать нечего. Но при разработке НЕразличение стоит дорого — ошибка крипты читается как
-/// «имени нет», а это совершенно разные факты.
-pub fn stages(datagram: &[u8]) -> Result<String, String> {
-    let header = parse_header(datagram).ok_or("заголовок не разобран")?;
-    let keys = initial_keys(header.dcid).ok_or("ключи не выведены")?;
-    let opened = open(datagram, &header, &keys).ok_or("не расшифровалось")?;
-    let assembled = crypto_frames(&opened);
-
-    Ok(format!(
-        "DCID {} Б · длина {} · расшифровано {} Б · CRYPTO собрано {} Б · SNI {}",
-        header.dcid.len(),
-        header.length,
-        opened.len(),
-        assembled.len(),
-        match extract_from_handshake(&assembled) {
-            Some(name) => name,
-            None => "НЕТ".into(),
-        }
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

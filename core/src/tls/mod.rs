@@ -29,12 +29,6 @@ pub fn is_client_hello(payload: &[u8]) -> bool {
     payload.len() >= 6 && payload[0] == 0x16 && payload[5] == 0x01
 }
 
-/// True if the TCP payload starts with any TLS record type the server emits
-/// during/after a successful handshake (ChangeCipherSpec, Alert, Handshake, ApplicationData).
-pub fn is_server_response(payload: &[u8]) -> bool {
-    payload.len() >= 5 && matches!(payload[0], 0x14..=0x17)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsContentType {
     ChangeCipherSpec,

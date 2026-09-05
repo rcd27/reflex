@@ -77,26 +77,6 @@ where
         all_signals
     }
 
-    /// Как [`tick`](Self::tick), но АТРИБУТИРУЕТ сигнал флоу-ключом. Витнесу нужно адресовать
-    /// здоровье конкретному соединению (per-host решение), а `tick` теряет ключ.
-    pub fn tick_attributed(&mut self, at: Instant) -> Vec<(Flow, D::Signal)> {
-        let mut out = Vec::new();
-        let flows: Vec<Flow> = self.flows.keys().cloned().collect();
-        for flow in flows {
-            if self.reap_if_idle(&flow, at) {
-                continue; // мёртвый поток эвиктнут — не тикаем
-            }
-            if let Some(detector) = self.flows.remove(&flow) {
-                let (detector, signals) = detector.step(DetectorEvent::Tick { at });
-                for s in signals {
-                    out.push((flow.clone(), s));
-                }
-                self.flows.insert(flow, detector);
-            }
-        }
-        out
-    }
-
     /// Эвикт потока, молчавшего дольше `idle_timeout` (детектор + last-seen удаляются). Возвращает
     /// `true`, если поток эвиктнут (тикать нечего).
     fn reap_if_idle(&mut self, flow: &Flow, at: Instant) -> bool {

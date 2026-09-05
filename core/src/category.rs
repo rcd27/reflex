@@ -105,10 +105,6 @@ use futures::{Stream, StreamExt};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Packets;
 
-/// ПАКЕТЫ, СГРУППИРОВАННЫЕ ПО СОЕДИНЕНИЮ.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Flows;
-
 /// НАБЛЮДЕНИЯ ДЕТЕКТОРА. Параметр — что именно наблюдали.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Signals<S>(PhantomData<S>);
@@ -190,20 +186,6 @@ impl<S: Stream> Pipeline<Packets, S> {
         F: FnMut(S::Item) -> Sig,
     {
         Pipeline::<Packets, _>::at(self.inner.map(f))
-    }
-}
-
-impl<S: Stream> Pipeline<Packets, S> {
-    /// `PacketStream → FlowStream` — группировка по соединению.
-    ///
-    /// КЛЮЧ ЗАДАЁТ ВЫЗЫВАЮЩИЙ, и это не лень: 5-tuple живёт в его словаре пакета, а категория
-    /// говорит о СТАДИЯХ, не о том, как устроен пакет. Требовать здесь конкретный тип значило бы
-    /// втащить в ядро знание домена — ровно то, за что ревью 29.08 назвало утечкой соседние места.
-    pub fn group_flows<F, K>(self, key: F) -> Pipeline<Flows, futures::stream::Map<S, F>>
-    where
-        F: FnMut(S::Item) -> K,
-    {
-        Pipeline::<Packets, _>::at(self.inner.map(key))
     }
 }
 
