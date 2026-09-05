@@ -49,7 +49,8 @@ pub mod quic;
 pub mod tls;
 
 pub use capability::{
-    CanDrop, CanHold, CanInject, CanMark, CanModify, CanObserve, CanRefuse, CanRewrite,
+    CanDrop, CanHold, CanInject, CanMark, CanModify, CanObserve, CanRefuse, CanRewrite, CanSever,
+    Toward,
 };
 pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{

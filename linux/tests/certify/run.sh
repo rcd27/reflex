@@ -60,6 +60,23 @@ $COMPOSE down -v >/dev/null 2>&1
 $COMPOSE up -d --build >/dev/null 2>&1 || { echo "стенд не поднялся"; exit 2; }
 sleep 5
 
+# РОЛИ ПРОВЕРЯЮТСЯ ЖИВЫМИ ПОИМЁННО, и это не перестраховка (#326, 05.09.2026).
+#
+# `up -d` отвечает успехом, когда контейнер СТАРТОВАЛ, — умри он секундой позже, оболочка этого не
+# узнает. Первый же прогон закона обрыва так и прошёл: опечатка в имени цепочки (`fwd` —
+# зарезервированное слово `nft`) уронила движок, `docker exec` вернул код 1 на каждый закон, и
+# устройство напечатало ДЕВЯТЬ НАРУШЕНИЙ. Беда стенда выглядела виной подопытного — ровно та
+# подмена, которую `Verdict::Invalid` заведён различать, только этажом выше закона.
+for role in certify-witness certify-dut certify-queue certify-client; do
+    alive=$(docker inspect "$role" --format '{{.State.Running}}' 2>/dev/null)
+    test "$alive" = "true" || {
+        echo "роль $role не жива — вердиктов не будет, разбирайте стенд:"
+        docker logs "$role" 2>&1 | tail -5
+        $COMPOSE down -v >/dev/null 2>&1
+        exit 2
+    }
+done
+
 # ПО АДРЕСУ, А НЕ ПО ИМЕНИ. Свидетель здесь заодно адресат проб, и при его остановке падает резолв
 # имени — прогон кончается ошибкой раньше, чем закон скажет своё. Первое обезоруживание закона
 # отказа именно так и провалилось: вышло `invalid` по чужой причине, и дыра осталась невидимой.
@@ -94,6 +111,23 @@ run rewrite docker exec certify-queue certify rewrite 0 /shared/far.pcap "nonce-
 run mark    docker exec certify-queue certify mark 0 /shared/far.pcap "$MARK" "nonce-mark-$$" "$WITNESS:$PORT"
 echo
 
+echo "═══ ОБРЫВ: ДВЕ ГРАНИЦЫ, ДВА СВИДЕТЕЛЯ ═══"
+# ПОДОПЫТНЫЙ ТОЛЬКО ЖДЁТ, ПРОБУ ШЛЁТ КЛИЕНТ — и это не удобство устройства, а условие закона.
+# Останься сторона отправителя тем же процессом, что обрывает, — доставку извещения заверял бы
+# доставляющий, то есть ровно тот корень, ради снятия которого написан весь модуль.
+#
+# Порядок обязателен: ожидание поднимается раньше пробы. Наоборот — пакет уйдёт в очередь, которую
+# никто не слушает, и правило дропнет его молча.
+SEVER=$(mktemp)
+docker exec certify-queue certify sever 1 /shared/far.pcap /shared/near.pcap "nonce-sever-$$" sender >"$SEVER" 2>&1 &
+severing=$!
+sleep 1
+docker exec certify-client certify probe-tcp "$WITNESS:$PORT" "nonce-sever-$$" >/dev/null 2>&1
+wait $severing; severed=$?
+tally sever "$(cat "$SEVER")" "$severed"
+rm -f "$SEVER"
+echo
+
 echo "═══ ОБЕЗОРУЖИВАНИЕ: законы обязаны уметь КРАСНЕТЬ ═══"
 # Проверка, которую не удалось заставить покраснеть, не в покрытии. Обстановка ядра меняется и
 # ВОЗВРАЩАЕТСЯ — прогон, отравляющий следующий, хуже отсутствующего.
@@ -109,6 +143,18 @@ docker exec certify-queue nft add rule inet certify post udp dport $PORT drop >/
 run 'hold_v' docker exec certify-queue certify hold 0 /shared/far.pcap "nonce-overruled-$$" "$WITNESS:$PORT"
 docker exec certify-queue sh -c "nft flush chain inet certify post && nft add rule inet certify post meta mark $MARK counter" >/dev/null 2>&1
 
+# СТОРОНЫ ПЕРЕПУТАНЫ: извещение адресуется получателю вместо отправителя, то есть уезжает ЦЕЛИ.
+# Правка одной строки в живом коде, и ни закон отказа, ни закон инъекции её не увидят: первый
+# скажет «исходное не прошло», второй — «наш кадр наблюдаем». Красит эту беду только адресация.
+SWAP=$(mktemp)
+docker exec certify-queue certify sever 1 /shared/far.pcap /shared/near.pcap "nonce-swap-$$" receiver >"$SWAP" 2>&1 &
+swapped=$!
+sleep 1
+docker exec certify-client certify probe-tcp "$WITNESS:$PORT" "nonce-swap-$$" >/dev/null 2>&1
+wait $swapped; misdirected=$?
+tally 'sever→' "$(cat "$SWAP")" "$misdirected"
+rm -f "$SWAP"
+
 # Свидетель остановлен: закон обязан сказать «вердикта нет», а не подтвердить способность.
 docker stop certify-witness >/dev/null 2>&1
 run 'mute' docker exec certify-queue certify refuse 0 /shared/far.pcap "nonce-dead-$$" "$WITNESS:$PORT"
@@ -119,18 +165,20 @@ echo
 echo "═══ ИТОГ ═══"
 echo "  держится: $held · нарушено: $broken · без вердикта: $no_verdict"
 echo
-echo "  ОЖИДАЕТСЯ: 6 держится (законы) · 2 нарушено и 1 без вердикта (обезоруживание)."
+echo "  ОЖИДАЕТСЯ: 7 держится (законы) · 3 нарушено и 1 без вердикта (обезоруживание)."
 echo "  Всякое иное число — находка, и разбирать её надо до того, как поверить зелёному."
 echo
 echo "  НЕ ПРОВЕРЕНО ЗДЕСЬ, и это не забывчивость:"
-echo "    · holds/PassedBeforeAnswer — без правила носителя нет вовсе, закон не начинается;"
-echo "    · refuses/PassedAnyway     — ядро исполняет Drop надёжно, подделать нечем;"
-echo "    · отказ ядра (NotTaken)    — воспроизводится лишь протухшим сообщением очереди."
-echo "  Все три проверены в памятном мире: cargo test -p reflex-core (37 проверок)."
+echo "    · holds/PassedBeforeAnswer  — без правила носителя нет вовсе, закон не начинается;"
+echo "    · refuses/PassedAnyway      — ядро исполняет Drop надёжно, подделать нечем;"
+echo "    · отказ ядра (NotTaken)     — воспроизводится лишь протухшим сообщением очереди;"
+echo "    · severs/ПОРЯДОК извещения  — «дошло раньше, чем цель ответила» здесь невыразимо:"
+echo "      у пакета, которого нет, нет метки времени. Нужна эхо-роль цели — TODO(#326)."
+echo "  Все прочие проверены в памятном мире: cargo test -p reflex-core."
 
 $COMPOSE down -v >/dev/null 2>&1
 
-# КОД ВОЗВРАТА — ПО ЗАКОНАМ, А НЕ ПО ОБЕЗОРУЖИВАНИЮ. Шесть держащихся законов есть условие
+# КОД ВОЗВРАТА — ПО ЗАКОНАМ, А НЕ ПО ОБЕЗОРУЖИВАНИЮ. Семь держащихся законов есть условие
 # годности; красное обезоруживание — ожидаемое поведение, и смешивать их значило бы получить
 # зелёный прогон при мёртвой проверке.
-test "$held" -eq 6
+test "$held" -eq 7

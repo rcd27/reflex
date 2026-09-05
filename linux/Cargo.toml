@@ -65,6 +65,14 @@ name = "nfq-passthrough"
 path = "examples/nfq-passthrough.rs"
 required-features = ["nfqueue"]
 
+# ЭТАЛОН ДВИЖКА (#326, 05.09.2026). Форма, на которую показывают пальцем вместо того, чтобы
+# объяснять словами: `detect → filter → action → inject` без единого ручного индекса в байты.
+# Пример, а не тест: ему нужны живое ядро и права, то есть УСТРОЙСТВО.
+[[example]]
+name = "nfq-engine"
+path = "examples/nfq-engine.rs"
+required-features = ["nfqueue"]
+
 [[example]]
 name = "ct-dump"
 path = "examples/ct-dump.rs"

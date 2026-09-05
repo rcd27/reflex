@@ -21,18 +21,27 @@
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use reflex_core::backend::Sink;
+use reflex_core::builder::TcpBuilder;
+use reflex_core::capability::Toward;
 use reflex_core::certify::holding::{self, holds};
 use reflex_core::certify::injection::{self, FarEnd};
 use reflex_core::certify::marking::{self, marks, Reader};
 use reflex_core::certify::observation::{self, observes, watching, Origin};
 use reflex_core::certify::refusal::{self, refuses};
 use reflex_core::certify::rewriting::{self, rewrites};
+use reflex_core::certify::severing::{self, severs, NearEnd};
 use reflex_core::certify::Downstream;
 use reflex_core::certify::{carries, injects, Verdict};
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Held, Observed, Terminal};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend, Queued, Waited};
+use reflex_linux::rawsend::RawSender;
 use reflex_linux::AfPacketBackend;
+
+/// МЕТКА НА СВОИХ ИСХОДЯЩИХ. Без неё извещение вернулось бы в ту же очередь, и подопытный принялся
+/// бы разбирать собственный след как чужой трафик.
+const OURS: u32 = 0xBB;
 
 /// СОБСТВЕННЫЙ ETHERTYPE ИЗ ЭКСПЕРИМЕНТАЛЬНОГО ДИАПАЗОНА.
 ///
@@ -93,6 +102,24 @@ fn main() {
             "NfqueueBackend",
             certify_rewrites(queue, capture, nonce.as_bytes(), other.as_bytes(), target),
         ),
+        // ДВЕ ЗАПИСИ, А НЕ ОДНА: у обрыва две границы, и одним прибором они неразличимы.
+        [_, "sever", queue, far, near, nonce, toward] => announce(
+            "severs",
+            "NfqueueBackend",
+            certify_severs(queue, far, near, nonce.as_bytes(), toward),
+        ),
+        // ПРОБА РАЗГОВОРОМ — роль мира, и утверждает она ровно столько же, сколько соседняя:
+        // ничего. Отдельна от `probe`, потому что обрыв выразим только над TCP.
+        [_, "probe-tcp", target, nonce] => match probe_tcp(target, nonce.as_bytes()) {
+            Err(why) => {
+                eprintln!("проба не ушла: {why}");
+                2
+            }
+            Ok(()) => {
+                println!(r#"{{"role":"probe-tcp","sent":"{nonce}","to":"{target}"}}"#);
+                0
+            }
+        },
         // ТОЛЬКО ПОСЛАТЬ, НИЧЕГО НЕ УТВЕРЖДАЯ. Нужна, чтобы спросить мир без подопытного: если
         // датаграмма уходит, когда очередь НИКТО не слушает, — значит удержание мнимо, и все
         // вердикты закона были бы о другом.
@@ -122,6 +149,9 @@ fn main() {
             );
             eprintln!(
                 "  certify mark    <номер-очереди> <путь-к-записи> <метка> <нонс> <хост:порт>"
+            );
+            eprintln!(
+                "  certify sever   <номер-очереди> <запись-дальняя> <запись-ближняя> <нонс> <sender|receiver>"
             );
             eprintln!("  certify probe   <хост:порт> <нонс>");
             2
@@ -581,6 +611,126 @@ impl Downstream for Recorded<'_> {
     }
 }
 
+/// ПРОБА РАЗГОВОРОМ, А НЕ ДАТАГРАММОЙ — вход закона обрыва.
+///
+/// # Почему сырой сегмент, а не настоящее соединение
+///
+/// У обрыва есть форма — `RST` с номерами, которых ждёт сторона, — и построить её можно только из
+/// TCP. Датаграмма сюда не годится: [`CanSever::notice`] честно ответит «сказать нечем».
+///
+/// Настоящее соединение при этом не нужно и вредно: цель его не слушает, ответила бы своим `RST`,
+/// и на проводе оказались бы ДВА сброса — наш и чужой. Закон искал бы наш нонс среди чужих
+/// обрывов, то есть проверял бы мир, а не подопытного.
+///
+/// Сегмент несёт `PSH|ACK`, а не `SYN`: обрывают разговор, который уже идёт, и приветствие с
+/// именем — ровно такой пакет.
+fn probe_tcp(target: &str, nonce: &[u8]) -> Result<(), String> {
+    let to: std::net::SocketAddr = target
+        .parse()
+        .map_err(|_bad| format!("адрес цели не разобран: {target}"))?;
+
+    // СВОЙ АДРЕС СПРАШИВАЕТСЯ У ЯДРА, а не берётся из настроек: маршрут выбирает оно, и всякая
+    // наша догадка о том, с какого интерфейса уйдёт пакет, была бы вторым ответом на этот вопрос.
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|why| format!("проба: {why}"))?;
+    probe
+        .connect(to)
+        .map_err(|why| format!("проба не выбрала маршрут: {why}"))?;
+    let from = probe
+        .local_addr()
+        .map_err(|why| format!("свой адрес не добыт: {why}"))?;
+
+    let segment = TcpBuilder::new()
+        .flow(&reflex_core::types::Flow {
+            src: from,
+            dst: to,
+            protocol: reflex_core::types::Protocol::Tcp,
+        })
+        .seq(1000)
+        .ack(2000)
+        .flags(reflex_core::types::TcpFlags::PSH | reflex_core::types::TcpFlags::ACK)
+        .window(64240)
+        .payload(nonce)
+        .build();
+
+    // МЕТКИ НЕТ (`0`): её носят СВОИ исходящие подопытного, чтобы не вернуться в очередь. Клиент —
+    // мир, и его разговор обязан в очередь попасть.
+    let mut wire = RawSender::open(0).map_err(|why| format!("сокет пробы: {why}"))?;
+    wire.emit(<RawSender as reflex_core::CanInject>::inject(
+        InjectablePacket::Tcp(segment),
+    ))
+    .map_err(|why| format!("проба не ушла: {why}"))
+}
+
+/// ТА ЖЕ ЗАПИСЬ, НО СО СТОРОНЫ, ПОРОДИВШЕЙ РАЗГОВОР.
+///
+/// Механизм тот же, что у [`Downstream`], и это НЕ повод свести их в один трейт: разница не в
+/// способе чтения, а в ГРАНИЦЕ, на которой стоит прибор. Назови мы обе роли одним словом —
+/// перепутать их местами стало бы делом одной строки, а перепутанные, они дают ровно
+/// противоположный вердикт закона обрыва.
+impl NearEnd for Recorded<'_> {
+    fn arrived(&mut self) -> Vec<Vec<u8>> {
+        self.passed()
+    }
+}
+
+/// ЗАКОН ОБРЫВА НА ЖИВОЙ ОЧЕРЕДИ — ЕДИНСТВЕННЫЙ С ДВУМЯ СВИДЕТЕЛЯМИ.
+///
+/// # Пробу шлёт НЕ подопытный, и в этом всё отличие устройства
+///
+/// Соседние законы очереди посылают датаграмму сами ([`staged`]): им довольно одной границы, и
+/// подопытный волен быть заодно отправителем. Здесь границ две, и одна из них — сторона
+/// ОТПРАВИТЕЛЯ. Останься она тем же процессом, что и подопытный, «извещение дошло до клиента»
+/// заверял бы сам обрывающий — то есть свидетельство выдавал бы доставляющий, а это тот самый
+/// корень, ради снятия которого весь модуль и написан.
+///
+/// Поэтому здесь подопытный только ЖДЁТ, а пробу порождает отдельная роль в чужом сетевом
+/// пространстве. Порядок ведёт устройство (`run.sh`): ожидание поднимается раньше пробы.
+fn certify_severs(
+    queue: &str,
+    far: &str,
+    near: &str,
+    nonce: &[u8],
+    toward: &str,
+) -> Result<Verdict<severing::Broken, severing::Invalid>, String> {
+    // СТОРОНА НАЗЫВАЕТСЯ СНАРУЖИ, потому что знает её ВХОД, а не бэкенд. У стенда вход один и
+    // сторона известна: пробу шлёт клиент, значит сказать надо отправителю.
+    let side = match toward {
+        "sender" => Ok(Toward::Sender),
+        "receiver" => Ok(Toward::Receiver),
+        other => Err(format!("сторона не понята: {other} (sender|receiver)")),
+    }?;
+
+    let number: u16 = queue
+        .parse()
+        .map_err(|_bad| format!("номер очереди не число: {queue}"))?;
+    let mut dut = NfqueueBackend::open(number)?;
+
+    // СОКЕТ ИЗВЕЩЕНИЯ ПОДНИМАЕТСЯ ДО ОЖИДАНИЯ. Обнаружь мы его отсутствие после удержания —
+    // пришлось бы либо оборвать молча, либо отпустить уже задержанное; первое ломает мир,
+    // второе смазывает вердикт.
+    let mut wire = RawSender::open(OURS).map_err(|why| format!("сокет извещения: {why}"))?;
+
+    let held = await_queued(&mut dut, nonce)?;
+
+    let mut beyond = Recorded {
+        path: far,
+        taken: 0,
+    };
+    let mut behind = Recorded {
+        path: near,
+        taken: 0,
+    };
+
+    Ok(severs(
+        &mut dut,
+        &mut wire,
+        held,
+        side,
+        &mut beyond,
+        &mut behind,
+    ))
+}
+
 /// ЗАКОН ОТКАЗА НА ЖИВОЙ ОЧЕРЕДИ.
 fn certify_refuses(
     queue: &str,
@@ -728,9 +878,18 @@ fn counted() -> Result<usize, String> {
         .map_err(|why| format!("счётчик метки не прочитан: {why}"))?;
 
     let text = String::from_utf8_lossy(&shown.stdout);
+    // ЧИТАТЕЛЬ — ЭТО ПРАВИЛО СО СЧЁТЧИКОМ, а не первая строка со словами `meta mark`.
+    //
+    // Прежняя редакция брала `find(меta mark)` и на нём же останавливалась. Опора оказалась
+    // хрупкой к СОСЕДУ: стоило завести в той же таблице другое правило с меткой (цепь прохода
+    // закона обрыва — `meta mark != 0xbb queue num 1`, счётчика у неё нет), и чтение срывалось на
+    // нём. Закон метки объявлял «читателя нет» там, где читатель был, — то есть получал цвет не
+    // по своей причине. Найдено первым же прогоном с новым соседом.
+    //
+    // Правило-читатель по определению несёт `counter`; по нему и опознаётся.
     text.lines()
-        .find(|line| line.contains("meta mark"))
-        .and_then(|line| {
+        .filter(|line| line.contains("meta mark"))
+        .find_map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
             words
                 .iter()
