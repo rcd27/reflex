@@ -1,10 +1,10 @@
 use reflex_core::command::InjectablePacket;
-use reflex_core::held::{Held, Terminal};
+use reflex_core::Serves;
 use reflex_core::Tap;
 
 use super::backend::NfqueueBackend;
 use super::preflight;
-use super::terminal::{Answer, Queued};
+use super::terminal::Answer;
 use crate::rawsend::RawSender;
 
 /// ПАКЕТ ИЗ ОЧЕРЕДИ, ЖДУЩИЙ ВЕРДИКТА.
@@ -189,101 +189,113 @@ impl<H: NfqHandler> NfqPipeline<H> {
             }
         }
 
-        let msg = match self.nfq.recv() {
-            Ok(msg) => msg,
-            Err(e) => {
-                if e.contains("EAGAIN") || e.contains("Resource temporarily unavailable") {
-                    self.counts
-                        .again
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok(false);
-                }
-                self.counts
-                    .failed
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Err(e);
-            }
-        };
-        self.counts
-            .received
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let mark = msg.get_nfmark();
-        let at = std::time::Instant::now();
-
-        if mark == self.our_fwmark {
-            self.counts
-                .mark_skipped
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.answer(Held::new(Queued(msg), at).answered(Answer::Pass));
-            return Ok(true);
-        }
-        self.counts
-            .handed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        // ОДНА КОПИЯ ВМЕСТО ДВУХ. Прежде здесь стояли `msg.get_payload().to_vec()` и следом
-        // `payload.clone()`, причём первый результат дальше не употреблялся ни разу: две
-        // аллокации и два копирования полезной нагрузки на КАЖДЫЙ пакет вместо одного.
+        // ВЗЯТЬ И ОТВЕТИТЬ — ОДИН ШАГ (`Serves`). Прежде здесь стояли `recv()` и, двадцатью
+        // строками ниже, `apply()`: между ними лежал весь разбор, и «взял, но не ответил» было
+        // ошибкой, которую ловил только `#[must_use]` на решении — то есть предупреждением.
+        // Теперь носитель наружу не выходит вовсе, и держать его негде.
         //
-        // TODO(#326): убрать и оставшуюся — `NfqHandler` вправе читать байты заимствованием, но
-        // это правка его потребителей, а не пайпа.
-        // БАЙТЫ ЗАИМСТВУЮТСЯ У СООБЩЕНИЯ, и живёт заимствование ровно до вердикта — сообщение всё
-        // это время наше. Прежде здесь были две копии подряд, и первая не употреблялась ни разу.
-        let nfq_packet = NfqPacket {
-            payload: msg.get_payload(),
-            fwmark: mark,
-        };
+        // Поля разбираются НА ЧАСТИ намеренно: `serve` заимствует очередь, а решению нужны
+        // обработчик, отправитель и счётчики. Заимствуй мы `self` целиком, компилятор был бы прав,
+        // запретив это.
+        let Self {
+            nfq,
+            handler,
+            sender,
+            counts,
+            tap,
+            our_fwmark,
+            ..
+        } = self;
+        let ours = *our_fwmark;
 
-        let (verdict, injects) = self.handler.handle(&nfq_packet);
+        let outcome = nfq.serve(|held| {
+            counts
+                .received
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mark = held.carrier().0.get_nfmark();
 
-        for injectable in &injects {
-            let ip_bytes = injectable.serialize_ip();
-            if let Err(e) = self.sender.send(&ip_bytes) {
-                tracing::warn!("RawSender inject failed: {e}");
+            match mark == ours {
+                // КОРОТКОЕ ЗАМЫКАНИЕ ПО МЕТКЕ: пакет наш собственный, обработчику его не носим.
+                true => {
+                    counts
+                        .mark_skipped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Answer::Pass
+                }
+                false => {
+                    counts
+                        .handed
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    // БАЙТЫ ЗАИМСТВУЮТСЯ У СООБЩЕНИЯ, и живёт заимствование ровно до вердикта —
+                    // сообщение всё это время наше.
+                    //
+                    // TODO(#326): убрать оставшуюся копию в `NfqHandler` — он вправе читать байты
+                    // заимствованием, но это правка его потребителей, а не пайпа.
+                    let nfq_packet = NfqPacket {
+                        payload: held.seen(),
+                        fwmark: mark,
+                    };
+
+                    let (verdict, injects) = handler.handle(&nfq_packet);
+
+                    for injectable in &injects {
+                        let ip_bytes = injectable.serialize_ip();
+                        if let Err(e) = sender.send(&ip_bytes) {
+                            tracing::warn!("RawSender inject failed: {e}");
+                        }
+                    }
+
+                    if let Some(tap) = tap {
+                        let kind = match verdict {
+                            NfqVerdict::Accept | NfqVerdict::AcceptMarked(_) => {
+                                NfqVerdictKind::Accept
+                            }
+                            NfqVerdict::Drop => NfqVerdictKind::Drop,
+                            NfqVerdict::Modify(_) => NfqVerdictKind::Modify,
+                        };
+                        tap.emit(NfqStep {
+                            fwmark: mark,
+                            verdict: kind,
+                            injects: injects.len(),
+                        });
+                    }
+
+                    match verdict {
+                        NfqVerdict::Accept => Answer::Pass,
+                        NfqVerdict::Drop => Answer::Stop,
+                        NfqVerdict::Modify(new_payload) => Answer::Modified(new_payload),
+                        NfqVerdict::AcceptMarked(mark) => Answer::Marked(mark),
+                    }
+                }
             }
-        }
+        });
 
-        if let Some(tap) = &self.tap {
-            let kind = match verdict {
-                NfqVerdict::Accept | NfqVerdict::AcceptMarked(_) => NfqVerdictKind::Accept,
-                NfqVerdict::Drop => NfqVerdictKind::Drop,
-                NfqVerdict::Modify(_) => NfqVerdictKind::Modify,
-            };
-            tap.emit(NfqStep {
-                fwmark: mark,
-                verdict: kind,
-                injects: injects.len(),
-            });
-        }
-
-        // РЕШЕНИЕ СТАЛО ЗНАЧЕНИЕМ, а эффект — одним местом. Прежде здесь стояли четыре вызова,
-        // каждый со своим `let _ = queue.verdict(msg)` внутри: отказ ядра исчезал бесследно
-        // четырьмя способами.
-        let answer = match verdict {
-            NfqVerdict::Accept => Answer::Pass,
-            NfqVerdict::Drop => Answer::Stop,
-            NfqVerdict::Modify(new_payload) => Answer::Modified(new_payload),
-            NfqVerdict::AcceptMarked(mark) => Answer::Marked(mark),
-        };
-        self.answer(Held::new(Queued(msg), at).answered(answer));
-
-        Ok(true)
-    }
-
-    /// ОТДАТЬ РЕШЕНИЕ ЯДРУ И ЗАСЧИТАТЬ ОТКАЗ, ЕСЛИ ОН БЫЛ.
-    ///
-    /// Единственное место пайпа, где случается мир. Отказ не «логируется на всякий случай», а
-    /// становится ВЕЛИЧИНОЙ (`NfqCounts::not_taken`): разговор, чьё решение ядро отвергло, прежде
-    /// выглядел решённым, и отличить его было нечем.
-    fn answer(&mut self, answered: reflex_core::held::Answered<Queued, Answer>) {
-        match self.nfq.apply(answered) {
-            Ok(_delivered) => (),
-            Err(refused) => {
+        // ИСХОДЫ РАЗЛИЧАЮТСЯ ВСЕ ЧЕТЫРЕ. `Idle` здесь — это `EAGAIN` при готовом дескрипторе:
+        // работы не было. Слить его с отказом ядра значило бы вернуть беду #287, ради которой
+        // счётчики и заводились.
+        match outcome {
+            reflex_core::serves::Served::Idle => {
+                self.counts
+                    .again
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(false)
+            }
+            reflex_core::serves::Served::Blind => {
+                self.counts
+                    .blind
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(false)
+            }
+            reflex_core::serves::Served::Answered(Ok(_delivered)) => Ok(true),
+            // ОТКАЗ ЯДРА — ВЕЛИЧИНА, А НЕ ЗАПИСЬ В ЖУРНАЛ. Разговор, чьё решение ядро отвергло,
+            // прежде выглядел решённым, и отличить его было нечем.
+            reflex_core::serves::Served::Answered(Err(refused)) => {
                 self.counts
                     .not_taken
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tracing::warn!("ядро не приняло вердикт: {:?}", refused.why);
+                tracing::warn!("nfqueue verdict not taken: {:?}", refused.why);
+                Ok(true)
             }
         }
     }

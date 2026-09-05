@@ -20,6 +20,7 @@ pub mod held;
 pub mod interleave;
 pub mod meter;
 pub mod parse;
+pub mod serves;
 pub mod stack;
 pub mod step;
 // ЗАПИСАННЫЙ ПРОВОД — симуляционный источник (#295, срез 0). Под фичей, потому что читать файлы
@@ -56,4 +57,5 @@ pub use detector::{
 pub use ext::ReflexExt;
 pub use guard::{CleanupReport, TrafficGuard};
 pub use reactor::{drive, drive_observed, group_by_reactor, Reactor, Transition};
+pub use serves::Serves;
 pub use stack::{AnyProtocol, Dns, Http, Protocol, Quic, Reads, Tcp, Tls, Udp};

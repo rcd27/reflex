@@ -170,3 +170,44 @@ impl reflex_core::CanMark for NfqueueBackend {
         Answer::Marked(mark)
     }
 }
+
+/// ОЧЕРЕДЬ ВОШЛА В КАТЕГОРИЮ — НЕ КАК `Source`, А КАК [`Serves`] (#326, 05.09.2026).
+///
+/// `TODO(#326)` в `backend.rs` требовал «подключить очередь как `NfqSource`». Проба показала, что
+/// так нельзя: `Source::packets(&mut self)` держит бэкенд заимствованным, пока жив поток, а ответ
+/// требует второго `&mut`. Компилятор сказал `E0499` дословно.
+///
+/// Причина не в неловкости, а в природе: у `AfPacketBackend` два устройства (кольцо и инжектор),
+/// и `split()` их разводит; у очереди netlink-сокет один. `Source` описывает НАБЛЮДЕНИЕ — копию,
+/// которых может быть сколько угодно в полёте; очередь отдаёт ВЛАДЕНИЕ, и второго носителя не
+/// будет, пока не ответим на первый.
+///
+/// Здесь `serve` берёт и отвечает неделимо. Носитель наружу не выходит, поэтому «взял и забыл
+/// ответить» непредставимо по построению — держать его негде.
+impl reflex_core::Serves for NfqueueBackend {
+    fn serve<F>(
+        &mut self,
+        decide: F,
+    ) -> reflex_core::serves::Served<Delivered<Answer>, Refused<Answer, NotTaken>>
+    where
+        F: FnOnce(&reflex_core::held::Held<Queued>) -> Answer,
+    {
+        use reflex_core::serves::Served;
+        // НЕ ЖДЁМ ЗДЕСЬ. Ожидание — это часы, а у бэкенда их нет: сколько крутиться на пустой
+        // очереди, знает тот, кто ведёт цикл. `wait` остаётся отдельным и добровольным.
+        match self.wait(0) {
+            super::Waited::Blind => Served::Blind,
+            super::Waited::Idle => Served::Idle,
+            super::Waited::Ready => match self.recv() {
+                // Пусто при готовом дескрипторе — `EAGAIN`: работы не было, ждать есть на чем.
+                Err(_nothing) => Served::Idle,
+                Ok(message) => {
+                    let held =
+                        reflex_core::held::Held::new(Queued(message), std::time::Instant::now());
+                    let answer = decide(&held);
+                    Served::Answered(self.apply(held.answered(answer)))
+                }
+            },
+        }
+    }
+}
