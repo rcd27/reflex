@@ -1,4 +1,4 @@
-use nfq::{Queue, Verdict};
+use nfq::Queue;
 
 /// Set FD_CLOEXEC on all open file descriptors that are sockets.
 /// This prevents child processes (headless Chrome) from inheriting
@@ -135,38 +135,22 @@ impl NfqueueBackend {
     /// ПРОПУСТИТЬ, ПОСТАВИВ МЕТКУ. Метка уезжает в ядро ТЕМ ЖЕ сообщением, что и вердикт, — то
     /// есть решение и его исполнение неразделимы, и «пометили, но не донесли» непредставимо.
     ///
-    /// ПАКЕТ ПРОДОЛЖАЕТ ОБХОД С МЕСТА, ГДЕ ЕГО ЗАБРАЛИ: правило, читающее метку, обязано стоять
-    /// НИЖЕ по цепочке, чем правило очереди. Поставь его выше — метка встанет и не будет прочитана
-    /// никем, а прибор покажет «решение принято».
     /// ОТДАТЬ ВЕРДИКТ ЯДРУ И ВЕРНУТЬ, ПРИНЯЛО ЛИ ОНО.
     ///
-    /// Единственное место, где очередь отвечает миру. Заведено ради того, чтобы отказ ядра
-    /// перестал быть тишиной: четыре метода ниже выбрасывали его через `let _ =`, и «мы ответили»
-    /// было неотличимо от «ответ не доехал». Ими пользуется терминальный морфизм
-    /// (`super::terminal`), а сами они остаются для потребителей, ещё не переведённых на значения.
+    /// ЕДИНСТВЕННОЕ место, где очередь отвечает миру. Прежде их было четыре — `accept`,
+    /// `accept_marked`, `drop_packet`, `modify`, — и в каждом стоял `let _ = self.queue.verdict(msg)`:
+    /// отказ ядра исчезал бесследно четырьмя способами, а «мы ответили» было неотличимо от «ответ
+    /// не доехал».
+    ///
+    /// Все четыре сняты 05.09.2026 вместе с переводом пайпа на значения: решение приезжает
+    /// `Answered`, вердикт выбирается один раз в `super::terminal`, а отказ становится величиной
+    /// (`NfqCounts::not_taken`).
+    ///
+    /// ЗНАНИЕ, КОТОРОЕ ЖИЛО В `accept_marked` И НЕ ДОЛЖНО ПРОПАСТЬ: пакет продолжает обход С МЕСТА,
+    /// ГДЕ ЕГО ЗАБРАЛИ, поэтому правило, читающее метку, обязано стоять НИЖЕ по цепочке, чем
+    /// правило очереди. Поставь его выше — метка встанет и не будет прочитана никем, а прибор
+    /// покажет «решение принято». Записано у `Answer::Marked`.
     pub(crate) fn send_verdict(&mut self, msg: nfq::Message) -> std::io::Result<()> {
         self.queue.verdict(msg)
-    }
-
-    pub fn accept_marked(&mut self, mut msg: nfq::Message, mark: u32) {
-        msg.set_nfmark(mark);
-        msg.set_verdict(Verdict::Accept);
-        let _ = self.queue.verdict(msg);
-    }
-
-    pub fn accept(&mut self, mut msg: nfq::Message) {
-        msg.set_verdict(Verdict::Accept);
-        let _ = self.queue.verdict(msg);
-    }
-
-    pub fn drop_packet(&mut self, mut msg: nfq::Message) {
-        msg.set_verdict(Verdict::Drop);
-        let _ = self.queue.verdict(msg);
-    }
-
-    pub fn modify(&mut self, mut msg: nfq::Message, new_payload: &[u8]) {
-        msg.set_payload(new_payload.to_vec());
-        msg.set_verdict(Verdict::Accept);
-        let _ = self.queue.verdict(msg);
     }
 }

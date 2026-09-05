@@ -189,8 +189,8 @@ mod tests {
     fn sweep_возвращает_только_истёкшие() {
         let t0 = Instant::now();
         let mut set = ExpiringSet::new(TTL, 8);
-        set.mark("старая", t0);
-        set.mark("свежая", t0 + TTL / 2);
+        assert_eq!(set.mark("старая", t0), Marking::Fresh);
+        assert_eq!(set.mark("свежая", t0 + TTL / 2), Marking::Fresh);
 
         assert_eq!(set.sweep(t0 + TTL), vec!["старая"]);
         assert!(set.contains(&"свежая"), "свежую сносить нельзя");

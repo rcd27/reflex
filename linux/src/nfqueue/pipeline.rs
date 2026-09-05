@@ -1,8 +1,10 @@
 use reflex_core::command::InjectablePacket;
+use reflex_core::held::{Held, Terminal};
 use reflex_core::Tap;
 
 use super::backend::NfqueueBackend;
 use super::preflight;
+use super::terminal::{Answer, Queued};
 use crate::rawsend::RawSender;
 
 /// Packet from NFQUEUE with pending verdict.
@@ -57,6 +59,12 @@ pub struct NfqShared {
     pub again: std::sync::atomic::AtomicU64,
     pub failed: std::sync::atomic::AtomicU64,
     pub blind: std::sync::atomic::AtomicU64,
+    /// ОТВЕТОВ, КОТОРЫХ ЯДРО НЕ ПРИНЯЛО.
+    ///
+    /// Прежде этой величины не существовало, потому что и знания не было: отказ выбрасывался через
+    /// `let _ = queue.verdict(msg)` во всех четырёх вердиктах. «Мы ответили» было неотличимо от
+    /// «ответ не доехал», и разговор, чьё решение ядро отвергло, выглядел решённым.
+    pub not_taken: std::sync::atomic::AtomicU64,
 }
 
 impl NfqShared {
@@ -69,6 +77,7 @@ impl NfqShared {
             again: self.again.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             blind: self.blind.load(Ordering::Relaxed),
+            not_taken: self.not_taken.load(Ordering::Relaxed),
         }
     }
 }
@@ -88,6 +97,8 @@ pub struct NfqCounts {
     pub failed: u64,
     /// Ожиданий вслепую — дескриптор очереди добыть не удалось.
     pub blind: u64,
+    /// ОТВЕТОВ, ОТВЕРГНУТЫХ ЯДРОМ. Факт о МИРЕ: мы решили, а решение не доехало.
+    pub not_taken: u64,
 }
 
 /// Generic handler: receives packet, returns verdict + inject list.
@@ -189,21 +200,27 @@ impl<H: NfqHandler> NfqPipeline<H> {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let mark = msg.get_nfmark();
-        let payload = msg.get_payload().to_vec();
+        let at = std::time::Instant::now();
 
         if mark == self.our_fwmark {
             self.counts
                 .mark_skipped
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.nfq.accept(msg);
+            self.answer(Held::new(Queued(msg), at).answered(Answer::Pass));
             return Ok(true);
         }
         self.counts
             .handed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+        // ОДНА КОПИЯ ВМЕСТО ДВУХ. Прежде здесь стояли `msg.get_payload().to_vec()` и следом
+        // `payload.clone()`, причём первый результат дальше не употреблялся ни разу: две
+        // аллокации и два копирования полезной нагрузки на КАЖДЫЙ пакет вместо одного.
+        //
+        // TODO(#326): убрать и оставшуюся — `NfqHandler` вправе читать байты заимствованием, но
+        // это правка его потребителей, а не пайпа.
         let nfq_packet = NfqPacket {
-            payload: payload.clone(),
+            payload: msg.get_payload().to_vec(),
             fwmark: mark,
         };
 
@@ -229,14 +246,35 @@ impl<H: NfqHandler> NfqPipeline<H> {
             });
         }
 
-        match verdict {
-            NfqVerdict::Accept => self.nfq.accept(msg),
-            NfqVerdict::Drop => self.nfq.drop_packet(msg),
-            NfqVerdict::Modify(new_payload) => self.nfq.modify(msg, &new_payload),
-            NfqVerdict::AcceptMarked(mark) => self.nfq.accept_marked(msg, mark),
-        }
+        // РЕШЕНИЕ СТАЛО ЗНАЧЕНИЕМ, а эффект — одним местом. Прежде здесь стояли четыре вызова,
+        // каждый со своим `let _ = queue.verdict(msg)` внутри: отказ ядра исчезал бесследно
+        // четырьмя способами.
+        let answer = match verdict {
+            NfqVerdict::Accept => Answer::Pass,
+            NfqVerdict::Drop => Answer::Stop,
+            NfqVerdict::Modify(new_payload) => Answer::Modified(new_payload),
+            NfqVerdict::AcceptMarked(mark) => Answer::Marked(mark),
+        };
+        self.answer(Held::new(Queued(msg), at).answered(answer));
 
         Ok(true)
+    }
+
+    /// ОТДАТЬ РЕШЕНИЕ ЯДРУ И ЗАСЧИТАТЬ ОТКАЗ, ЕСЛИ ОН БЫЛ.
+    ///
+    /// Единственное место пайпа, где случается мир. Отказ не «логируется на всякий случай», а
+    /// становится ВЕЛИЧИНОЙ (`NfqCounts::not_taken`): разговор, чьё решение ядро отвергло, прежде
+    /// выглядел решённым, и отличить его было нечем.
+    fn answer(&mut self, answered: reflex_core::held::Answered<Queued, Answer>) {
+        match self.nfq.apply(answered) {
+            Ok(_delivered) => (),
+            Err(refused) => {
+                self.counts
+                    .not_taken
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!("ядро не приняло вердикт: {:?}", refused.why);
+            }
+        }
     }
 
     pub fn run_while(&mut self, alive: impl Fn() -> bool) -> Result<(), String> {
