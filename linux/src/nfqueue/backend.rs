@@ -1,5 +1,4 @@
 use nfq::{Queue, Verdict};
-use reflex_core::{CanDrop, CanHold, CanModify};
 
 /// Set FD_CLOEXEC on all open file descriptors that are sockets.
 /// This prevents child processes (headless Chrome) from inheriting
@@ -73,8 +72,6 @@ pub struct NfqueueBackend {
 // `CanHold`/`CanModify`/`CanDrop` сегодня без предмета и снимутся тем же способом.
 // TODO(#326): подключить очередь к категории — `NfqSource`/`DesyncSink` из целевого `main()`.
 // До тех пор способности этого типа не заявляются вовсе.
-impl CanHold for NfqueueBackend {}
-impl CanModify for NfqueueBackend {}
 
 impl NfqueueBackend {
     pub fn open(queue_num: u16) -> Result<Self, String> {

@@ -1,5 +1,3 @@
-use reflex_core::{CanDrop, CanHold, CanModify};
-
 use super::backend::NfqueueBackend;
 use crate::capture::Capture;
 use crate::inject::Injector;
@@ -16,8 +14,6 @@ pub struct NfqAfPacketBackend {
 // именно поэтому снятие здесь особенно уместно: способность выглядела обеспеченной полем, но
 // категория до неё не дотягивалась.
 // TODO(#326): подключить к категории вместе с `NfqueueBackend`.
-impl CanHold for NfqAfPacketBackend {}
-impl CanModify for NfqAfPacketBackend {}
 
 impl NfqAfPacketBackend {
     pub fn open(capture_iface: &str, queue_num: u16, snaplen: usize) -> Result<Self, String> {

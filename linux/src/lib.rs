@@ -20,7 +20,7 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 #[cfg(feature = "tc")]
-use reflex_core::{CanDrop, CanModify};
+use reflex_core::CanDrop;
 use reflex_core::{CanInject, CanObserve};
 
 pub use capture::Capture;
@@ -207,8 +207,13 @@ impl CanDrop for TcAfPacketBackend {
         TcCommand::Clear(flow)
     }
 }
-#[cfg(feature = "tc")]
-impl CanModify for TcAfPacketBackend {}
+// `CanModify` НЕ ЗАЯВЛЯЕТСЯ, И ЭТО ЗАМЕР, А НЕ ЗАБЫВЧИВОСТЬ (05.09.2026). У BPF-программы нет
+// карты с байтами для подмены: `ACTION_TABLE`, `STEER_*`, `CLIENT_MACS`, `RETURN_*` — всё. То
+// единственное место, где кадр переписывается (`bpf_skb_store_bytes`, вписывающий ethernet-
+// заголовок в пути заворота), есть механика лифта, а не команда пользователя.
+//
+// Прежнее заявление было НЕПРАВДИВЫМ — в отличие от `CanDrop`, который был правдив и лишь
+// невыразим. Пустой маркер эти два состояния не различал.
 
 #[cfg(feature = "tc")]
 impl TcAfPacketBackend {
