@@ -7,6 +7,10 @@ license = "GPL-3.0-only"
 
 [features]
 default = []
+# certify: сертификация калитки на живом ядре. Тянет чтение записи из ядра (`reflex-core/pcap`) —
+# свидетелем служит `tshark`, и его вывод надо уметь прочитать. Под фичей, потому что нужна ровно
+# устройству, а не всякому потребителю библиотеки.
+certify = ["reflex-core/pcap"]
 tc = ["dep:aya", "dep:reflex-linux-common"]
 nfqueue = ["dep:nfq"]
 # conntrack: чтение счётчиков ядра по каждому разговору через ctnetlink. Зависимостей сверх `libc`
@@ -41,6 +45,13 @@ clap = { version = "4", features = ["derive"] }
 rand = "0.9"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros", "test-util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+# СЕРТИФИКАЦИЯ КАЛИТКИ. Пример, а не тест: он требует живого ядра и прав, то есть УСТРОЙСТВА, и
+# `cargo test` его запускать не должен — иначе на машине без прав он краснел бы, ничего не проверив.
+[[example]]
+name = "certify"
+path = "examples/certify.rs"
+required-features = ["certify"]
 
 [[example]]
 name = "l2_steer"
