@@ -21,6 +21,7 @@ pub mod step;
 pub mod pcap;
 pub mod reactor;
 pub mod role;
+pub mod sight;
 pub mod stream;
 pub mod tap;
 pub mod tempo;
