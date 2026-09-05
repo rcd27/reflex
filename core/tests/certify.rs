@@ -12,7 +12,8 @@
 
 use reflex_core::backend::Sink;
 use reflex_core::capability::CanInject;
-use reflex_core::certify::{injects, Broken, FarEnd, Invalid, Verdict};
+use reflex_core::certify::injection::{injects, Broken, FarEnd, Invalid};
+use reflex_core::certify::Verdict;
 use reflex_core::command::InjectablePacket;
 use std::cell::RefCell;
 use std::rc::Rc;

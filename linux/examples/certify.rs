@@ -20,6 +20,9 @@
 
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
+use reflex_core::certify::injection::{self, FarEnd};
+use reflex_core::certify::observation::{self, observes, watching, Origin};
 use reflex_core::certify::{carries, injects, Verdict};
 use reflex_core::command::InjectablePacket;
 use reflex_linux::AfPacketBackend;
@@ -45,38 +48,72 @@ const OUR_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x0C, 0xE7, 0x01];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let (iface, capture, nonce) = match args.as_slice() {
-        [_, iface, capture, nonce] => (iface.clone(), capture.clone(), nonce.clone()),
-        _ => {
-            eprintln!("употребление: certify <интерфейс> <путь-к-записи> <нонс>");
-            std::process::exit(2);
+    let code = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [_, "inject", iface, capture, nonce] => {
+            announce("injects", certify_injects(iface, capture, nonce.as_bytes()))
+        }
+        [_, "observe", iface, nonce, report, window] => announce(
+            "observes",
+            certify_observes(iface, nonce.as_bytes(), report, window),
+        ),
+        // РОЛЬ МИРА, А НЕ ЗАКОН. Отправитель ничего не утверждает о подопытном — он порождает
+        // трафик и оставляет отчёт о том, сколько ушло. Вердикт выносит тот, кого проверяют.
+        [_, "emit", iface, nonce, count, report] => {
+            emit_world(iface, nonce.as_bytes(), count, report)
+        }
+        other => {
+            eprintln!("не понято: {other:?}");
+            eprintln!("употребление:");
+            eprintln!("  certify inject  <интерфейс> <путь-к-записи> <нонс>");
+            eprintln!("  certify observe <интерфейс> <нонс> <путь-к-отчёту> <окно-мс>");
+            eprintln!("  certify emit    <интерфейс> <нонс> <сколько> <путь-к-отчёту>");
+            2
         }
     };
+    std::process::exit(code);
+}
 
-    match certify_injects(&iface, &capture, nonce.as_bytes()) {
+/// ВЕРДИКТ ОДНОЙ ФОРМОЙ ДЛЯ ВСЕХ ЗАКОНОВ.
+///
+/// Печать вынесена сюда, а не переписана под каждый закон, ровно потому, что `Verdict` обобщён:
+/// причины у законов свои, а три состояния — общие. Читателю отчёта (человеку или скрипту) не
+/// придётся знать, какой закон он читает, чтобы понять, был ли вердикт вообще.
+fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
+    law: &str,
+    outcome: Result<Verdict<B, I>, String>,
+) -> i32 {
+    match outcome {
+        // Беда устройства, до закона дело не дошло. Тот же код, что у `Invalid`: вердикта нет ни
+        // там, ни здесь, и разница — в том, кто это установил.
         Err(why) => {
             println!(
-                r#"{{"law":"injects","backend":"AfPacketBackend","verdict":"invalid","why":"{why}"}}"#
+                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"invalid","why":"{why}"}}"#
             );
-            std::process::exit(2);
+            2
         }
         Ok(Verdict::Held) => {
-            println!(r#"{{"law":"injects","backend":"AfPacketBackend","verdict":"held"}}"#);
+            println!(r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"held"}}"#);
+            0
         }
         Ok(Verdict::Broken(because)) => {
             println!(
-                r#"{{"law":"injects","backend":"AfPacketBackend","verdict":"broken","because":"{because:?}"}}"#
+                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"broken","because":"{because:?}"}}"#
             );
-            std::process::exit(1);
+            1
         }
-        // ВЕРДИКТА НЕТ, И ЭТО ГОВОРИТ САМ ЗАКОН. Прежде недействительность вычислялась здесь, в
+        // ВЕРДИКТА НЕТ, И ЭТО ГОВОРИТ САМ ЗАКОН. Прежде недействительность вычислялась в
         // устройстве, вторым чтением записи; закон её не знал, и всякий следующий закон изобретал
         // бы её заново по-своему.
         Ok(Verdict::Invalid(why)) => {
             println!(
-                r#"{{"law":"injects","backend":"AfPacketBackend","verdict":"invalid","why":"{why:?}"}}"#
+                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"invalid","why":"{why:?}"}}"#
             );
-            std::process::exit(2);
+            2
         }
     }
 }
@@ -86,7 +123,11 @@ fn main() {
 /// ПРОГОН, В КОТОРОМ ПРИБОР МОЛЧАЛ, НЕДЕЙСТВИТЕЛЕН, А НЕ ЧИСТ. Отличать «свидетель не работал» от
 /// «подопытный солгал» — половина смысла всей затеи, и держат это различие двое: маяк доказывает,
 /// что прибор жив, а [`Verdict::Invalid`] называет случай, когда он всё-таки нем.
-fn certify_injects(iface: &str, capture: &str, nonce: &[u8]) -> Result<Verdict, String> {
+fn certify_injects(
+    iface: &str,
+    capture: &str,
+    nonce: &[u8],
+) -> Result<Verdict<injection::Broken, injection::Invalid>, String> {
     let mut dut = AfPacketBackend::open(iface, 65535)?;
     let frame = frame_with(nonce);
     let mut far_end = Recording {
@@ -153,7 +194,7 @@ struct Recording<'a> {
     trouble: Option<String>,
 }
 
-impl reflex_core::certify::FarEnd for Recording<'_> {
+impl FarEnd for Recording<'_> {
     fn arrived(&mut self) -> Vec<Vec<u8>> {
         match read_capture(self.path, &self.awaited) {
             Err(why) => {
@@ -216,4 +257,154 @@ fn read_capture(path: &str, awaited: &[u8]) -> Result<Vec<Vec<u8>>, String> {
             }
         }
     }
+}
+
+// --- ЗАКОН НАБЛЮДЕНИЯ: РОЛИ ПЕРЕВЁРНУТЫ ---
+
+/// ЗАКОН НАБЛЮДЕНИЯ НА ЖИВОМ ЯДРЕ.
+///
+/// # Кто здесь кто
+///
+/// У инъекции подопытный отправлял, а свидетельствовал `dumpcap` в чужом сетевом пространстве.
+/// Здесь наоборот: подопытный СЛУШАЕТ, а свидетельствует соседний контейнер — он порождает трафик
+/// и оставляет отчёт о том, сколько кадров ушло по счётчику ядра.
+///
+/// # Окно задаёт УСТРОЙСТВО, а не закон
+///
+/// Поток `AfPacketBackend` бесконечен, и всякий потолок есть ЧАСЫ. Закон часов не имеет намеренно
+/// — иначе он мерил бы время, а не способность, — поэтому обрезка стоит здесь, где часы известны.
+fn certify_observes(
+    iface: &str,
+    nonce: &[u8],
+    report: &str,
+    window: &str,
+) -> Result<Verdict<observation::Broken, observation::Invalid>, String> {
+    let millis: u64 = window
+        .parse()
+        .map_err(|_bad| format!("окно не число: {window}"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .map_err(|why| format!("рантайм: {why}"))?;
+
+    runtime.block_on(async {
+        let mut dut = AfPacketBackend::open(iface, 65535)?;
+        let mut world = Reported { path: report };
+        // ПОТОК СОЗДАЁТСЯ ДО ЗАКОНА, а мир порождает трафик внутри него. Иначе проверялось бы,
+        // успел ли наблюдатель подписаться, — вопрос законный, но другой.
+        let seen = watching(&mut dut).take_until(tokio::time::sleep(Duration::from_millis(millis)));
+        Ok(observes(&mut world, nonce, seen).await)
+    })
+}
+
+/// МИР, ЧЕЙ ОТЧЁТ ЛЕЖИТ В ОБЩЕМ ТОМЕ.
+///
+/// Порождает трафик не он, а соседний контейнер: `Origin::emit` здесь ЖДЁТ чужого отчёта. Форма
+/// трейта это позволяет — он спрашивает «сколько ушло», а не «пошли и скажи».
+struct Reported<'a> {
+    path: &'a str,
+}
+
+impl Origin for Reported<'_> {
+    fn emit(&mut self, _nonce: &[u8]) -> usize {
+        match await_report(self.path) {
+            // ОТЧЁТА НЕТ ⟹ МИР МОЛЧАЛ. Ноль здесь честен: закон обязан сказать `WorldSilent`, а не
+            // предъявить наблюдателю, что он не увидел того, чего не посылали.
+            None => 0,
+            Some((asked, tx_delta)) => match tx_delta >= asked {
+                true => asked,
+                // СЧЁТЧИК ЯДРА — ВЕТО, А НЕ ИСТОЧНИК ЧИСЛА. Он считает ВЕСЬ трафик интерфейса, и
+                // взять его дельту за `sent` значило бы записать чужой фоновый кадр в наши — то
+                // есть обвинить честного наблюдателя в потере. Поэтому число даёт отправитель, а
+                // независимый прибор может его лишь ОПРОВЕРГНУТЬ: ушло меньше обещанного —
+                // прогон недействителен. ЦЕНА НАЗВАНА: отправитель, пославший БОЛЬШЕ, чем сказал,
+                // так не ловится.
+                false => 0,
+            },
+        }
+    }
+}
+
+/// ОТЧЁТ МИРА: сколько кадров просили и на сколько сдвинулся счётчик ядра.
+///
+/// Ждём с потолком: отправитель стартует после наблюдателя, и файла в первый миг ещё нет. Формат
+/// — два числа через пробел; ни serde, ни json здесь не нужны, а лишняя зависимость в устройстве
+/// сертификации означала бы ещё один чужой механизм между наблюдением и вердиктом.
+fn await_report(path: &str) -> Option<(usize, usize)> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match parse_report(&text) {
+                Some(pair) => return Some(pair),
+                None => match Instant::now() >= deadline {
+                    true => return None,
+                    false => std::thread::sleep(Duration::from_millis(50)),
+                },
+            },
+            Err(_not_yet) => match Instant::now() >= deadline {
+                true => return None,
+                false => std::thread::sleep(Duration::from_millis(50)),
+            },
+        }
+    }
+}
+
+fn parse_report(text: &str) -> Option<(usize, usize)> {
+    match text.split_whitespace().collect::<Vec<_>>().as_slice() {
+        [asked, delta] => match (asked.parse(), delta.parse()) {
+            (Ok(asked), Ok(delta)) => Some((asked, delta)),
+            (_asked, _delta) => None,
+        },
+        _incomplete => None,
+    }
+}
+
+/// РОЛЬ МИРА: ПОРОДИТЬ ТРАФИК И ОТЧИТАТЬСЯ, СКОЛЬКО УШЛО.
+///
+/// Отчёт содержит ОБА числа — сколько просили и на сколько сдвинулся счётчик ядра, — потому что у
+/// них разная природа: первое наше слово, второе показание прибора. Свести их в одно значило бы
+/// потерять ровно то, чем они друг друга проверяют.
+fn emit_world(iface: &str, nonce: &[u8], count: &str, report: &str) -> i32 {
+    match emit_frames(iface, nonce, count) {
+        Err(why) => {
+            eprintln!("мир не смог: {why}");
+            2
+        }
+        Ok((asked, delta)) => match std::fs::write(report, format!("{asked} {delta}")) {
+            Err(why) => {
+                eprintln!("отчёт не записан: {why}");
+                2
+            }
+            Ok(()) => {
+                println!(r#"{{"role":"world","asked":{asked},"tx_delta":{delta}}}"#);
+                0
+            }
+        },
+    }
+}
+
+fn emit_frames(iface: &str, nonce: &[u8], count: &str) -> Result<(usize, usize), String> {
+    let asked: usize = count
+        .parse()
+        .map_err(|_bad| format!("сколько — не число: {count}"))?;
+    let world = AfPacketBackend::open(iface, 65535)?;
+    let before = tx_packets(iface)?;
+
+    (0..asked).try_fold((), |(), _n| world.inject(&frame_with(nonce)))?;
+
+    let after = tx_packets(iface)?;
+    Ok((asked, after.saturating_sub(before)))
+}
+
+/// СЧЁТЧИК ЯДРА — ПРИБОР ИНОЙ ПРИРОДЫ.
+///
+/// Ни libpcap, ни наш бэкенд к нему отношения не имеют: это учёт самого сетевого устройства. Тем
+/// он и ценен — заявление «я отправил» перестаёт доказываться тем же кодом, что отправлял.
+fn tx_packets(iface: &str) -> Result<usize, String> {
+    let path = format!("/sys/class/net/{iface}/statistics/tx_packets");
+    std::fs::read_to_string(&path)
+        .map_err(|why| format!("счётчик {path} не прочитан: {why}"))?
+        .trim()
+        .parse()
+        .map_err(|_bad| format!("счётчик {path} не число"))
 }
