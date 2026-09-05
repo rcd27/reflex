@@ -83,9 +83,16 @@ services:
       #
       # `output` намеренно: пакет заворачивается ДО того, как покинет машину, поэтому подопытный
       # может породить его сам — а прошёл ли он, знает только сосед в чужом netns.
+      #
+      # ЧИТАТЕЛЬ МЕТКИ СТОИТ НИЖЕ ОЧЕРЕДИ, и в этом весь смысл: `postrouting` с приоритетом 100
+      # проходится ПОСЛЕ `output` с приоритетом 0. Пакет продолжает обход с места, где его забрали,
+      # поэтому читатель, поставленный выше, метку не увидит никогда — а прибор покажет «решение
+      # принято». Ровно эту граблю и проверяет закон метки.
       - "nft add table inet certify &&
          nft 'add chain inet certify out { type filter hook output priority 0; }' &&
          nft add rule inet certify out udp dport 5333 queue num 0 &&
+         nft 'add chain inet certify post { type filter hook postrouting priority 100; }' &&
+         nft add rule inet certify post meta mark 0x2a counter &&
          sleep infinity"
 
 networks:

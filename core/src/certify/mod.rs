@@ -37,12 +37,14 @@
 
 pub mod holding;
 pub mod injection;
+pub mod marking;
 pub mod observation;
 pub mod refusal;
 pub mod rewriting;
 
 pub use holding::holds;
 pub use injection::injects;
+pub use marking::marks;
 pub use observation::observes;
 pub use refusal::refuses;
 pub use rewriting::rewrites;

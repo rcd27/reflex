@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use reflex_core::certify::holding::{self, holds};
 use reflex_core::certify::injection::{self, FarEnd};
+use reflex_core::certify::marking::{self, marks, Reader};
 use reflex_core::certify::observation::{self, observes, watching, Origin};
 use reflex_core::certify::refusal::{self, refuses};
 use reflex_core::certify::rewriting::{self, rewrites};
@@ -77,6 +78,11 @@ fn main() {
             "NfqueueBackend",
             certify_holds(queue, capture, nonce.as_bytes(), target),
         ),
+        [_, "mark", queue, capture, mark, nonce, target] => announce(
+            "marks",
+            "NfqueueBackend",
+            certify_marks(queue, capture, mark, nonce.as_bytes(), target),
+        ),
         [_, "refuse", queue, capture, nonce, target] => announce(
             "refuses",
             "NfqueueBackend",
@@ -113,6 +119,9 @@ fn main() {
             eprintln!("  certify refuse  <номер-очереди> <путь-к-записи> <нонс> <хост:порт>");
             eprintln!(
                 "  certify rewrite <номер-очереди> <путь-к-записи> <нонс> <подмена> <хост:порт>"
+            );
+            eprintln!(
+                "  certify mark    <номер-очереди> <путь-к-записи> <метка> <нонс> <хост:порт>"
             );
             eprintln!("  certify probe   <хост:порт> <нонс>");
             2
@@ -664,4 +673,70 @@ fn swapped(packet: &[u8], nonce: &[u8], other: &[u8]) -> Vec<u8> {
             _other => *byte,
         })
         .collect()
+}
+
+/// ЗАКОН МЕТКИ НА ЖИВОЙ ОЧЕРЕДИ.
+///
+/// Свидетелей двое, и они разной природы: `dumpcap` смотрит на провод и отвечает, прошёл ли пакет;
+/// счётчик правила `meta mark` отвечает, прочитана ли метка. На провод метка не выходит вовсе, и
+/// первый о ней сказать не может ничего — потому второй и понадобился.
+fn certify_marks(
+    queue: &str,
+    capture: &str,
+    mark: &str,
+    nonce: &[u8],
+    target: &str,
+) -> Result<Verdict<marking::Broken, marking::Invalid>, String> {
+    let value = u32::from_str_radix(mark.trim_start_matches("0x"), 16)
+        .map_err(|_bad| format!("метка не шестнадцатеричное число: {mark}"))?;
+    let (mut dut, held, mut below) = staged(queue, capture, nonce, target)?;
+    let mut reader = Counter { seen: counted()? };
+    Ok(marks(&mut dut, held, value, &mut below, &mut reader))
+}
+
+/// ЧИТАТЕЛЬ МЕТКИ — СЧЁТЧИК ПРАВИЛА, СТОЯЩЕГО НИЖЕ ОЧЕРЕДИ.
+///
+/// Отвечает ДЕЛЬТОЙ, а не полным числом: правило живёт весь прогон стенда, и абсолютное значение
+/// помнит все прошлые прогоны. Спроси закон «сколько всего», и первый же повтор дал бы `held`
+/// вакуумно — на чужой, вчерашней метке.
+struct Counter {
+    seen: usize,
+}
+
+impl Reader for Counter {
+    fn read(&mut self, _mark: u32) -> usize {
+        match counted() {
+            Err(_blind) => 0,
+            Ok(now) => now.saturating_sub(self.seen),
+        }
+    }
+}
+
+/// СКОЛЬКО ПАКЕТОВ ПРОЧИТАЛО ПРАВИЛО МЕТКИ.
+///
+/// Читается у `nft` — чужого механизма, который метку и придумал. Свой счётчик здесь был бы нашим
+/// же словом о себе: мы утверждаем, что метка доехала до читателя, и спрашиваем об этом читателя.
+///
+/// ЧИТАЕТСЯ ВСЯ ТАБЛИЦА, А НЕ ОДНА ЦЕПОЧКА. Первая редакция смотрела только в `post`, и
+/// обезоруживание переносом читателя ВЫШЕ очереди дало бы `MarkUnread` по НЕВЕРНОЙ причине —
+/// «правила не нашли» вместо «правило не сработало». Проба, дающая ожидаемый цвет не по своей
+/// причине, ничего не проверяет; этот день уже ловил такое на упавшем резолве имени.
+fn counted() -> Result<usize, String> {
+    let shown = std::process::Command::new("nft")
+        .args(["list", "table", "inet", "certify"])
+        .output()
+        .map_err(|why| format!("счётчик метки не прочитан: {why}"))?;
+
+    let text = String::from_utf8_lossy(&shown.stdout);
+    text.lines()
+        .find(|line| line.contains("meta mark"))
+        .and_then(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            words
+                .iter()
+                .position(|word| *word == "packets")
+                .and_then(|at| words.get(at + 1))
+                .and_then(|number| number.parse().ok())
+        })
+        .ok_or_else(|| "правило метки не найдено — читателя нет".to_string())
 }
