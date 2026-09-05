@@ -1,0 +1,37 @@
+# УСТРОЙСТВО ДЛЯ СЕРТИФИКАЦИИ ОЧЕРЕДИ — ОТДЕЛЬНЫЙ ОБРАЗ, И ЭТО НЕ ДУБЛИРОВАНИЕ.
+#
+# Соседний `Dockerfile` минимален НАМЕРЕННО: отсутствие в нём `nft`, `iproute2` и загрузчика eBPF
+# есть отрицательное свидетельство — если закон инъекции там держится, значит `AfPacketBackend` не
+# опирается на них тайком. Доставь мы `nft` туда, свидетельство исчезло бы молча, и вместе с ним
+# единственная проверка того, что калитка обходится заявленным.
+#
+# Очереди же netfilter нужен по природе: без правила, заворачивающего пакет, удерживать нечего.
+# Поэтому здесь СВОЙ образ и СВОИ права (`NET_ADMIN`), и граница между «обходится сама» и «требует
+# ядра» проходит по границе образов, а не по честному слову.
+
+FROM rust:1-slim-trixie AS build
+WORKDIR /src
+
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libnetfilter-queue-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY core/ ./core/
+COPY runtime/ ./runtime/
+COPY linux/ ./linux/
+COPY linux-common/ ./linux-common/
+COPY os/ ./os/
+COPY Cargo.toml Cargo.lock ./
+
+RUN cargo build --release -p reflex-linux --features certify --example certify
+
+FROM debian:stable-slim
+ENV DEBIAN_FRONTEND=noninteractive
+
+# `nftables` — ЧУЖОЙ МЕХАНИЗМ, И ОН ЗДЕСЬ НЕ ПОДОПЫТНЫЙ, А ЧАСТЬ МИРА. Правило, заворачивающее
+# пакет в очередь, ставит он; закон проверяет НЕ его, а то, ждёт ли ядро нашего решения.
+RUN apt-get update && apt-get install -y --no-install-recommends nftables libnetfilter-queue1 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /src/target/release/examples/certify /usr/local/bin/certify
+
+CMD ["sleep", "infinity"]

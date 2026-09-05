@@ -49,7 +49,7 @@ services:
       # подопытного, и при лживом бэкенде запись оказывалась пуста — «прибор мёртв» становилось
       # неотличимо от «подопытный солгал». Маяк (широковещательная датаграмма на порт `discard`)
       # строится ЯДРОМ, а не проверяемым бэкендом, и потому доходит независимо от его исправности.
-      - "certify-snif -P -i eth0 -w /shared/far.pcap -f 'ether proto 0x88b5 or udp port 9'"
+      - "certify-snif -P -i eth0 -w /shared/far.pcap -f 'ether proto 0x88b5 or udp port 9 or udp port 5333'"
 
   # ПОДОПЫТНЫЙ. Единственный, кто что-то утверждает: вердикт считает он и печатает строкой JSON.
   dut:
@@ -57,6 +57,36 @@ services:
     container_name: certify-dut
     depends_on: [witness]
     command: ["sleep", "infinity"]
+
+  # ОЧЕРЕДЬ ЯДРА — ЕДИНСТВЕННЫЙ БЭКЕНД, НА КОТОРОМ РАБОТАЕТ ПРОДУКТ, и потому у неё СВОЙ образ.
+  #
+  # Соседи собраны из минимального: отсутствие в них `nft` есть отрицательное свидетельство того,
+  # что `AfPacketBackend` обходится заявленным. Очереди netfilter нужен по природе — без правила,
+  # заворачивающего пакет, удерживать нечего, — и `NET_ADMIN` даётся ТОЛЬКО ей. Граница между
+  # «обходится сама» и «требует ядра» проходит по границе образов, а не по честному слову.
+  queue:
+    build:
+      context: ../../..
+      dockerfile: linux/tests/certify/Dockerfile.queue
+    container_name: certify-queue
+    cap_add: [NET_ADMIN, NET_RAW]
+    volumes:
+      - shared:/shared
+    networks: [segment]
+    depends_on: [witness]
+    command:
+      - sh
+      - -c
+      # ПРАВИЛО СТАВИТСЯ ЗДЕСЬ, А НЕ В БИНАРЕ, и это разделение по существу: `nft` — часть МИРА, а
+      # не подопытный. Закон проверяет не то, умеем ли мы звать чужую утилиту, а ждёт ли ядро
+      # нашего решения.
+      #
+      # `output` намеренно: пакет заворачивается ДО того, как покинет машину, поэтому подопытный
+      # может породить его сам — а прошёл ли он, знает только сосед в чужом netns.
+      - "nft add table inet certify &&
+         nft 'add chain inet certify out { type filter hook output priority 0; }' &&
+         nft add rule inet certify out udp dport 5333 queue num 0 &&
+         sleep infinity"
 
 networks:
   # Обычная сеть, не `internal`: при `internal` хозяин дропает трафик, и сегмент не видит ничего

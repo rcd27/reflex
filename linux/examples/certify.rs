@@ -21,10 +21,13 @@
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
+use reflex_core::certify::holding::{self, holds, Downstream};
 use reflex_core::certify::injection::{self, FarEnd};
 use reflex_core::certify::observation::{self, observes, watching, Origin};
 use reflex_core::certify::{carries, injects, Verdict};
 use reflex_core::command::InjectablePacket;
+use reflex_core::held::{Held, Observed, Terminal};
+use reflex_linux::nfqueue::{Answer, NfqueueBackend, Queued, Waited};
 use reflex_linux::AfPacketBackend;
 
 /// СОБСТВЕННЫЙ ETHERTYPE ИЗ ЭКСПЕРИМЕНТАЛЬНОГО ДИАПАЗОНА.
@@ -54,15 +57,36 @@ fn main() {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        [_, "inject", iface, capture, nonce] => {
-            announce("injects", certify_injects(iface, capture, nonce.as_bytes()))
-        }
+        [_, "inject", iface, capture, nonce] => announce(
+            "injects",
+            "AfPacketBackend",
+            certify_injects(iface, capture, nonce.as_bytes()),
+        ),
         [_, "observe", iface, nonce, report, window] => announce(
             "observes",
+            "AfPacketBackend",
             certify_observes(iface, nonce.as_bytes(), report, window),
         ),
         // РОЛЬ МИРА, А НЕ ЗАКОН. Отправитель ничего не утверждает о подопытном — он порождает
         // трафик и оставляет отчёт о том, сколько ушло. Вердикт выносит тот, кого проверяют.
+        [_, "hold", queue, capture, nonce, target] => announce(
+            "holds",
+            "NfqueueBackend",
+            certify_holds(queue, capture, nonce.as_bytes(), target),
+        ),
+        // ТОЛЬКО ПОСЛАТЬ, НИЧЕГО НЕ УТВЕРЖДАЯ. Нужна, чтобы спросить мир без подопытного: если
+        // датаграмма уходит, когда очередь НИКТО не слушает, — значит удержание мнимо, и все
+        // вердикты закона были бы о другом.
+        [_, "probe", target, nonce] => match probe(target, nonce.as_bytes()) {
+            Err(why) => {
+                eprintln!("проба не ушла: {why}");
+                2
+            }
+            Ok(()) => {
+                println!(r#"{{"role":"probe","sent":"{nonce}","to":"{target}"}}"#);
+                0
+            }
+        },
         [_, "emit", iface, nonce, count, report] => {
             emit_world(iface, nonce.as_bytes(), count, report)
         }
@@ -72,19 +96,27 @@ fn main() {
             eprintln!("  certify inject  <интерфейс> <путь-к-записи> <нонс>");
             eprintln!("  certify observe <интерфейс> <нонс> <путь-к-отчёту> <окно-мс>");
             eprintln!("  certify emit    <интерфейс> <нонс> <сколько> <путь-к-отчёту>");
+            eprintln!("  certify hold    <номер-очереди> <путь-к-записи> <нонс> <хост:порт>");
+            eprintln!("  certify probe   <хост:порт> <нонс>");
             2
         }
     };
     std::process::exit(code);
 }
 
-/// ВЕРДИКТ ОДНОЙ ФОРМОЙ ДЛЯ ВСЕХ ЗАКОНОВ.
+/// ВЕРДИКТ ОДНОЙ ФОРМОЙ ДЛЯ ВСЕХ ЗАКОНОВ И ВСЕХ БЭКЕНДОВ.
+///
+/// ИМЯ БЭКЕНДА — ПАРАМЕТР, А НЕ КОНСТАНТА В СТРОКЕ. Первая редакция печатала `AfPacketBackend`
+/// всегда, и первый же живой прогон закона удержания выдал отчёт, приписывающий очередь ядра
+/// чужому бэкенду. Тот самый класс, ради которого весь этот модуль и заведён: свидетельство
+/// утверждало не то, что установлено, и снаружи это было не видно.
 ///
 /// Печать вынесена сюда, а не переписана под каждый закон, ровно потому, что `Verdict` обобщён:
 /// причины у законов свои, а три состояния — общие. Читателю отчёта (человеку или скрипту) не
 /// придётся знать, какой закон он читает, чтобы понять, был ли вердикт вообще.
 fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
     law: &str,
+    backend: &str,
     outcome: Result<Verdict<B, I>, String>,
 ) -> i32 {
     match outcome {
@@ -92,17 +124,17 @@ fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
         // там, ни здесь, и разница — в том, кто это установил.
         Err(why) => {
             println!(
-                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"invalid","why":"{why}"}}"#
+                r#"{{"law":"{law}","backend":"{backend}","verdict":"invalid","why":"{why}"}}"#
             );
             2
         }
         Ok(Verdict::Held) => {
-            println!(r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"held"}}"#);
+            println!(r#"{{"law":"{law}","backend":"{backend}","verdict":"held"}}"#);
             0
         }
         Ok(Verdict::Broken(because)) => {
             println!(
-                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"broken","because":"{because:?}"}}"#
+                r#"{{"law":"{law}","backend":"{backend}","verdict":"broken","because":"{because:?}"}}"#
             );
             1
         }
@@ -111,7 +143,7 @@ fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
         // бы её заново по-своему.
         Ok(Verdict::Invalid(why)) => {
             println!(
-                r#"{{"law":"{law}","backend":"AfPacketBackend","verdict":"invalid","why":"{why:?}"}}"#
+                r#"{{"law":"{law}","backend":"{backend}","verdict":"invalid","why":"{why:?}"}}"#
             );
             2
         }
@@ -407,4 +439,120 @@ fn tx_packets(iface: &str) -> Result<usize, String> {
         .trim()
         .parse()
         .map_err(|_bad| format!("счётчик {path} не число"))
+}
+
+// --- ЗАКОН УДЕРЖАНИЯ: ЕДИНСТВЕННЫЙ БЭКЕНД, НА КОТОРОМ РАБОТАЕТ ПРОДУКТ ---
+
+/// ЗАКОН УДЕРЖАНИЯ НА ЖИВОМ ЯДРЕ.
+///
+/// # Устройство пробы
+///
+/// Подопытный сам порождает пакет — датаграмму с нонсом соседу — и сам же ловит её из очереди:
+/// правило netfilter стоит на ИСХОДЯЩИХ, поэтому пакет застревает, не покинув машины. Свидетелем
+/// служит сосед в чужом сетевом пространстве: он видит датаграмму тогда и только тогда, когда её
+/// отпустили.
+///
+/// Порождать трафик самому здесь можно, и это не та поблажка, что была бы в законе наблюдения:
+/// проверяется не «дошло ли», а ПОРЯДОК — прошло ли ДО нашего решения. На этот вопрос отвечает
+/// только сосед, и подопытный на его ответ повлиять не может.
+fn certify_holds(
+    queue: &str,
+    capture: &str,
+    nonce: &[u8],
+    target: &str,
+) -> Result<Verdict<holding::Broken, holding::Invalid>, String> {
+    let number: u16 = queue
+        .parse()
+        .map_err(|_bad| format!("номер очереди не число: {queue}"))?;
+    let mut dut = NfqueueBackend::open(number)?;
+    let mut below = Recorded {
+        path: capture,
+        taken: 0,
+    };
+
+    probe(target, nonce)?;
+    let held = await_queued(&mut dut, nonce)?;
+
+    Ok(holds(&mut dut, held, &mut below))
+}
+
+/// ДАТАГРАММА С НОНСОМ СОСЕДУ. Уходит в стек и застревает в очереди: `sendto` возвращает `Ok`,
+/// потому что ядро приняло пакет у приложения — а не потому, что он покинул машину. Эти два факта
+/// закон и разводит.
+fn probe(target: &str, nonce: &[u8]) -> Result<(), String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|why| format!("проба: {why}"))?;
+    socket
+        .send_to(nonce, target)
+        .map_err(|why| format!("проба: {why}"))
+        .map(|_sent| ())
+}
+
+/// ДОЖДАТЬСЯ ИМЕННО НАШЕГО ПАКЕТА В ОЧЕРЕДИ.
+///
+/// Чужие, если такие придут, ОТПУСКАЮТСЯ, а не игнорируются: пакет, о котором мы промолчали,
+/// висит в ядре до таймаута очереди и держит чужое соединение. Стенд, ломающий машину, на которой
+/// стоит, — плохой стенд.
+fn await_queued(dut: &mut NfqueueBackend, nonce: &[u8]) -> Result<Held<Queued>, String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match dut.wait(200) {
+            Waited::Blind => return Err("дескриптор очереди не добыт — ждать не на чем".into()),
+            Waited::Idle => match Instant::now() >= deadline {
+                true => {
+                    return Err("наш пакет в очередь не пришёл — правило не заворачивает".into())
+                }
+                false => (),
+            },
+            Waited::Ready => {
+                let message = dut.recv()?;
+                let queued = Queued(message);
+                match carries(queued.payload(), nonce) {
+                    true => return Ok(Held::new(queued, Instant::now())),
+                    false => {
+                        let passing = Held::new(queued, Instant::now());
+                        dut.apply(passing.answered(Answer::Pass))
+                            .map_err(|refused| {
+                                format!("чужой пакет не отпущен: {:?}", refused.why)
+                            })?;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// ЗАПИСЬ СВИДЕТЕЛЯ КАК ТО, ЧТО НИЖЕ ПО СТЕКУ.
+///
+/// # Выдержка обязательна, и она одинакова для обоих вопросов
+///
+/// `dumpcap` пишет буферами, и прочитанное сразу после вопроса ещё не отражает случившегося.
+/// Спроси мы дальний конец мгновенно — «пусто» значило бы «не успел записать», а не «не прошло»,
+/// и текущая очередь получила бы `held`. Выдержка равная намеренно: разная означала бы, что закон
+/// даёт утечке меньше шансов проявиться, чем доставке.
+///
+/// `taken` помнит, сколько кадров уже отдано: трейт спрашивает «с прошлого раза», и свидетель,
+/// отвечающий одно и то же, показал бы прошедшее ДО ответа ещё раз ПОСЛЕ — то есть превратил бы
+/// утечку в законную доставку.
+struct Recorded<'a> {
+    path: &'a str,
+    taken: usize,
+}
+
+impl Downstream for Recorded<'_> {
+    fn passed(&mut self) -> Vec<Vec<u8>> {
+        std::thread::sleep(Duration::from_millis(700));
+        match std::fs::read(self.path) {
+            Err(_no_record) => Vec::new(),
+            Ok(bytes) => {
+                let (frames, _broken) = reflex_core::pcap::read(&bytes, Instant::now());
+                let fresh: Vec<Vec<u8>> = frames
+                    .into_iter()
+                    .skip(self.taken)
+                    .map(|frame| frame.bytes)
+                    .collect();
+                self.taken += fresh.len();
+                fresh
+            }
+        }
+    }
 }
