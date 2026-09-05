@@ -66,42 +66,112 @@ pub trait CanInject: crate::backend::Sink {
     fn inject(packet: crate::command::InjectablePacket) -> Self::Command;
 }
 
-/// БЭКЕНД УМЕЕТ УДЕРЖАТЬ ПАКЕТ ДО ВЕРДИКТА.
+/// БЭКЕНД УДЕРЖИВАЕТ ПАКЕТ, ПОКА МЫ РЕШАЕМ.
 ///
-/// # Почему у этой способности сегодня ноль реализаций
+/// # Почему предмет — ОТПУСКАНИЕ, а не удержание
 ///
-/// Удержание — родная семантика NFQUEUE: ядро отдаёт пакет в userspace и ЖДЁТ ответа. Механизм
-/// у нас есть и работает, но живёт он в `NfqueueBackend`, который не реализует ни
-/// [`Source`](crate::backend::Source), ни [`Sink`] — то есть в категорию не входит вовсе.
+/// Удержание не выражается командой, и это не пробел, а его природа: пакет ждёт ровно потому, что
+/// мы ЕЩЁ НЕ ОТВЕТИЛИ. Само существование [`Answered`](crate::held::Answered) и значит «в ядре
+/// висит пакет», а `#[must_use]` на нём — машинная охрана того, чтобы висел не вечно.
 ///
-/// Заявление там стояло и было высказыванием без предмета: цепочку с этим бэкендом собрать
-/// нельзя ни при каких обстоятельствах, значит подтвердить или опровергнуть «умею удерживать»
-/// было нечем. Снято вместе с остальными; вернётся, когда очередь войдёт в категорию (#326).
+/// Отсюда предмет: [`release`](Self::release) — слово, которым удержанный отпускается БЕЗ
+/// изменений. Удержание без отпускания есть состояние без выхода, а пакет, который держат вечно,
+/// для человека неотличим от дропа — только тише.
 ///
-/// [`accept`](Self::accept) парен намеренно: удержание без отпускания есть состояние без выхода,
-/// и пакет, который держат вечно, для человека неотличим от дропа — только тише.
+/// # Почему супертрейт — `Terminal`, а не `Sink`
 ///
-/// # Заявить, не назвав команду удержания, нельзя
+/// Прежняя редакция стояла над [`Sink`] и оперировала [`Flow`](crate::types::Flow) — то есть
+/// удержанием ПОТОКА. Это была ошибка адреса, и она обошлась в ноль реализаций: вердикт очереди
+/// требует владения ТЕМ САМЫМ сообщением, а `Sink` берёт команду, ничего не зная о носителе.
+/// `held.rs` установил это, разведя решение и эффект; способность переехала следом.
+///
+/// Разница не косметическая. Над `Sink` живут способности, ставящие в ядро ПРАВИЛО (оно действует
+/// до снятия — таков [`CanDrop`]); над `Terminal` — отвечающие ОДНОМУ удержанному пакету. Свести
+/// их в одно имя значило бы стереть различие между «этот пакет не пойдёт» и «поток не идёт».
+///
+/// # Заявить, не назвав слова отпускания, нельзя
 ///
 /// ```compile_fail,E0046
-/// use reflex_core::backend::Sink;
 /// use reflex_core::capability::CanHold;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
 ///
 /// struct Immediate;
-/// impl Sink for Immediate {
-///     type Command = Vec<u8>;
-///     type Error = ();
-///     fn emit(&mut self, _command: Vec<u8>) -> Result<(), ()> { Ok(()) }
+/// impl Terminal for Immediate {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
 /// }
 ///
 /// impl CanHold for Immediate {}
 /// ```
-pub trait CanHold: crate::backend::Sink {
-    /// КАКИМ ЗНАЧЕНИЕМ ЭТОГО СТОКА выражается «пакет ждёт, дальше пока не идёт».
-    fn hold(flow: crate::types::Flow) -> Self::Command;
+pub trait CanHold: crate::held::Terminal {
+    /// КАКИМ СЛОВОМ АЛФАВИТА удержанный отпускается без изменений.
+    fn release() -> Self::Answer;
+}
 
-    /// И как удержанный отпускается. Без этого удержание есть дроп, только тише.
-    fn accept(flow: crate::types::Flow) -> Self::Command;
+/// БЭКЕНД УМЕЕТ НЕ ПРОПУСТИТЬ УДЕРЖАННЫЙ ПАКЕТ.
+///
+/// Брат [`CanDrop`] по смыслу и не он по адресу: тот ставит в ядро правило на ПОТОК, живущее до
+/// снятия, а это — ответ ОДНОМУ пакету, который мы держим. Пакет не дойдёт до адресата, и на
+/// следующий это никак не влияет.
+///
+/// Пары «и как снять обратно» здесь нет намеренно, и это не забывчивость: снимать нечего.
+/// Одноразовый ответ не оставляет в мире состояния — тем он и отличается от правила, которое
+/// [`CanDrop::clear_flow`] обязан уметь убрать.
+///
+/// ```compile_fail,E0046
+/// use reflex_core::capability::CanRefuse;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+///
+/// struct Passing;
+/// impl Terminal for Passing {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
+/// }
+///
+/// impl CanRefuse for Passing {}
+/// ```
+pub trait CanRefuse: crate::held::Terminal {
+    /// КАКИМ СЛОВОМ АЛФАВИТА выражается «этот пакет дальше не пойдёт».
+    fn refuse() -> Self::Answer;
+}
+
+/// БЭКЕНД УМЕЕТ ОТПУСТИТЬ УДЕРЖАННЫЙ ПАКЕТ С ДРУГИМИ БАЙТАМИ.
+///
+/// Отличие от [`CanModify`] то же, что у [`CanRefuse`] от [`CanDrop`]: тот описывает изменение
+/// через [`Flow`](crate::types::Flow), потому что правило в ядре обязано знать, К ЧЕМУ его
+/// применять. Здесь адресат уже в руках — мы держим тот самый пакет, — и `flow` в подписи был бы
+/// вторым способом сказать то, что уже сказано носителем.
+///
+/// ```compile_fail,E0046
+/// use reflex_core::capability::CanRewrite;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+///
+/// struct Verbatim;
+/// impl Terminal for Verbatim {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
+/// }
+///
+/// impl CanRewrite for Verbatim {}
+/// ```
+pub trait CanRewrite: crate::held::Terminal {
+    /// КАКИМ СЛОВОМ АЛФАВИТА выражается «пропустить, но вот с такими байтами».
+    fn rewrite(bytes: Vec<u8>) -> Self::Answer;
 }
 
 /// БЭКЕНД УМЕЕТ ИЗМЕНИТЬ ПАКЕТ НА МЕСТЕ И ПРОПУСТИТЬ ДАЛЬШЕ.

@@ -46,7 +46,7 @@ pub mod quic;
 #[cfg(feature = "tls")]
 pub mod tls;
 
-pub use capability::{CanDrop, CanHold, CanInject, CanModify, CanObserve};
+pub use capability::{CanDrop, CanHold, CanInject, CanModify, CanObserve, CanRefuse, CanRewrite};
 pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{
     Both, By, Changes, Contextual, Detector, DetectorEvent, DetectorExt, LMap, RMap, Timed, Told,
