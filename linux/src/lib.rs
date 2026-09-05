@@ -124,13 +124,68 @@ impl reflex_core::backend::Source for TcAfPacketBackend {
     }
 }
 
+/// КОМАНДА TC-БЭКЕНДА — АЛГЕБРА, А НЕ БАЙТЫ.
+///
+/// Прежде сток брал `Vec<u8>`, и `CanDrop` было невыразимо: механизм дропа существовал целиком
+/// (`ACTION_TABLE` в ядре, `set_flow_action` в userspace, совпадающий хеш), но сказать «дропни
+/// этот поток» стоку было нечем. Заявление о способности при этом стояло — то есть система
+/// позволяла заявить то, чего в ней нельзя выразить.
+///
+/// Варианты ровно те, что бэкенд УМЕЕТ. Общий `reflex_core::Command` здесь был бы хуже: он несёт
+/// `Hold`/`Accept`, которых у tc нет, и `emit` пришлось бы отвечать ошибкой в рантайме на то, что
+/// обязан отсекать компилятор.
+#[cfg(feature = "tc")]
+#[derive(Debug, Clone)]
+pub enum TcCommand {
+    /// Отправить кадр в сеть через AF_PACKET.
+    Inject(Vec<u8>),
+    /// Перестать пропускать поток: `ACTION_TABLE[hash] = Drop`, и TC-BPF отвечает `TC_ACT_SHOT`.
+    Drop(reflex_core::types::Flow),
+    /// Снять дроп. Без снятия дроп есть состояние без выхода.
+    Clear(reflex_core::types::Flow),
+}
+
+/// Ключ `ACTION_TABLE` из потока. ЧАСТИЧНА ПО IPv6, и это названо ошибкой, а не молчанием:
+/// карта в ядре ключуется четырьмя байтами адреса, и IPv6-поток в ней невыразим (#299).
+/// Молчаливый `Ok(())` здесь означал бы «дропнули», когда не дропнули, — то есть ровно ту тихую
+/// сторону, которую эта работа убирает.
+#[cfg(feature = "tc")]
+fn action_key(flow: &reflex_core::types::Flow) -> Result<u32, String> {
+    match (flow.src.ip(), flow.dst.ip()) {
+        (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => Ok(tc::flow_hash(
+            u32::from(src),
+            u32::from(dst),
+            flow.src.port(),
+            flow.dst.port(),
+            match flow.protocol {
+                reflex_core::types::Protocol::Tcp => 6,
+                reflex_core::types::Protocol::Udp => 17,
+            },
+        )),
+        // ВЕТКИ ПЕРЕЧИСЛЕНЫ, А НЕ СВЁРНУТЫ В `_`: смешанная пара (V4→V6) бессмысленна как поток,
+        // и именно поэтому она обязана быть НАЗВАНА — свёрнутая, она молча уехала бы в общую
+        // ошибку про IPv6 и спрятала бы то, что поток собран неверно.
+        (std::net::IpAddr::V6(_), std::net::IpAddr::V6(_))
+        | (std::net::IpAddr::V4(_), std::net::IpAddr::V6(_))
+        | (std::net::IpAddr::V6(_), std::net::IpAddr::V4(_)) => Err(format!(
+            "ACTION_TABLE ключуется IPv4 (#299), поток {} → {} невыразим",
+            flow.src, flow.dst
+        )),
+    }
+}
+
 #[cfg(feature = "tc")]
 impl reflex_core::backend::Sink for TcAfPacketBackend {
-    type Command = Vec<u8>;
+    type Command = TcCommand;
     type Error = String;
 
-    fn emit(&mut self, command: Vec<u8>) -> Result<(), String> {
-        TcAfPacketBackend::inject(self, &command)
+    fn emit(&mut self, command: TcCommand) -> Result<(), String> {
+        match command {
+            TcCommand::Inject(bytes) => TcAfPacketBackend::inject(self, &bytes),
+            TcCommand::Drop(flow) => action_key(&flow)
+                .and_then(|key| self.set_flow_action(key, reflex_linux_common::FlowAction::Drop)),
+            TcCommand::Clear(flow) => action_key(&flow).and_then(|key| self.clear_flow_action(key)),
+        }
     }
 }
 
@@ -138,12 +193,20 @@ impl reflex_core::backend::Sink for TcAfPacketBackend {
 impl CanObserve for TcAfPacketBackend {}
 #[cfg(feature = "tc")]
 impl CanInject for TcAfPacketBackend {
-    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
-        packet.serialize()
+    fn inject(packet: reflex_core::command::InjectablePacket) -> TcCommand {
+        TcCommand::Inject(packet.serialize())
     }
 }
 #[cfg(feature = "tc")]
-impl CanDrop for TcAfPacketBackend {}
+impl CanDrop for TcAfPacketBackend {
+    fn drop_flow(flow: reflex_core::types::Flow) -> TcCommand {
+        TcCommand::Drop(flow)
+    }
+
+    fn clear_flow(flow: reflex_core::types::Flow) -> TcCommand {
+        TcCommand::Clear(flow)
+    }
+}
 #[cfg(feature = "tc")]
 impl CanModify for TcAfPacketBackend {}
 

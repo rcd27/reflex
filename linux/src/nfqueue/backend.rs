@@ -75,7 +75,6 @@ pub struct NfqueueBackend {
 // До тех пор способности этого типа не заявляются вовсе.
 impl CanHold for NfqueueBackend {}
 impl CanModify for NfqueueBackend {}
-impl CanDrop for NfqueueBackend {}
 
 impl NfqueueBackend {
     pub fn open(queue_num: u16) -> Result<Self, String> {

@@ -72,5 +72,42 @@ pub trait CanHold {}
 /// Backend can modify a packet in-place before forwarding.
 pub trait CanModify {}
 
-/// Backend can drop a packet, preventing it from reaching its destination.
-pub trait CanDrop {}
+/// БЭКЕНД УМЕЕТ РОНЯТЬ ПАКЕТ, НЕ ДАВАЯ ЕМУ ДОЙТИ ДО АДРЕСАТА.
+///
+/// # Замер, из-за которого у способности появился метод
+///
+/// `TcAfPacketBackend` заявлял `CanDrop`, и заявление было ПРАВДИВЫМ: в ядре есть
+/// `ACTION_TABLE` с `FlowAction::Drop` (`linux-ebpf/src/main.rs:170`), в userspace есть писатель
+/// `TcProgram::set_flow_action`, и хеш потока считается совпадающей функцией. Механизм полный.
+///
+/// Невыразимо было ДРУГОЕ: сток брал `Vec<u8>`, а в байтах «дропни этот поток» не скажешь.
+/// Способность существовала и была недостижима — состояние, которое нельзя ни подтвердить, ни
+/// опровергнуть, и которое пустой маркер прятал полностью.
+///
+/// Метод убирает именно это: заявить «умею ронять» можно только назвав, каким значением ЭТОГО
+/// стока дроп выражается. Сток, у которого такого значения нет, заявление сделать не сможет.
+///
+/// # Заявить, не назвав команду дропа, нельзя
+///
+/// ```compile_fail,E0046
+/// use reflex_core::backend::Sink;
+/// use reflex_core::capability::CanDrop;
+///
+/// struct Passthrough;
+/// impl Sink for Passthrough {
+///     type Command = Vec<u8>;
+///     type Error = ();
+///     fn emit(&mut self, _command: Vec<u8>) -> Result<(), ()> { Ok(()) }
+/// }
+///
+/// // В байтах дроп не выражается — и заявление не собирается.
+/// impl CanDrop for Passthrough {}
+/// ```
+pub trait CanDrop: crate::backend::Sink {
+    /// КАКИМ ЗНАЧЕНИЕМ ЭТОГО СТОКА выражается «поток дальше не идёт».
+    fn drop_flow(flow: crate::types::Flow) -> Self::Command;
+
+    /// И как снимается обратно. Без снятия дроп есть состояние без выхода: закон обязан уметь
+    /// вернуть мир в исходное, иначе один прогон отравляет все следующие.
+    fn clear_flow(flow: crate::types::Flow) -> Self::Command;
+}
