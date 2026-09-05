@@ -7,6 +7,7 @@ pub mod category;
 pub mod checksum;
 pub mod clock;
 pub mod command;
+pub mod debounce;
 pub mod detector;
 pub mod disclosure;
 pub mod expiring_set;

@@ -1,0 +1,140 @@
+//! `debounce` БЕЗ РАНТАЙМА — законы, проверяемые таблицей.
+//!
+//! Прежняя редакция была потоковым комбинатором на `tokio::time::sleep`. Её тест ради утверждения
+//! `vec![1, 2]` поднимал `spawn`, канал, три `yield_now` и `advance` — тридцать строк хореографии
+//! рантайма. Здесь то же поведение выражено детектором: время приходит буквой `Tick`, и проверка
+//! становится массивом пар.
+
+use reflex_core::debounce::Debounce;
+use reflex_core::detector::{Detector, DetectorEvent};
+use std::time::{Duration, Instant};
+
+const WINDOW: Duration = Duration::from_millis(300);
+
+/// Прогнать последовательность событий и собрать всё, что вышло.
+fn run(events: Vec<DetectorEvent<i32>>) -> Vec<i32> {
+    events
+        .into_iter()
+        .fold(
+            (Debounce::over(WINDOW), Vec::new()),
+            |(detector, mut seen), event| {
+                let (detector, signals) = detector.step(event);
+                seen.extend(signals);
+                (detector, seen)
+            },
+        )
+        .1
+}
+
+fn packet(start: Instant, millis: u64, what: i32) -> DetectorEvent<i32> {
+    DetectorEvent::Packet {
+        input: what,
+        at: start + Duration::from_millis(millis),
+    }
+}
+
+fn tick(start: Instant, millis: u64) -> DetectorEvent<i32> {
+    DetectorEvent::Tick {
+        at: start + Duration::from_millis(millis),
+    }
+}
+
+/// ЧАСТЫЕ ПОВТОРЫ СХЛОПЫВАЮТСЯ В ПОСЛЕДНИЙ.
+#[test]
+fn rapid_repeats_collapse_into_the_last_one() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0, 1),
+            packet(t, 50, 2),
+            packet(t, 100, 3),
+            tick(t, 200),
+            tick(t, 400),
+        ]),
+        vec![3],
+        "выпускается последнее, и только когда поток затих"
+    );
+}
+
+/// РАЗНЕСЁННЫЕ СОБЫТИЯ ПРОХОДЯТ ОБА.
+#[test]
+fn spaced_events_both_pass() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0, 1),
+            tick(t, 400),
+            packet(t, 500, 2),
+            tick(t, 900),
+        ]),
+        vec![1, 2]
+    );
+}
+
+/// ОКНО ОТСЧИТЫВАЕТСЯ ОТ ПОСЛЕДНЕГО СОБЫТИЯ, А НЕ ОТ ПЕРВОГО.
+///
+/// Иначе поток, идущий чуть чаще окна, выпускался бы регулярно — то есть `debounce` перестал бы
+/// отличать «затих» от «идёт ровно».
+#[test]
+fn the_window_is_measured_from_the_last_event_not_the_first() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0, 1),
+            tick(t, 200),
+            packet(t, 250, 2),
+            tick(t, 400),
+            tick(t, 600),
+        ]),
+        vec![2],
+        "второе событие отодвинуло окно: до 550 мс выпускать нечего"
+    );
+}
+
+/// ТИК БЕЗ УДЕРЖАННОГО СОБЫТИЯ МОЛЧИТ. Пустое окно не есть наблюдение.
+#[test]
+fn a_tick_with_nothing_held_says_nothing() {
+    let t = Instant::now();
+
+    assert_eq!(run(vec![tick(t, 100), tick(t, 900)]), Vec::<i32>::new());
+}
+
+/// ВЫПУЩЕННОЕ НЕ ВЫПУСКАЕТСЯ ДВАЖДЫ — сколько бы тиков ни пришло следом.
+#[test]
+fn what_was_released_is_not_released_again() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0, 1),
+            tick(t, 400),
+            tick(t, 700),
+            tick(t, 1_000),
+        ]),
+        vec![1]
+    );
+}
+
+/// ТОЧНОСТЬ КВАНТУЕТСЯ СЕТКОЙ, И ЭТО ЦЕНА РЕШЕНИЯ, А НЕ ДЕФЕКТ.
+///
+/// `tokio::sleep` будил бы ровно в конце окна. Здесь выпуск случается на ПЕРВОМ узле сетки после
+/// конца окна — то есть опаздывает не более чем на шаг. Взамен оператор не знает ни часов, ни
+/// рантайма и работает там, где их нет.
+#[test]
+fn release_happens_at_the_first_node_after_the_window_not_exactly_at_its_end() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![packet(t, 0, 1), tick(t, 250)]),
+        Vec::<i32>::new(),
+        "узел до конца окна ещё ничего не выпускает"
+    );
+    assert_eq!(
+        run(vec![packet(t, 0, 1), tick(t, 250), tick(t, 350)]),
+        vec![1],
+        "выпуск на первом узле ПОСЛЕ конца окна"
+    );
+}
