@@ -38,10 +38,14 @@
 pub mod holding;
 pub mod injection;
 pub mod observation;
+pub mod refusal;
+pub mod rewriting;
 
 pub use holding::holds;
 pub use injection::injects;
 pub use observation::observes;
+pub use refusal::refuses;
+pub use rewriting::rewrites;
 
 /// ДЕРЖИТСЯ ЛИ ЗАКОН — и установлено ли это вообще.
 ///
@@ -59,6 +63,18 @@ pub enum Verdict<B, I> {
     Held,
     Broken(B),
     Invalid(I),
+}
+
+/// ЧТО ПРОШЛО НИЖЕ ПО СТЕКУ С ПРОШЛОГО ВОПРОСА.
+///
+/// Общий свидетель ВСЕХ терминальных законов: удержанному пакету можно ответить по-разному, но
+/// вопрос к миру у всех один — что после этого пошло дальше.
+///
+/// «С прошлого вопроса» существенно: законы спрашивают ДВАЖДЫ и сравнивают ответы, поэтому
+/// свидетель, отвечающий одно и то же, превратил бы утечку в норму — прошедшее ДО ответа он
+/// показал бы и ПОСЛЕ, и закон засчитал бы это доставкой.
+pub trait Downstream {
+    fn passed(&mut self) -> Vec<Vec<u8>>;
 }
 
 /// НЕСЁТ ЛИ КАДР НАШ НОНС. Подстрокой, а не равенством.

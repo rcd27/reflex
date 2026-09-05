@@ -21,9 +21,12 @@
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use reflex_core::certify::holding::{self, holds, Downstream};
+use reflex_core::certify::holding::{self, holds};
 use reflex_core::certify::injection::{self, FarEnd};
 use reflex_core::certify::observation::{self, observes, watching, Origin};
+use reflex_core::certify::refusal::{self, refuses};
+use reflex_core::certify::rewriting::{self, rewrites};
+use reflex_core::certify::Downstream;
 use reflex_core::certify::{carries, injects, Verdict};
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Held, Observed, Terminal};
@@ -74,6 +77,16 @@ fn main() {
             "NfqueueBackend",
             certify_holds(queue, capture, nonce.as_bytes(), target),
         ),
+        [_, "refuse", queue, capture, nonce, target] => announce(
+            "refuses",
+            "NfqueueBackend",
+            certify_refuses(queue, capture, nonce.as_bytes(), target),
+        ),
+        [_, "rewrite", queue, capture, nonce, other, target] => announce(
+            "rewrites",
+            "NfqueueBackend",
+            certify_rewrites(queue, capture, nonce.as_bytes(), other.as_bytes(), target),
+        ),
         // ТОЛЬКО ПОСЛАТЬ, НИЧЕГО НЕ УТВЕРЖДАЯ. Нужна, чтобы спросить мир без подопытного: если
         // датаграмма уходит, когда очередь НИКТО не слушает, — значит удержание мнимо, и все
         // вердикты закона были бы о другом.
@@ -97,6 +110,10 @@ fn main() {
             eprintln!("  certify observe <интерфейс> <нонс> <путь-к-отчёту> <окно-мс>");
             eprintln!("  certify emit    <интерфейс> <нонс> <сколько> <путь-к-отчёту>");
             eprintln!("  certify hold    <номер-очереди> <путь-к-записи> <нонс> <хост:порт>");
+            eprintln!("  certify refuse  <номер-очереди> <путь-к-записи> <нонс> <хост:порт>");
+            eprintln!(
+                "  certify rewrite <номер-очереди> <путь-к-записи> <нонс> <подмена> <хост:порт>"
+            );
             eprintln!("  certify probe   <хост:порт> <нонс>");
             2
         }
@@ -461,18 +478,7 @@ fn certify_holds(
     nonce: &[u8],
     target: &str,
 ) -> Result<Verdict<holding::Broken, holding::Invalid>, String> {
-    let number: u16 = queue
-        .parse()
-        .map_err(|_bad| format!("номер очереди не число: {queue}"))?;
-    let mut dut = NfqueueBackend::open(number)?;
-    let mut below = Recorded {
-        path: capture,
-        taken: 0,
-    };
-
-    probe(target, nonce)?;
-    let held = await_queued(&mut dut, nonce)?;
-
+    let (mut dut, held, mut below) = staged(queue, capture, nonce, target)?;
     Ok(holds(&mut dut, held, &mut below))
 }
 
@@ -530,6 +536,10 @@ fn await_queued(dut: &mut NfqueueBackend, nonce: &[u8]) -> Result<Held<Queued>, 
 /// и текущая очередь получила бы `held`. Выдержка равная намеренно: разная означала бы, что закон
 /// даёт утечке меньше шансов проявиться, чем доставке.
 ///
+/// Живость свидетеля доказывается МАЯКОМ, посылаемым при каждом вопросе. Без него пустой ответ
+/// значил бы сразу двоё — «не прошло» и «не смотрел», — и закон отказа выдавал бы `held`,
+/// ничего не установив. Найдено живьём 05.09.2026 остановкой `dumpcap`.
+///
 /// `taken` помнит, сколько кадров уже отдано: трейт спрашивает «с прошлого раза», и свидетель,
 /// отвечающий одно и то же, показал бы прошедшее ДО ответа ещё раз ПОСЛЕ — то есть превратил бы
 /// утечку в законную доставку.
@@ -540,6 +550,11 @@ struct Recorded<'a> {
 
 impl Downstream for Recorded<'_> {
     fn passed(&mut self) -> Vec<Vec<u8>> {
+        // МАЯК ПЕРЕД КАЖДЫМ ВОПРОСОМ, а не однажды за прогон: вопросов два, и первый забрал бы
+        // единственный маяк себе, оставив второй неотличимым от слепоты. Кадр строит ЯДРО и идёт
+        // МИМО очереди — правило заворачивает только предметный порт, — поэтому маяк доезжает
+        // независимо от того, что подопытный ответил.
+        let _lit = beacon();
         std::thread::sleep(Duration::from_millis(700));
         match std::fs::read(self.path) {
             Err(_no_record) => Vec::new(),
@@ -555,4 +570,98 @@ impl Downstream for Recorded<'_> {
             }
         }
     }
+}
+
+/// ЗАКОН ОТКАЗА НА ЖИВОЙ ОЧЕРЕДИ.
+fn certify_refuses(
+    queue: &str,
+    capture: &str,
+    nonce: &[u8],
+    target: &str,
+) -> Result<Verdict<refusal::Broken, refusal::Invalid>, String> {
+    let (mut dut, held, mut below) = staged(queue, capture, nonce, target)?;
+    Ok(refuses(&mut dut, held, &mut below))
+}
+
+/// ЗАКОН ПОДМЕНЫ НА ЖИВОЙ ОЧЕРЕДИ.
+///
+/// Подставляется НЕ произвольная строка, а тот же пакет с заменённым нонсом: длина обязана
+/// совпасть, иначе поедут длины в заголовках IP и UDP, и мы проверяли бы не подмену, а умение
+/// собрать битый пакет.
+fn certify_rewrites(
+    queue: &str,
+    capture: &str,
+    nonce: &[u8],
+    other: &[u8],
+    target: &str,
+) -> Result<Verdict<rewriting::Broken, rewriting::Invalid>, String> {
+    match nonce.len() == other.len() {
+        false => Err(format!(
+            "подмена обязана быть той же длины: {} против {}",
+            nonce.len(),
+            other.len()
+        )),
+        true => {
+            let (mut dut, held, mut below) = staged(queue, capture, nonce, target)?;
+            let replacement = swapped(held.seen(), nonce, other);
+            Ok(rewrites(&mut dut, held, replacement, &mut below))
+        }
+    }
+}
+
+/// ОБЩАЯ ПОДГОТОВКА ТРЁХ ЗАКОНОВ ОЧЕРЕДИ: открыть, послать, дождаться СВОЕГО пакета.
+///
+/// Вынесено, потому что повторялось трижды дословно, а не ради краткости: разъехавшаяся подготовка
+/// означала бы, что три закона проверяют три РАЗНЫХ мира, и расхождение было бы не видно.
+fn staged<'a>(
+    queue: &str,
+    capture: &'a str,
+    nonce: &[u8],
+    target: &str,
+) -> Result<(NfqueueBackend, Held<Queued>, Recorded<'a>), String> {
+    let number: u16 = queue
+        .parse()
+        .map_err(|_bad| format!("номер очереди не число: {queue}"))?;
+    let mut dut = NfqueueBackend::open(number)?;
+    let below = Recorded {
+        path: capture,
+        taken: 0,
+    };
+    probe(target, nonce)?;
+    let held = await_queued(&mut dut, nonce)?;
+    Ok((dut, held, below))
+}
+
+/// ТОТ ЖЕ ПАКЕТ С ЗАМЕНЁННЫМ НОНСОМ И ОБНУЛЁННОЙ КОНТРОЛЬНОЙ СУММОЙ UDP.
+///
+/// Ноль в этом поле по RFC 768 означает «сумма не вычислялась», и для IPv4 это законное значение —
+/// иначе пришлось бы пересчитывать её здесь, то есть проверять заодно и наш счётчик сумм. Закон
+/// про подмену байтов, а не про арифметику: пусть у пробы будет ровно одна причина не дойти.
+fn swapped(packet: &[u8], nonce: &[u8], other: &[u8]) -> Vec<u8> {
+    let replaced: Vec<u8> = match packet
+        .windows(nonce.len())
+        .position(|window| window == nonce)
+    {
+        None => packet.to_vec(),
+        Some(at) => packet
+            .iter()
+            .enumerate()
+            .map(
+                |(index, byte)| match index >= at && index < at + other.len() {
+                    true => other[index - at],
+                    false => *byte,
+                },
+            )
+            .collect(),
+    };
+
+    // Смещение 26 — контрольная сумма UDP при заголовке IPv4 без опций (20 + 6).
+    replaced
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| match index {
+            26 | 27 => 0,
+            _other => *byte,
+        })
+        .collect()
 }

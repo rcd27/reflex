@@ -154,11 +154,28 @@ enum Word {
 }
 
 /// ДАЛЬНИЙ КОНЕЦ: что прошло дальше по стеку с прошлого вопроса.
+/// ЖИВОЙ СВИДЕТЕЛЬ. Всегда показывает ФОН — посторонний трафик, который в настоящем стеке идёт
+/// непрерывно, — и сверх него то, что прошло с прошлого вопроса.
+///
+/// Фон здесь не украшение: он и есть доказательство того, что свидетель смотрит. Без него пустой
+/// ответ значил бы сразу двоё, и законы отличали бы «не прошло» от «не увидел» ничем.
 struct Below(Downhill);
 
-impl reflex_core::certify::holding::Downstream for Below {
+impl reflex_core::certify::Downstream for Below {
     fn passed(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.0.borrow_mut())
+        let fresh: Vec<Vec<u8>> = std::mem::take(&mut *self.0.borrow_mut());
+        std::iter::once(b"background chatter".to_vec())
+            .chain(fresh)
+            .collect()
+    }
+}
+
+/// МЁРТВЫЙ СВИДЕТЕЛЬ: не видит ничего, включая фон.
+struct Dead;
+
+impl reflex_core::certify::Downstream for Dead {
+    fn passed(&mut self) -> Vec<Vec<u8>> {
+        Vec::new()
     }
 }
 
@@ -224,6 +241,17 @@ fn a_kernel_that_refuses_the_answer_is_not_a_broken_capability() {
     let outcome = holds(&mut Rejecting, held(), &mut downstream);
 
     assert_eq!(outcome, Verdict::Invalid(Invalid::AnswerNotTaken));
+}
+
+/// МЁРТВЫЙ СВИДЕТЕЛЬ НЕ ОБВИНЯЕТ В НЕОТПУСКАНИИ.
+///
+/// Здесь пустой ответ давал бы не ложный зелёный, а ложное ОБВИНЕНИЕ: честная очередь объявлялась
+/// бы не отпускающей всякий раз, когда сломался стенд. Направление ошибки другое, беда та же.
+#[test]
+fn a_dead_witness_gives_no_verdict_rather_than_blame() {
+    let outcome = holds(&mut Sticky, held(), &mut Dead);
+
+    assert_eq!(outcome, Verdict::Invalid(Invalid::WitnessSilent));
 }
 
 /// ЧУЖОЙ ТРАФИК ДО ОТВЕТА НЕ ОБВИНЯЕТ.

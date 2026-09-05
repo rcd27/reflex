@@ -21,16 +21,7 @@
 use crate::capability::CanHold;
 use crate::held::{Held, Observed, Terminal};
 
-use super::{carries, Verdict};
-
-/// ЧТО ПРОШЛО НИЖЕ ПО СТЕКУ С ПРОШЛОГО ВОПРОСА.
-///
-/// «С прошлого вопроса» существенно: закон спрашивает дважды и сравнивает ответы, поэтому
-/// свидетель, отвечающий одно и то же, превратил бы утечку в норму — прошедшее ДО ответа он
-/// показал бы и ПОСЛЕ, и закон засчитал бы доставку.
-pub trait Downstream {
-    fn passed(&mut self) -> Vec<Vec<u8>>;
-}
+use super::{carries, Downstream, Verdict};
 
 /// ПОЧЕМУ ЗАКОН НЕ ДЕРЖИТСЯ. Две беды, и они противоположны по знаку.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +37,15 @@ pub enum Broken {
 /// ПОЧЕМУ ВЕРДИКТА НЕТ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invalid {
+    /// Дальний конец не показал НИ ОДНОГО кадра — ни нашего, ни чужого.
+    ///
+    /// «Не прошло» и «свидетель не смотрел» дают одинаково пустой ответ. Найдено ЖИВЬЁМ
+    /// 05.09.2026: остановленный `dumpcap` — и честная очередь была бы объявлена не отпускающей.
+    ///
+    /// Урок был выучен утром того же дня в законе инъекции и НЕ перенёсся сюда сам собой:
+    /// правило, живущее в другом файле, компилятор не читает. На живом устройстве пустоту
+    /// разгоняет МАЯК — кадр, который строит ядро, а не проверяемый бэкенд.
+    WitnessSilent,
     /// Терминал честно сказал, что ответ не принят. Беда мира, о которой СООБЩИЛИ; предъявлять её
     /// как ложное заявление значило бы наказывать за честность — та же развилка, что у
     /// `SinkRefused` в законе инъекции.
@@ -88,9 +88,13 @@ where
         false => match dut.apply(held.answered(T::release())) {
             Err(_not_taken) => Verdict::Invalid(Invalid::AnswerNotTaken),
             // ВОПРОС ВТОРОЙ — после того, как отпустили.
-            Ok(_delivered) => match downstream.passed().iter().any(|gone| carries(gone, &ours)) {
-                true => Verdict::Held,
-                false => Verdict::Broken(Broken::NeverPassed),
+            Ok(_delivered) => match downstream.passed().as_slice() {
+                // ПУСТОЙ ОТВЕТ — НЕ ОБВИНЕНИЕ, А ОТСУТСТВИЕ ВЕРДИКТА.
+                [] => Verdict::Invalid(Invalid::WitnessSilent),
+                seen => match seen.iter().any(|gone| carries(gone, &ours)) {
+                    true => Verdict::Held,
+                    false => Verdict::Broken(Broken::NeverPassed),
+                },
             },
         },
     }
