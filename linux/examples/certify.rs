@@ -20,7 +20,7 @@
 
 use std::time::{Duration, Instant};
 
-use reflex_core::certify::{injects, Verdict};
+use reflex_core::certify::{carries, injects, Verdict};
 use reflex_core::command::InjectablePacket;
 use reflex_linux::AfPacketBackend;
 
@@ -69,33 +69,99 @@ fn main() {
             );
             std::process::exit(1);
         }
+        // ВЕРДИКТА НЕТ, И ЭТО ГОВОРИТ САМ ЗАКОН. Прежде недействительность вычислялась здесь, в
+        // устройстве, вторым чтением записи; закон её не знал, и всякий следующий закон изобретал
+        // бы её заново по-своему.
+        Ok(Verdict::Invalid(why)) => {
+            println!(
+                r#"{{"law":"injects","backend":"AfPacketBackend","verdict":"invalid","why":"{why:?}"}}"#
+            );
+            std::process::exit(2);
+        }
     }
 }
 
 /// ЗАКОН ИНЪЕКЦИИ НА ЖИВОМ ЯДРЕ.
 ///
-/// ПРОГОН, В КОТОРОМ ПРИБОР МОЛЧАЛ, НЕДЕЙСТВИТЕЛЕН, А НЕ ЧИСТ. Если записи нет или она пуста,
-/// ответом будет `Err`, а не «закон нарушен»: отличать «свидетель не работал» от «подопытный
-/// солгал» — половина смысла всей затеи.
+/// ПРОГОН, В КОТОРОМ ПРИБОР МОЛЧАЛ, НЕДЕЙСТВИТЕЛЕН, А НЕ ЧИСТ. Отличать «свидетель не работал» от
+/// «подопытный солгал» — половина смысла всей затеи, и держат это различие двое: маяк доказывает,
+/// что прибор жив, а [`Verdict::Invalid`] называет случай, когда он всё-таки нем.
 fn certify_injects(iface: &str, capture: &str, nonce: &[u8]) -> Result<Verdict, String> {
     let mut dut = AfPacketBackend::open(iface, 65535)?;
     let frame = frame_with(nonce);
+    let mut far_end = Recording {
+        path: capture,
+        awaited: nonce.to_vec(),
+        trouble: None,
+    };
 
-    let outcome = injects(
-        &mut dut,
-        InjectablePacket::Raw(frame),
-        || match read_capture(capture) {
-            Err(_why) => Vec::new(),
+    beacon()?;
+    let outcome = injects(&mut dut, InjectablePacket::Raw(frame), &mut far_end);
+
+    // ТОЧНАЯ ПРИЧИНА СИЛЬНЕЕ ОБЩЕЙ. Закон видит лишь «кадров ноль» и говорит `WitnessSilent`;
+    // устройство знает, БЫЛА ЛИ при этом беда чтения, и подставляет её вместо общего слова.
+    match far_end.trouble {
+        Some(why) => Err(why),
+        None => Ok(outcome),
+    }
+}
+
+/// МАЯК: КАДР, ПОСТРОЕННЫЙ ЯДРОМ, А НЕ ПОДОПЫТНЫМ.
+///
+/// # Зачем он понадобился
+///
+/// Свидетель ловит по фильтру, сужающему видимое до нашего опытного ethertype, — иначе он считал
+/// бы чужой трафик за наш. Но у сужения есть цена, и она вскрылась ровно тогда, когда закон
+/// научился называть недействительность: при ЛЖИВОМ бэкенде запись пуста, и «прибор мёртв» снова
+/// неотличимо от «подопытный солгал». Первый живой прогон обезоруживания этого не показал только
+/// потому, что в томе лежал кадр ПРЕДЫДУЩЕГО, удачного прогона: действительность держалась на
+/// остатке, а не на наблюдении.
+///
+/// # Почему именно широковещательная датаграмма
+///
+/// Заголовки ей строит ЯДРО: наш код лишь просит сокет, а кадр на провод кладёт чужой механизм.
+/// Пошли маяк тот же `AfPacketBackend` — при лживом бэкенде не ушло бы и маяка, всякое нарушение
+/// стало бы недействительностью, и проверка сама себя ослепила бы.
+///
+/// Порт 9 — `discard` по RFC 863: у него по определению нет слушателя, которому мы помешаем.
+fn beacon() -> Result<(), String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|why| format!("маяк: {why}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|why| format!("маяк: {why}"))?;
+    socket
+        .send_to(b"certify-beacon", "255.255.255.255:9")
+        .map_err(|why| format!("маяк: {why}"))
+        .map(|_sent| ())
+}
+
+/// ЗАПИСЬ СВИДЕТЕЛЯ КАК ДАЛЬНИЙ КОНЕЦ.
+///
+/// Тип, а не замыкание, ровно ради поля `trouble`: беда чтения возникает ВНУТРИ ответа дальнего
+/// конца, а вернуть он обязан кадры. Прежняя редакция беду там же и роняла (`Err(_why) =>
+/// Vec::new()`), после чего читала запись ВТОРОЙ раз — и второе чтение могло дать другое, потому
+/// что `dumpcap` дописывает файл всё это время.
+struct Recording<'a> {
+    path: &'a str,
+    /// ЧЕГО ЖДЁМ — критерий ОЖИДАНИЯ, а не суждения.
+    ///
+    /// Дальний конец знает искомое, но не решает: он возвращает ВСЁ прочитанное, чем бы ожидание
+    /// ни кончилось, а вердикт по этим кадрам выносит закон. Знай он только «дождаться хоть
+    /// чего-нибудь» — маяк, приходящий первым, завершал бы ожидание раньше предмета; ровно это и
+    /// произошло на первом же прогоне с маяком, и честный бэкенд был объявлен нарушителем.
+    awaited: Vec<u8>,
+    trouble: Option<String>,
+}
+
+impl reflex_core::certify::FarEnd for Recording<'_> {
+    fn arrived(&mut self) -> Vec<Vec<u8>> {
+        match read_capture(self.path, &self.awaited) {
+            Err(why) => {
+                self.trouble = Some(why);
+                Vec::new()
+            }
             Ok(frames) => frames,
-        },
-    );
-
-    match read_capture(capture) {
-        Err(why) => Err(why),
-        Ok(frames) if frames.is_empty() => {
-            Err("свидетель не увидел НИ ОДНОГО кадра — прогон недействителен".into())
         }
-        Ok(_seen) => Ok(outcome),
     }
 }
 
@@ -114,9 +180,20 @@ fn frame_with(nonce: &[u8]) -> Vec<u8> {
 /// ЧТО УВИДЕЛ СВИДЕТЕЛЬ. Читается через разбор записи, а не через наш захват: прибор обязан быть
 /// устроен иначе, чем подопытный.
 ///
-/// ЖДЁМ ЗАПИСЬ, А НЕ ЧИТАЕМ СРАЗУ: `tshark` пишет буферами, и первый кадр появляется в файле не в
-/// тот же миг. Ожидание с потолком, а не сон наугад.
-fn read_capture(path: &str) -> Result<Vec<Vec<u8>>, String> {
+/// ЖДЁМ ЗАПИСЬ, А НЕ ЧИТАЕМ СРАЗУ: `tshark` пишет буферами, и кадр появляется в файле не в тот же
+/// миг. Ожидание с потолком, а не сон наугад.
+///
+/// # Ждём ПРЕДМЕТ, а не «хоть что-нибудь»
+///
+/// Первая редакция ждала появления ЛЮБОГО кадра, и это было верно ровно до тех пор, пока в записи
+/// не мог оказаться никто, кроме подопытного. С приходом маяка условие рассыпалось: маяк доезжает
+/// первым, ожидание завершалось на нём, наш кадр ещё не был записан — и честный бэкенд получил
+/// `broken` на живом прогоне. Условие ожидания перестало быть про предмет в тот самый момент,
+/// когда в записи появился кто-то ещё.
+///
+/// Потолок отдаёт ВСЁ прочитанное, а не пустоту: судит закон, и отнимать у него улики — значит
+/// подменять «нашего нет» на «прибор молчал».
+fn read_capture(path: &str, awaited: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match std::fs::read(path) {
@@ -126,13 +203,15 @@ fn read_capture(path: &str) -> Result<Vec<Vec<u8>>, String> {
             Err(_not_yet) => std::thread::sleep(Duration::from_millis(100)),
             Ok(bytes) => {
                 let (frames, broken) = reflex_core::pcap::read(&bytes, Instant::now());
-                match (frames.is_empty(), Instant::now() >= deadline) {
-                    (true, false) => std::thread::sleep(Duration::from_millis(100)),
-                    (true, true) => match broken {
-                        None => return Ok(Vec::new()),
+                let seen: Vec<Vec<u8>> = frames.into_iter().map(|frame| frame.bytes).collect();
+                let found = seen.iter().any(|frame| carries(frame, awaited));
+                match (found, Instant::now() >= deadline) {
+                    (true, _) => return Ok(seen),
+                    (false, false) => std::thread::sleep(Duration::from_millis(100)),
+                    (false, true) => match broken {
+                        None => return Ok(seen),
                         Some(what) => return Err(format!("запись повреждена: {what:?}")),
                     },
-                    (false, _) => return Ok(frames.into_iter().map(|frame| frame.bytes).collect()),
                 }
             }
         }
