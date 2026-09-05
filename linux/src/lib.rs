@@ -4,7 +4,6 @@ pub mod conntrack;
 mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
-pub mod nfqws;
 pub mod rawsend;
 #[cfg(feature = "tc")]
 pub mod tc;

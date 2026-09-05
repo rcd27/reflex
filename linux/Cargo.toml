@@ -23,8 +23,9 @@ reflex-core = { path = "../core", features = ["tls"] }
 nfq = { version = "0.2", optional = true }
 tracing = "0.1"
 futures = "0.3"
-tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "process", "io-util", "net"] }
-thiserror = "2"
+# ФИЧА `process` СНЯТА ВМЕСТЕ С `nfqws` (05.09.2026): она стояла ради запуска чужого движка
+# обхода, и после его выноса в дереве не осталось ни одного `tokio::process`.
+tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "io-util", "net"] }
 libc = "0.2"
 aya = { version = "0.13", optional = true }
 reflex-linux-common = { path = "../linux-common", optional = true }
