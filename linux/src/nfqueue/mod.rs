@@ -4,6 +4,7 @@ mod guard;
 mod nft_guard;
 mod pipeline;
 mod preflight;
+mod terminal;
 mod typed;
 mod witness;
 
@@ -14,6 +15,7 @@ pub use guard::{
     RuleAction, RuleProtocol,
 };
 pub use nft_guard::{NftConfig, NftGuard, NftGuardError, NftMarkGuard, SlotConfig};
+pub use terminal::{Answer, NotTaken};
 
 /// Backward compatibility alias — remove after all consumers migrate.
 pub type FirewallGuard = NfqGuard;
