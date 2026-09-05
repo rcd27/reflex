@@ -52,7 +52,11 @@ fn nothing_seen_while_blind_is_not_the_same_as_nothing_happened() {
         },
     );
 
-    assert_eq!(sighted_nothing, Told::Nothing, "зрячий и пусто — факт о СЕТИ");
+    assert_eq!(
+        sighted_nothing,
+        Told::Nothing,
+        "зрячий и пусто — факт о СЕТИ"
+    );
     assert_eq!(blind_nothing, Told::Blind, "слепой и пусто — факт О НАС");
     assert_ne!(
         sighted_nothing, blind_nothing,
@@ -99,5 +103,9 @@ fn counting_two_stretches_of_one_conversation_adds_both_directions() {
             down_bytes: 240
         }
     );
-    assert_eq!(added(first, no_counts()), first, "ноль обязан быть нейтралью");
+    assert_eq!(
+        added(first, no_counts()),
+        first,
+        "ноль обязан быть нейтралью"
+    );
 }
