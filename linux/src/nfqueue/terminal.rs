@@ -27,9 +27,34 @@
 //! МЕСТЕ: выше него значения, ниже мир.
 
 use nfq::Verdict;
-use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+use reflex_core::held::{Answered, Delivered, Observed, Refused, Terminal};
 
 use super::backend::NfqueueBackend;
+
+/// СООБЩЕНИЕ ОЧЕРЕДИ КАК НОСИТЕЛЬ ПРАВА ОТВЕТИТЬ.
+///
+/// # Почему ньютайп, а не `impl` прямо на `nfq::Message`
+///
+/// Правило сирот: `Observed` живёт в `reflex-core`, `Message` — в чужом крейте, и ни один из них
+/// не наш. Запрет здесь не помеха, а подсказка: обёртка и есть то место, где мы говорим, ЧЕМ для
+/// нас является чужой тип.
+///
+/// `#[repr(transparent)]` — гарантия, что изоляция бесплатна: раскладка та же, что у самого
+/// сообщения, и никакого косвенного обращения не появляется.
+///
+/// # Байты живут здесь, пока живо сообщение
+///
+/// Разбор читает их заимствованием, дело помнит извлечённую улику, а полная запись пакета лежит в
+/// сырье независимого прибора. Прежняя редакция клала `Vec<u8>` в само дело: аллокация на каждый
+/// пакет и дубликат того, что уже на диске.
+#[repr(transparent)]
+pub struct Queued(pub nfq::Message);
+
+impl Observed for Queued {
+    fn payload(&self) -> &[u8] {
+        self.0.get_payload()
+    }
+}
 
 /// ЧЕМ МОЖНО ОТВЕТИТЬ ОЧЕРЕДИ — её собственный алфавит, а не общий на все носители.
 ///
@@ -55,17 +80,16 @@ pub enum Answer {
 pub struct NotTaken(pub std::io::Error);
 
 impl Terminal for NfqueueBackend {
-    type Carrier = nfq::Message;
+    type Carrier = Queued;
     type Answer = Answer;
     type Refusal = NotTaken;
 
     fn apply(
         &mut self,
-        answered: Answered<nfq::Message, Answer>,
+        answered: Answered<Queued, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, NotTaken>> {
         let Answered {
-            mut carrier,
-            seen,
+            carrier: Queued(mut carrier),
             at,
             answer,
         } = answered;
@@ -77,11 +101,16 @@ impl Terminal for NfqueueBackend {
                 carrier.set_verdict(Verdict::Accept);
             }
             Answer::Stop => carrier.set_verdict(Verdict::Drop),
-            // КОПИЯ БАЙТОВ — ЦЕНА ТОГО, ЧТО НИЧЕГО НЕ СЪЕДАЕТСЯ, и она названа здесь, а не
-            // обнаружена профилировщиком. Подменённые байты обязаны уехать И в ядро, И в дело:
-            // отдай мы их ядру по владению, `Delivered` перестал бы говорить, ЧЕМ именно
-            // ответили, — то есть шаг снова стал бы невосстановимым. Платит только эта ветвь,
-            // самая редкая из четырёх; `Pass`, `Marked` и `Stop` не копируют ничего.
+            // ЕДИНСТВЕННАЯ КОПИЯ ВО ВСЁМ ПУТИ, и она копирует НЕ НАБЛЮДЕНИЕ, а РЕШЕНИЕ.
+            //
+            // Наблюдённые байты не копируются нигде: их читают у сообщения заимствованием, а
+            // полная запись лежит в сырье независимого прибора. Подменённые же байты — наши, и
+            // больше их нет нигде: отдай мы их ядру по владению, `Delivered` перестал бы говорить,
+            // ЧЕМ именно ответили, и шаг стал бы невосстановимым.
+            //
+            // Платит одна ветвь из четырёх, самая редкая. Убрать копию можно разделяемым буфером
+            // (`bytes::Bytes` — стандарт экосистемы), и это станет оправданным, когда подмена
+            // перестанет быть редкой; сегодня зависимость дороже выигрыша.
             Answer::Modified(bytes) => {
                 carrier.set_payload(bytes.clone());
                 carrier.set_verdict(Verdict::Accept);
@@ -90,9 +119,8 @@ impl Terminal for NfqueueBackend {
 
         // ЕДИНСТВЕННОЕ МЕСТО, ГДЕ СЛУЧАЕТСЯ МИР — и единственное, где его отказ ловится.
         match self.send_verdict(carrier) {
-            Ok(()) => Ok(Delivered { seen, at, answer }),
+            Ok(()) => Ok(Delivered { at, answer }),
             Err(why) => Err(Refused {
-                seen,
                 at,
                 answer,
                 why: NotTaken(why),

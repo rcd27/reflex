@@ -15,7 +15,7 @@ pub use guard::{
     RuleAction, RuleProtocol,
 };
 pub use nft_guard::{NftConfig, NftGuard, NftGuardError, NftMarkGuard, SlotConfig};
-pub use terminal::{Answer, NotTaken};
+pub use terminal::{Answer, NotTaken, Queued};
 
 /// Backward compatibility alias — remove after all consumers migrate.
 pub type FirewallGuard = NfqGuard;
