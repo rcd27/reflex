@@ -1,26 +1,26 @@
+//! ОЧЕРЕДЬ ЯДРА — БОЕВОЙ БЭКЕНД ПРОДУКТА.
+//!
+//! # Что отсюда вынесено 05.09.2026 и почему
+//!
+//! Модуль был вдвое больше: `guard`/`nft_guard` (1052 строки) ставили правила netfilter,
+//! `typed`/`witness`/`combined` — разбирали провод и сводили две калитки. Замер показал, что ВСЁ
+//! это зовёт только `nevod/` — первый невод, объявленный владельцем deprecated и не собирающийся
+//! (`NfqVerdict::AcceptMarked` не покрыт в его `match` с 31.08).
+//!
+//! Продукт (`nevod2-runtime`) правила ставит СНАРУЖИ — скриптами стенда и `executor`, — а из
+//! очереди берёт `NfqHandler`/`NfqPacket`/`NfqPipeline`. Комментарий в его `Cargo.toml` уверял,
+//! будто нужны `WirePacket`/`WireHandler`; в коде их нет ни одного вхождения.
+//!
+//! Фундамент, несущий обвязку мёртвого потребителя, — не фундамент, а музей. Знание не потеряно:
+//! оно в истории, и путь до него назван в коммите сноса.
+
 mod backend;
-mod combined;
-mod guard;
-mod nft_guard;
 mod pipeline;
 mod preflight;
 mod terminal;
-mod typed;
-mod witness;
 
 pub use backend::{NfqueueBackend, Waited};
-pub use combined::NfqAfPacketBackend;
-pub use guard::{
-    ConnmarkConfig, Direction, FirewallRule, MarkMatch, NfqGuard, NfqGuardError, PolicyRoute,
-    RuleAction, RuleProtocol,
-};
-pub use nft_guard::{NftConfig, NftGuard, NftGuardError, NftMarkGuard, SlotConfig};
-pub use terminal::{Answer, NotTaken, Queued};
-
-/// Backward compatibility alias — remove after all consumers migrate.
-pub type FirewallGuard = NfqGuard;
 pub use pipeline::{
     NfqCounts, NfqHandler, NfqPacket, NfqPipeline, NfqShared, NfqStep, NfqVerdict, NfqVerdictKind,
 };
-pub use typed::{classify_l7, TypedNfq, WireHandler, WirePacket, L7};
-pub use witness::FlowWitness;
+pub use terminal::{Answer, NotTaken, Queued};
