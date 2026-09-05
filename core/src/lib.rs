@@ -14,6 +14,7 @@ pub mod ext;
 pub mod flow_table;
 pub mod grid;
 pub mod guard;
+pub mod interleave;
 pub mod meter;
 pub mod parse;
 pub mod stack;
