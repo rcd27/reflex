@@ -648,7 +648,9 @@ fn stamp_age(now_ns: u64, stamp_ns: u64) -> std::time::Duration {
     std::time::Duration::from_nanos(now_ns.saturating_sub(stamp_ns))
 }
 
+// Тесты крыла законно трогают своё же крыло: пометка адресована тем, кто фичу ВКЛЮЧАЕТ извне.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::stamp_age;
     use std::time::Duration;

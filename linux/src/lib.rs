@@ -1,3 +1,16 @@
+//! # ДВА КРЫЛА ПОМЕЧЕНЫ УСТАРЕВШИМИ (05.09.2026): `tc` и `tun`
+//!
+//! Перепись публичных имён показала: обе фичи включает ТОЛЬКО `nevod/` — первый невод, объявленный
+//! владельцем deprecated и не собирающийся вовсе. У живых потребителей (zond, nevod2-runtime,
+//! dataplane-nfq, tablo) в зависимостях лишь `nfqueue` и `conntrack`.
+//!
+//! Помечены, а НЕ СНЕСЕНЫ, и это решение владельца: там техника, а не обвязка — eBPF-steering с
+//! картами действий и userspace-терминация TCP поверх smoltcp. Из 21 мёртвого публичного имени
+//! reflex 20 живут в `tc/loader.rs`; полезное оттуда достанут разбором, а не сносом вслепую.
+//!
+//! Пометка сделана атрибутом, а не только этой прозой: включивший фичу услышит компилятор, а не
+//! понадеется прочесть заголовок файла.
+
 mod capture;
 #[cfg(feature = "conntrack")]
 pub mod conntrack;
@@ -5,13 +18,50 @@ mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
 pub mod rawsend;
+
+/// ЕДИНСТВЕННЫЙ ПОТРЕБИТЕЛЬ — ПЕРВЫЙ НЕВОД, И ОН ЗАКРЫТ.
+///
+/// eBPF-загрузчик со steering-картами: 809 строк, из них 20 публичных имён не зовёт никто вовсе.
+/// Полезное здесь есть (быстрый датаплейн в ядре), и потому крыло помечено, а не снесено, — но
+/// строить на нём новое, не разобрав, значит наследовать мёртвого потребителя.
 #[cfg(feature = "tc")]
+#[deprecated(
+    since = "0.0.1",
+    note = "фичу `tc` включает только невод 1 (закрыт); разбор техники отложен — см. заголовок lib.rs"
+)]
 pub mod tc;
+
+/// ЕДИНСТВЕННЫЙ ПОТРЕБИТЕЛЬ — ПЕРВЫЙ НЕВОД, И ОН ЗАКРЫТ. Общая часть терминации.
+// Крыло помечено ЦЕЛИКОМ, поэтому обращения его частей друг к другу — шум, а не находка: пометку
+// обязан услышать тот, кто фичу ВКЛЮЧАЕТ, а не мы, читая собственный же модуль.
 #[cfg(feature = "tun")]
+#[allow(deprecated)]
+#[deprecated(
+    since = "0.0.1",
+    note = "фичу `tun` включает только невод 1 (закрыт); разбор техники отложен — см. заголовок lib.rs"
+)]
 pub mod tun;
+
+/// ИСХОДЯЩАЯ ТЕРМИНАЦИЯ поверх smoltcp (600 строк). Потребитель закрыт.
+// Крыло помечено ЦЕЛИКОМ, поэтому обращения его частей друг к другу — шум, а не находка: пометку
+// обязан услышать тот, кто фичу ВКЛЮЧАЕТ, а не мы, читая собственный же модуль.
 #[cfg(feature = "tun")]
+#[allow(deprecated)]
+#[deprecated(
+    since = "0.0.1",
+    note = "фичу `tun` включает только невод 1 (закрыт); разбор техники отложен — см. заголовок lib.rs"
+)]
 pub mod tun_egress;
+
+/// ВХОДЯЩАЯ ТЕРМИНАЦИЯ поверх smoltcp (892 строки). Потребитель закрыт.
+// Крыло помечено ЦЕЛИКОМ, поэтому обращения его частей друг к другу — шум, а не находка: пометку
+// обязан услышать тот, кто фичу ВКЛЮЧАЕТ, а не мы, читая собственный же модуль.
 #[cfg(feature = "tun")]
+#[allow(deprecated)]
+#[deprecated(
+    since = "0.0.1",
+    note = "фичу `tun` включает только невод 1 (закрыт); разбор техники отложен — см. заголовок lib.rs"
+)]
 pub mod tun_listen;
 
 use std::pin::Pin;
@@ -19,6 +69,7 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 use reflex_core::CanDrop;
 use reflex_core::{CanInject, CanObserve};
 
@@ -30,6 +81,7 @@ pub use rawsend::RawSender;
 // потребитель (nevod) биндит src-порт из `PROBE_PORT_LO..=PROBE_PORT_HI` на direct-пробу. Реэкспорт —
 // nevod тянет `reflex-linux`, не `-common` напрямую.
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 pub use reflex_linux_common::{
     is_probe_port, is_probe_sport_hibyte, PROBE_PORT_HI, PROBE_PORT_LO, PROBE_SPORT_HIBYTE,
 };
@@ -107,6 +159,7 @@ impl AfPacketBackend {
 // --- TC-BPF + AF_PACKET backend: CanObserve + CanInject + CanDrop + CanModify ---
 
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 pub struct TcAfPacketBackend {
     capture: Capture,
     injector: Injector,
@@ -114,6 +167,7 @@ pub struct TcAfPacketBackend {
 }
 
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl reflex_core::backend::Source for TcAfPacketBackend {
     type Packet = Vec<u8>;
     type Packets<'a> = PacketStream<'a>;
@@ -134,6 +188,7 @@ impl reflex_core::backend::Source for TcAfPacketBackend {
 /// `Hold`/`Accept`, которых у tc нет, и `emit` пришлось бы отвечать ошибкой в рантайме на то, что
 /// обязан отсекать компилятор.
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 #[derive(Debug, Clone)]
 pub enum TcCommand {
     /// Отправить кадр в сеть через AF_PACKET.
@@ -149,6 +204,7 @@ pub enum TcCommand {
 /// Молчаливый `Ok(())` здесь означал бы «дропнули», когда не дропнули, — то есть ровно ту тихую
 /// сторону, которую эта работа убирает.
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 fn action_key(flow: &reflex_core::types::Flow) -> Result<u32, String> {
     match (flow.src.ip(), flow.dst.ip()) {
         (std::net::IpAddr::V4(src), std::net::IpAddr::V4(dst)) => Ok(tc::flow_hash(
@@ -174,6 +230,7 @@ fn action_key(flow: &reflex_core::types::Flow) -> Result<u32, String> {
 }
 
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl reflex_core::backend::Sink for TcAfPacketBackend {
     type Command = TcCommand;
     type Error = String;
@@ -189,14 +246,17 @@ impl reflex_core::backend::Sink for TcAfPacketBackend {
 }
 
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl CanObserve for TcAfPacketBackend {}
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl CanInject for TcAfPacketBackend {
     fn inject(packet: reflex_core::command::InjectablePacket) -> TcCommand {
         TcCommand::Inject(packet.serialize())
     }
 }
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl CanDrop for TcAfPacketBackend {
     fn drop_flow(flow: reflex_core::types::Flow) -> TcCommand {
         TcCommand::Drop(flow)
@@ -215,6 +275,7 @@ impl CanDrop for TcAfPacketBackend {
 // невыразим. Пустой маркер эти два состояния не различал.
 
 #[cfg(feature = "tc")]
+#[allow(deprecated)]
 impl TcAfPacketBackend {
     /// Open AF_PACKET on `capture_iface` (br0), attach TC-BPF on `tc_iface` (veth-rt-br egress).
     pub fn open(

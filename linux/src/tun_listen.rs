@@ -598,7 +598,9 @@ impl TunFlows {
     }
 }
 
+// Тесты крыла законно трогают своё же крыло: пометка адресована тем, кто фичу ВКЛЮЧАЕТ извне.
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::tun_egress::{EgressStack, EgressWire};
