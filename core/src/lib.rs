@@ -8,6 +8,7 @@ pub mod checksum;
 pub mod clock;
 pub mod command;
 pub mod detector;
+pub mod disclosure;
 pub mod expiring_set;
 pub mod ext;
 pub mod flow_table;
