@@ -184,7 +184,7 @@ mod tests {
         let mut h = TypedNfq::new(Spy { seen: None });
         let ipv6ish = vec![0x60u8; 40]; // версия=6
         let (verdict, injects) = h.handle(&NfqPacket {
-            payload: ipv6ish,
+            payload: &ipv6ish,
             fwmark: 0,
         });
         assert!(
@@ -200,8 +200,9 @@ mod tests {
     #[test]
     fn ipv4_tls_delivers_typed_client_hello() {
         let mut h = TypedNfq::new(Spy { seen: None });
+        let hello = ipv4_tls("rutracker.org");
         let (_v, _i) = h.handle(&NfqPacket {
-            payload: ipv4_tls("rutracker.org"),
+            payload: &hello,
             fwmark: 0,
         });
         let wire = h

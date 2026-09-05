@@ -7,10 +7,19 @@ use super::preflight;
 use super::terminal::{Answer, Queued};
 use crate::rawsend::RawSender;
 
-/// Packet from NFQUEUE with pending verdict.
-pub struct NfqPacket {
+/// ПАКЕТ ИЗ ОЧЕРЕДИ, ЖДУЩИЙ ВЕРДИКТА.
+///
+/// # Байты ЗАИМСТВОВАНЫ, а не скопированы (05.09.2026)
+///
+/// Прежде здесь стоял `Vec<u8>`, и путь пакета копировал полезную нагрузку ТРИЖДЫ: `to_vec()` при
+/// чтении, `clone()` при сборке этой структуры и ещё раз в свидетеле потока. Три аллокации на
+/// каждый пакет при цене впуска 3,88 мкс — и ни одна из копий не пережила бы обработчик.
+///
+/// Байты принадлежат сообщению ядра, пока оно живо, а живо оно до самого вердикта. Обработчику
+/// довольно заимствования: разобрать, решить, вернуть решение значением.
+pub struct NfqPacket<'a> {
     /// Raw IP packet bytes (no ethernet header).
-    pub payload: Vec<u8>,
+    pub payload: &'a [u8],
     /// Firewall mark from iptables.
     pub fwmark: u32,
 }
@@ -103,7 +112,7 @@ pub struct NfqCounts {
 
 /// Generic handler: receives packet, returns verdict + inject list.
 pub trait NfqHandler {
-    fn handle(&mut self, packet: &NfqPacket) -> (NfqVerdict, Vec<InjectablePacket>);
+    fn handle(&mut self, packet: &NfqPacket<'_>) -> (NfqVerdict, Vec<InjectablePacket>);
 }
 
 /// NFQUEUE verdict loop.
@@ -219,8 +228,10 @@ impl<H: NfqHandler> NfqPipeline<H> {
         //
         // TODO(#326): убрать и оставшуюся — `NfqHandler` вправе читать байты заимствованием, но
         // это правка его потребителей, а не пайпа.
+        // БАЙТЫ ЗАИМСТВУЮТСЯ У СООБЩЕНИЯ, и живёт заимствование ровно до вердикта — сообщение всё
+        // это время наше. Прежде здесь были две копии подряд, и первая не употреблялась ни разу.
         let nfq_packet = NfqPacket {
-            payload: msg.get_payload().to_vec(),
+            payload: msg.get_payload(),
             fwmark: mark,
         };
 
