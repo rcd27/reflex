@@ -30,6 +30,7 @@ pub mod sight;
 pub mod stream;
 pub mod tap;
 pub mod tempo;
+pub mod timeout;
 pub mod types;
 pub mod watch;
 
