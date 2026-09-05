@@ -366,22 +366,14 @@ fn on_grid<T>(
     window: Duration,
     start: Option<Instant>,
 ) -> Vec<crate::detector::DetectorEvent<T>> {
-    let start = match (start, window.as_millis()) {
-        (None, _) | (_, 0) => return Vec::new(),
-        (Some(start), _) => start,
-    };
-    // Номера узлов сетки, лежащих строго после первого события и не позже второго.
-    let step =
-        |moment: Instant| moment.saturating_duration_since(start).as_nanos() / window.as_nanos();
-    ((step(before) + 1)..=step(after))
-        .map(|n| crate::detector::DetectorEvent::Tick {
-            at: start + window * (n as u32),
-        })
-        .filter(|tick| match moment(tick) {
-            Some(at) => at > before && at <= after,
-            None => false,
-        })
-        .collect()
+    // ЗАКОН СЕТКИ ОДИН НА ВСЕ ЧАСЫ (05.09.2026) — [`crate::grid`]. Здесь он был написан впервые,
+    // и отсюда же разошёлся по трём другим реализациям; теперь все они зовут одну.
+    match start {
+        None => Vec::new(),
+        Some(start) => crate::grid::nodes_between(start, before, after, window)
+            .map(|at| crate::detector::DetectorEvent::Tick { at })
+            .collect(),
+    }
 }
 
 #[cfg(test)]

@@ -134,17 +134,18 @@ impl Clock for TestClock {
 
 impl TestClock {
     /// Сколько тиков сетки уже наступило к этому моменту.
+    ///
+    /// ЗАКОН СЕТКИ ОБЩИЙ ДЛЯ ВСЕХ ЧАСОВ (05.09.2026) — [`crate::grid`]. Здесь он был написан
+    /// своей копией, и копия отвечала на нулевой шаг `u64::MAX` тиков: число, выглядящее как
+    /// «очень много» там, где верно «сетки нет».
     fn due(&self, every: Duration) -> u64 {
-        match every.as_nanos() {
-            0 => u64::MAX,
-            step => (self.elapsed().as_nanos() / step) as u64,
-        }
+        crate::grid::due(self.began, self.now(), every)
     }
 
     /// Момент `n`-го тика сетки. Считается ОТ НАЧАЛА: два тика, выданных одним продвижением,
     /// обязаны иметь разное время, иначе интервал между ними станет нулём.
     fn beat_at(&self, every: Duration, nth: u64) -> Instant {
-        self.began + every * (nth as u32)
+        crate::grid::node(self.began, every, nth)
     }
 }
 
@@ -166,13 +167,10 @@ impl Ticks for TestClock {
             move |(clock, handed)| async move {
                 // СКОЛЬКО ТИКОВ СЕТКИ УЖЕ НАСТУПИЛО. Ждать нечего: время двигает тест, и если
                 // очередной тик ещё не наступил, поток обязан отдать управление, а не крутиться.
-                let due = match every.as_nanos() {
-                    0 => u64::MAX,
-                    step => (clock.elapsed().as_nanos() / step) as u64,
-                };
+                let due = crate::grid::due(clock.began, clock.now(), every);
                 match due > handed {
                     true => {
-                        let at = clock.began + every * ((handed + 1) as u32);
+                        let at = crate::grid::node(clock.began, every, handed + 1);
                         Some((at, (clock, handed + 1)))
                     }
                     // ВРЕМЯ ЕЩЁ НЕ ПРИШЛО — поток ЗАКАНЧИВАЕТСЯ, а не висит.
@@ -223,7 +221,7 @@ impl Beats for OsClock {
     fn beats(&self, every: Duration) -> impl Iterator<Item = Instant> {
         let began = Instant::now();
         (1u64..).filter_map(move |nth| {
-            let due = began + every * (nth as u32);
+            let due = crate::grid::node(began, every, nth);
             match due.checked_duration_since(Instant::now()) {
                 // Узел уже позади — мы отстали; выдаём его без сна, но и без залпа: следующий
                 // вызов возьмёт следующий узел, а не все пропущенные разом.
