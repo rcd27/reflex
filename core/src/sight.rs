@@ -105,6 +105,58 @@ pub fn sighted(kernel: Counted, engine: Counted) -> Sight {
     }
 }
 
+/// РАННЕЕ ИЗ ДВУХ НАБЛЮДЕНИЙ ОДНОГО ПРЕДМЕТА.
+///
+/// # Почему у слепоты здесь СТАРШИНСТВО НАД ПУСТОТОЙ, а в [`later`] наоборот
+///
+/// Различие не в знаке сравнения, а в предмете, и его стоит держать в голове, потому что глазами
+/// эти две функции читаются как min и max.
+///
+/// Здесь предмет — величина ОДНОГО разговора (когда отвечающий заговорил). Если часть его мы не
+/// видели, утверждать «ничего не было» нельзя: ответ мог быть ровно в пропущенном. Оттого
+/// `Blind ⊐ Nothing`.
+///
+/// # Коммутативна, и это требование, а не свойство
+///
+/// Наблюдения приходят из разных источников в произвольном порядке. Всякая операция, берущая «то,
+/// что пришло первым», молча становится выборкой из мультимножества — то есть результат начинает
+/// зависеть от очерёдности, которой мы не управляем.
+pub fn sooner<T: Ord>(one: Told<T>, other: Told<T>) -> Told<T> {
+    match (one, other) {
+        (Told::Told(mine), Told::Told(theirs)) => Told::Told(mine.min(theirs)),
+        (Told::Told(value), Told::Nothing)
+        | (Told::Told(value), Told::Blind)
+        | (Told::Nothing, Told::Told(value))
+        | (Told::Blind, Told::Told(value)) => Told::Told(value),
+        (Told::Blind, Told::Nothing)
+        | (Told::Nothing, Told::Blind)
+        | (Told::Blind, Told::Blind) => Told::Blind,
+        (Told::Nothing, Told::Nothing) => Told::Nothing,
+    }
+}
+
+/// ПОЗДНЕЕ ИЗ ДВУХ НАБЛЮДЕНИЙ — зеркало [`sooner`], и разница не в знаке, а в предмете.
+///
+/// Здесь предмет — наблюдение за УЗЛОМ, склеенное из многих разговоров. Слепота одного разговора
+/// не делает слепым узел: если хоть один разговор наблюдался и оказался пуст, это факт об узле.
+/// Оттого `Nothing ⊐ Blind` — старшинство ровно обратное [`sooner`].
+///
+/// Ветки перечислены без `_` намеренно: асимметрия двух функций видна только тогда, когда обе
+/// таблицы выписаны целиком и лежат рядом.
+pub fn later<T: Ord>(one: Told<T>, other: Told<T>) -> Told<T> {
+    match (one, other) {
+        (Told::Told(mine), Told::Told(theirs)) => Told::Told(mine.max(theirs)),
+        (Told::Told(value), Told::Nothing)
+        | (Told::Told(value), Told::Blind)
+        | (Told::Nothing, Told::Told(value))
+        | (Told::Blind, Told::Told(value)) => Told::Told(value),
+        (Told::Nothing, Told::Nothing)
+        | (Told::Nothing, Told::Blind)
+        | (Told::Blind, Told::Nothing) => Told::Nothing,
+        (Told::Blind, Told::Blind) => Told::Blind,
+    }
+}
+
 /// НАБЛЮДЁННОЕ СЛЕПОТОЙ НЕ ОТМЕНЯЕТСЯ: факт, добытый до того, как мы ослепли, остаётся фактом —
 /// иначе действие стирало бы то, что само же и добыло.
 pub fn told<T>(seen: Told<T>, sight: Sight) -> Told<T> {

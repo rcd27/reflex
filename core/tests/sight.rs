@@ -5,7 +5,7 @@
 //! переполняется, WinDivert теряет по-своему. Движок, не умеющий сказать «я этого не видел»,
 //! выдаёт своё молчание за молчание сети.
 
-use reflex_core::sight::{added, no_counts, sighted, told, Counted, Sight, Told};
+use reflex_core::sight::{added, later, no_counts, sighted, sooner, told, Counted, Sight, Told};
 
 fn counts(up: u64, down: u64) -> Counted {
     Counted {
@@ -108,4 +108,72 @@ fn counting_two_stretches_of_one_conversation_adds_both_directions() {
         first,
         "ноль обязан быть нейтралью"
     );
+}
+
+// ── СЛИЯНИЕ ДВУХ НАБЛЮДЕНИЙ ОДНОГО ПРЕДМЕТА ─────────────────────────────────────────────────
+//
+// Наблюдения приходят из разных источников и в произвольном порядке, поэтому обе операции обязаны
+// быть коммутативны: всякое поле, берущееся «у первого», молча становится выборкой из
+// мультимножества.
+
+#[test]
+fn the_earlier_of_two_observations_wins_in_sooner() {
+    assert_eq!(
+        sooner(Told::Told(210u64), Told::Told(6595)),
+        Told::Told(210)
+    );
+}
+
+#[test]
+fn the_later_of_two_observations_wins_in_later() {
+    assert_eq!(
+        later(Told::Told(210u64), Told::Told(6595)),
+        Told::Told(6595)
+    );
+}
+
+#[test]
+fn an_observation_beats_absence_in_both() {
+    assert_eq!(sooner(Told::Nothing, Told::Told(7u64)), Told::Told(7));
+    assert_eq!(later(Told::Nothing, Told::Told(7u64)), Told::Told(7));
+    assert_eq!(sooner(Told::Blind, Told::Told(7u64)), Told::Told(7));
+    assert_eq!(later(Told::Blind, Told::Told(7u64)), Told::Told(7));
+}
+
+/// РАЗЛИЧАЮЩИЙ ЗАКОН: у двух операций РАЗНОЕ старшинство слепоты, и это не описка.
+///
+/// В `sooner` слепота сильнее пустоты: предмет — величина ОДНОГО разговора, и если часть его мы не
+/// видели, «ничего не было» утверждать нельзя. В `later` наоборот: предмет — наблюдение за узлом,
+/// и слепота одного разговора не делает слепым узел.
+#[test]
+fn blindness_outranks_absence_in_sooner_and_yields_to_it_in_later() {
+    assert_eq!(
+        sooner(Told::<u64>::Blind, Told::Nothing),
+        Told::Blind,
+        "часть разговора не видели — «ничего не было» утверждать нельзя"
+    );
+    assert_eq!(
+        later(Told::<u64>::Blind, Told::Nothing),
+        Told::Nothing,
+        "слепота одного разговора не делает слепым узел"
+    );
+}
+
+#[test]
+fn both_merges_are_commutative_because_observations_arrive_in_any_order() {
+    let cases = [Told::Told(1u64), Told::Told(2), Told::Nothing, Told::Blind];
+    for one in cases {
+        for other in cases {
+            assert_eq!(
+                sooner(one, other),
+                sooner(other, one),
+                "sooner не коммутативен на {one:?} и {other:?}"
+            );
+            assert_eq!(
+                later(one, other),
+                later(other, one),
+                "later не коммутативен на {one:?} и {other:?}"
+            );
+        }
+    }
 }
