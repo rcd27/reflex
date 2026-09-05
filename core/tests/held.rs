@@ -1,112 +1,141 @@
-//! НАБЛЮДЕНИЕ, НЕСУЩЕЕ ПРАВО ОТВЕТИТЬ — законы того, что ничего не съедается.
+//! ОТВЕТ — ЗНАЧЕНИЕ, ЭФФЕКТ — ТЕРМИНАЛЬНЫЙ МОРФИЗМ. Законы того, что ничего не съедается.
 //!
-//! Невод 1 отстрелил здесь ногу дважды, и обе видно в его коде: вердикт был ВЫЗОВОМ
-//! (`accept_marked(msg, mark)`), то есть не значением — записать, сравнить и развернуть назад его
-//! нельзя; а след расследования уезжал спанами OTLP, и его собственный док признаётся, что без
-//! `OTEL_EXPORTER_OTLP_ENDPOINT` «спаны молча гасятся». Обе беды одного рода: сведения покидали
-//! значение.
+//! Невод 1 отстрелил здесь ногу дважды, и обе видно в его коде. Вердикт был ВЫЗОВОМ
+//! (`msg.set_verdict(…); let _ = queue.verdict(msg)`) — записать, сравнить и развернуть назад его
+//! нельзя. А рядом, в том же выражении, `let _ =` выбрасывал единственный факт о ДОСТАВКЕ: ядро
+//! могло отказать, и мы бы не узнали. Четыре вердикта — четыре выброшенных свидетельства.
+//!
+//! Здесь и то, и другое разведено: цепочка порождает ЗНАЧЕНИЕ, а мира касается ровно одно место.
 
-use reflex_core::held::{Held, Unanswered};
+use reflex_core::held::{Answered, Held, Terminal};
 use std::time::{Duration, Instant};
 
-/// Носитель права ответа. В бою это сообщение ядра; здесь — расписка, по которой видно, чем
-/// ответили и ответили ли вообще.
-#[derive(Debug, Clone, Default)]
-struct Slip(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+/// Чем отвечают ЭТОМУ носителю. У очереди ядра будет свой алфавит; здесь — расписка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Word {
+    Pass,
+    Stop,
+}
 
-impl Slip {
-    fn said(&self) -> Vec<String> {
-        match self.0.lock() {
-            Err(_poisoned) => Vec::new(),
-            Ok(said) => said.clone(),
+/// Носитель права ответа: в бою сообщение ядра, здесь — номерок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ticket(u32);
+
+/// МИР ЗА ТЕРМИНАЛОМ. Единственное место с `&mut`, и оно же единственное, где что-то случается.
+struct Window {
+    took: Vec<(Ticket, Word)>,
+    refuses: bool,
+}
+
+impl Window {
+    fn open() -> Self {
+        Self {
+            took: Vec::new(),
+            refuses: false,
+        }
+    }
+    fn shut() -> Self {
+        Self {
+            took: Vec::new(),
+            refuses: true,
         }
     }
 }
 
-impl reflex_core::held::Carrier for Slip {
-    fn answer(self, with: &str) {
-        match self.0.lock() {
-            Err(_poisoned) => (),
-            Ok(mut said) => said.push(with.to_string()),
+impl Terminal for Window {
+    type Carrier = Ticket;
+    type Answer = Word;
+    type Refusal = &'static str;
+
+    fn apply(
+        &mut self,
+        answered: Answered<Ticket, Word>,
+    ) -> Result<reflex_core::held::Delivered<Word>, reflex_core::held::Refused<Word, &'static str>>
+    {
+        match self.refuses {
+            true => Err(answered.refused("окно закрыто")),
+            false => {
+                self.took.push((answered.carrier, answered.answer));
+                Ok(answered.delivered())
+            }
         }
     }
 }
 
-/// НАБЛЮДЕНИЕ ЧИТАЕТСЯ СКОЛЬКО УГОДНО РАЗ. Ответ не отнимает у дела его предмет.
-#[test]
-fn what_was_seen_can_be_read_again_and_again() {
-    let held = Held::new(Slip::default(), vec![1u8, 2, 3], Instant::now());
-
-    assert_eq!(held.seen(), &[1, 2, 3]);
-    assert_eq!(held.seen(), &[1, 2, 3], "чтение не съедает наблюдение");
-    assert_eq!(held.seen().len(), 3);
+fn held(at: Instant) -> Held<Ticket> {
+    Held::new(Ticket(7), vec![1u8, 2, 3], at)
 }
 
-/// ОТВЕТ ОСТАВЛЯЕТ ЗАПИСЬ, А НЕ ИСЧЕЗАЕТ. Вердикт — значение, и после него дело остаётся делом.
-#[test]
-fn answering_leaves_a_record_instead_of_consuming_the_case() {
-    let slip = Slip::default();
-    let at = Instant::now();
-    let held = Held::new(slip.clone(), vec![7u8], at);
-
-    let answered = held.answered("marked(3)");
-
-    assert_eq!(slip.said(), vec!["marked(3)"], "ответ дошёл до носителя");
-    assert_eq!(answered.seen, vec![7], "предмет пережил ответ");
-    assert_eq!(answered.at, at, "и момент тоже");
-    assert_eq!(answered.answer, "marked(3)", "и сам ответ стал записью");
-}
-
-/// ЗАБЫТЫЙ ОТВЕТ НЕВОЗМОЖЕН: деструктор отвечает пропуском.
+/// РЕШЕНИЕ НЕ ЕСТЬ ЭФФЕКТ. Пока значение не дошло до терминала, в мире не случилось НИЧЕГО.
 ///
-/// Семантика та же, что у `TrafficGuard` («мёртвый страж ⟹ трафик идёт»): непринятое решение не
-/// должно останавливать чужой трафик. Но молчаливым это быть не может — см. следующий закон.
+/// Это и есть разрыв, который лечится: прежде `answered` сам звал носителя, то есть цепочка
+/// трогала мир посередине и не могла быть значением.
 #[test]
-fn a_forgotten_answer_is_impossible_the_drop_lets_traffic_through() {
-    let slip = Slip::default();
+fn deciding_is_not_doing_nothing_happens_until_the_terminal() {
+    let mut window = Window::open();
+    let _answered = held(Instant::now()).answered(Word::Pass);
 
-    drop(Held::new(slip.clone(), vec![1u8], Instant::now()));
-
-    assert_eq!(slip.said(), vec![Unanswered::PASSED_BY_DROP]);
-}
-
-/// И ЭТО ФАКТ О НАС, А НЕ О МИРЕ. Отпущенное деструктором обязано быть отличимо от отпущенного
-/// решением — иначе «мы забыли» читается как «мы решили пропустить».
-#[test]
-fn what_the_destructor_let_through_is_not_the_same_word_as_a_decision_to_pass() {
-    let by_decision = Slip::default();
-    let by_forgetting = Slip::default();
-
-    Held::new(by_decision.clone(), vec![1u8], Instant::now()).answered("pass");
-    drop(Held::new(by_forgetting.clone(), vec![1u8], Instant::now()));
-
-    assert_ne!(
-        by_decision.said(),
-        by_forgetting.said(),
-        "решение пропустить и забытый вердикт обязаны звучать по-разному"
+    assert!(
+        window.took.is_empty(),
+        "решение принято, а мира никто не касался"
     );
+    let _ = &mut window;
 }
 
-/// ОТВЕТ ОДИН. Ответив, дело нельзя ответить снова — по построению, а не по договорённости.
-///
-/// Проверяется компиляцией: `answered` берёт `self`, и второй вызов не соберётся.
+/// ДОСТАВКА — ОТДЕЛЬНОЕ СВИДЕТЕЛЬСТВО, и его выдаёт МИР, а не мы.
 #[test]
-fn a_case_is_answered_once() {
-    let slip = Slip::default();
-    let held = Held::new(slip.clone(), vec![1u8], Instant::now());
+fn delivery_is_witnessed_by_the_world_not_by_us() {
+    let at = Instant::now();
+    let mut window = Window::open();
 
-    let _answered = held.answered("pass");
-    // held.answered("drop"); ← не соберётся: наблюдение уже отдано ответу
+    let outcome = window.apply(held(at).answered(Word::Pass));
 
-    assert_eq!(slip.said().len(), 1, "носитель услышал ровно один ответ");
+    match outcome {
+        Err(_refused) => panic!("окно было открыто, а ответ не принят"),
+        Ok(delivered) => {
+            assert_eq!(delivered.answer, Word::Pass);
+            assert_eq!(delivered.seen, vec![1, 2, 3], "предмет пережил доставку");
+            assert_eq!(delivered.at, at, "и момент тоже");
+        }
+    }
+    assert_eq!(window.took, vec![(Ticket(7), Word::Pass)]);
 }
 
-/// МОМЕНТ НАБЛЮДЕНИЯ ПЕРЕЖИВАЕТ ВСЁ. Без него дело нельзя поставить на ленту времени, а
-/// расследование только по ней и разворачивается назад.
+/// ОТКАЗ МИРА НЕ ТЕРЯЕТСЯ. Прежде здесь стоял `let _ =`, и отказ ядра исчезал бесследно.
 #[test]
-fn the_moment_of_observation_survives_the_whole_journey() {
-    let at = Instant::now() - Duration::from_secs(5);
-    let answered = Held::new(Slip::default(), vec![9u8], at).answered("drop");
+fn a_refusal_by_the_world_is_kept_not_discarded() {
+    let at = Instant::now();
+    let mut window = Window::shut();
 
-    assert_eq!(answered.at, at);
+    let outcome = window.apply(held(at).answered(Word::Stop));
+
+    match outcome {
+        Ok(_delivered) => panic!("окно закрыто, а ответ объявлен доставленным"),
+        Err(refused) => {
+            assert_eq!(refused.why, "окно закрыто", "причина названа");
+            assert_eq!(refused.answer, Word::Stop, "и чем отвечали — цело");
+            assert_eq!(refused.seen, vec![1, 2, 3], "и предмет цел");
+            assert_eq!(refused.at, at);
+        }
+    }
 }
+
+/// НАБЛЮДЕНИЕ ЧИТАЕТСЯ НА ЛЮБОМ ШАГЕ. Ответ не отнимает у дела его предмет.
+#[test]
+fn what_was_seen_is_readable_at_every_step() {
+    let at = Instant::now() - Duration::from_secs(3);
+    let waiting = held(at);
+    assert_eq!(waiting.seen(), &[1, 2, 3]);
+    assert_eq!(waiting.seen(), &[1, 2, 3], "чтение не съедает");
+
+    let decided = waiting.answered(Word::Pass);
+    assert_eq!(decided.seen, vec![1, 2, 3]);
+    assert_eq!(decided.at, at);
+}
+
+// ЗАКОН «ЗАБЫТОЕ РЕШЕНИЕ — ОШИБКА КОМПИЛЯТОРА» ЖИВЁТ У `Answered`, А НЕ ЗДЕСЬ.
+//
+// Первая редакция положила его сюда `compile_fail`-докстрингом — и он не гонялся НИ РАЗУ:
+// doc-тесты собираются только у библиотечной цели, интеграционные их не видят. Проверено
+// (`cargo test --doc` не знает ни одного теста из `tests/`), и это ровно тот класс, что репа ловит
+// у себя каждый день: написано и не зовётся.
