@@ -28,6 +28,7 @@ pub mod stream;
 pub mod tap;
 pub mod tempo;
 pub mod types;
+pub mod watch;
 
 pub use tap::Tap;
 pub use tempo::Tempo;
