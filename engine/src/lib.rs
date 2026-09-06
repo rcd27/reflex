@@ -648,19 +648,15 @@ impl SightingInstrument {
     }
 }
 
-impl reflex_core::Detector for SightingInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору: прежде звалось `Observation` в паспорте, переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = Sighting;
+impl reflex_core::step::Step for SightingInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<Sighting>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является — прибор высказывается, когда есть
     /// что сказать.
-    type Signal = Sighting;
+    type To = smallvec::SmallVec<[Sighting; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -672,6 +668,8 @@ impl reflex_core::Detector for SightingInstrument {
 }
 
 impl reflex_instrument::Instrument for SightingInstrument {
+    type Signal = Sighting;
+
     const INSTRUMENT: &'static str = "sighting";
 
     const SUBJECT: reflex_instrument::Subject = reflex_instrument::Subject::Ourselves;

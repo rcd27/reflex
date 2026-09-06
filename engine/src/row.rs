@@ -355,19 +355,15 @@ impl BlindnessInstrument {
     }
 }
 
-impl reflex_core::Detector for BlindnessInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору: прежде звалось `Observation` в паспорте, переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = Sight;
+impl reflex_core::step::Step for BlindnessInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<Sight>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является — прибор высказывается, когда есть
     /// что сказать.
-    type Signal = Told<()>;
+    type To = smallvec::SmallVec<[Told<()>; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -379,6 +375,8 @@ impl reflex_core::Detector for BlindnessInstrument {
 }
 
 impl reflex_instrument::Instrument for BlindnessInstrument {
+    type Signal = Told<()>;
+
     const INSTRUMENT: &'static str = "blindness";
 
     const SUBJECT: reflex_instrument::Subject = reflex_instrument::Subject::Ourselves;
