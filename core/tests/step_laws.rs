@@ -23,7 +23,7 @@
 //! Закон о жизни состояния уже предъявлен и здесь НЕ ПОВТОРЯЕТСЯ:
 //! `core/tests/step.rs::composition_carries_the_state_of_both_links`.
 
-use reflex_core::step::{Step, StepExt};
+use reflex_core::step::{Id, Step, StepExt};
 
 /// МИР КОНЕЧЕН: все непустые последовательности длины ≤ 3 из трёх значений — 39 входов.
 ///
@@ -116,5 +116,25 @@ fn composition_is_associative() {
         let left = run(Adding(0).then(Doubling(0)).then(Maxing(0)), &input);
         let right = run(Adding(0).then(Doubling(0).then(Maxing(0))), &input);
         assert_eq!(left, right, "вход {input:?}");
+    }
+}
+
+/// ЗАКОН 2: `id ∘ f ≡ f ≡ f ∘ id`.
+///
+/// Проверяется с ОБЕИХ сторон намеренно: тождество, пропускающее вход, но теряющее состояние
+/// соседа, нарушило бы только одну из них.
+///
+/// Сила та же, что у ассоциативности: `Id` без состояния сломать, сохранив сигнатуру, нечем —
+/// вернуть из `step` что-то, кроме входа, не из чего. Сторож регрессии сигнатуры, и это сказано,
+/// а не подразумевается.
+#[test]
+fn identity_is_neutral_on_both_sides() {
+    for input in world() {
+        let bare = run(Adding(0), &input);
+        let before = run(Id::new().then(Adding(0)), &input);
+        let after = run(Adding(0).then(Id::new()), &input);
+
+        assert_eq!(before, bare, "id слева, вход {input:?}");
+        assert_eq!(after, bare, "id справа, вход {input:?}");
     }
 }
