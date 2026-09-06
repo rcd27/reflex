@@ -95,8 +95,8 @@
 
 | файл | ответственность после плана |
 |---|---|
-| `core/src/detector.rs` | пять живых комбинаторов как `Step` и `DetectorEvent`. Трейтов `Detector`/`DetectorExt` нет; `By`/`Told`/`Changes` снесены |
-| `core/src/step.rs` | `Step`, `Then`, `Id`, `StepExt` — и пять методов-комбинаторов, переехавших из `DetectorExt` |
+| `core/src/detector.rs` | семь комбинаторов как `Step`, `DetectorEvent`, `Told`. Трейтов `Detector`/`DetectorExt` нет |
+| `core/src/step.rs` | `Step`, `Then`, `Id`, `StepExt` — и семь методов-комбинаторов, переехавших из `DetectorExt` |
 | `core/src/lifting.rs` | `Detecting<D>` снесён; файл остаётся ради прозы о подъёме диалектов |
 | `core/src/stream/detect_per.rs` | `DetectPer` получает параметр `Sig`; границы на `Step` |
 | `core/src/flow_table.rs` | границы на `Step` |
@@ -109,7 +109,7 @@
 
 Поэтому воркспейс **красен между задачами 3 и 6**, и это выбор, а не упущение. Взамен каждая задача имеет свои ворота: `cargo test -p <крейт>` для своего крейта. Отвергнутая альтернатива — один гигантский коммит на 42 места: он непроверяем по частям, и ревью его не берёт.
 
-Задача 1 и 2 воркспейс зелёным **оставляют** — они трогают то, чего в `src` никто не употребляет.
+Задача 1 и 2 воркспейс зелёным **оставляют**: комбинаторы в `src` никто не зовёт, а `Detecting` после задачи 1 не нужен никому. Это довод о ПОРЯДКЕ работ, не о праве кода на существование — право меряется принадлежностью к категории (Global Constraints).
 
 ---
 
@@ -118,7 +118,7 @@
 **Files:**
 - Modify: `core/src/detector.rs` — комбинаторы `Both`, `RMap`, `LMap`, `Contextual`, `Timed`, `By`, `Changes`
 - Modify: `core/src/step.rs` — семь методов-комбинаторов в `StepExt`
-- Modify: `core/src/lib.rs:54-56` — реэкспорт
+- Modify: `core/src/lib.rs:54-56` — реэкспорт (имена остаются все семь, меняется лишь то, откуда они берутся)
 - Modify: `core/src/ext.rs:81` — доклинк на `DetectorExt::and`
 - Rewrite: `core/tests/detector_combinators.rs`
 
@@ -126,11 +126,13 @@
 - Consumes: `reflex_core::step::{Step, StepExt}`, `reflex_core::detector::DetectorEvent`, `smallvec::SmallVec`
 - Produces: пять типов-комбинаторов, реализующих `Step`, и пять методов на `StepExt`:
   - `Both<A, B>` : `Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>`
+  - `By<D>` : `Step<From = DetectorEvent<I>, To = SmallVec<[Told<S>; 2]>>`
+  - `Changes<D, S>` : `Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>` — **у структуры появился параметр `S`**
   - `RMap<D, F>` : `Step<From = DetectorEvent<I>, To = SmallVec<[Renamed; 2]>>`
   - `LMap<D, F, Wide>` : `Step<From = DetectorEvent<Wide>, To = SmallVec<[S; 2]>>`
   - `Contextual<D, Ctx, Pick, Dress>` : `Step<From = DetectorEvent<I>, To = SmallVec<[Dressed; 2]>>`
   - `Timed<D>` : `Step<From = DetectorEvent<I>, To = SmallVec<[(Instant, S); 2]>>`
-  - `StepExt::and`, `::rmap`, `::lmap`, `::contextual`, `::timed`
+  - `StepExt::and`, `::rmap`, `::lmap`, `::contextual`, `::timed`, `::by`, `::changes`
 
 - [ ] **Шаг 1: сверить замер — ничего не сносится, всё переносится**
 
