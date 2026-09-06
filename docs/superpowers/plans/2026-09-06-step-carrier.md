@@ -976,6 +976,17 @@ EOF
 
 ### Task 6: Снос `runtime::stage::Stage` — седьмой диалект и второй `Then`
 
+> **ПОПРАВКА ПО ХОДУ ИСПОЛНЕНИЯ (06.09.2026).** Сообщение коммита ниже несёт ЛОЖНОЕ утверждение:
+> «Тестов у него нет вовсе». `runtime/src/stage.rs` нёс `#[cfg(test)] mod tests` (строка 72) с
+> тремя `#[tokio::test]` — `then_advances_through_both`, `settle_short_circuits_tail`,
+> `settle_passes_below_threshold`. Автор плана посмотрел КАТАЛОГ `runtime/tests/`, не нашёл там
+> файла и написал вывод, улик под который не собирал.
+>
+> Снос при этом в силе: он обоснован НОЛЬ ВНЕШНИХ ПОТРЕБИТЕЛЕЙ, и это доказывает шаг 1 отдельно.
+> Три теста проверяли собственную семантику модуля и ушли вместе с ней. Поправка — коммит
+> **`492c54f`**, следующим, а не `amend`: стереть ложь задним числом значило бы стереть след ошибки.
+
+
 **Files:**
 - Delete: `runtime/src/stage.rs`
 - Modify: `runtime/src/lib.rs` — убрать `pub mod stage;` и строку `pub use stage::{Stage, StageExt, StageOutcome, Then};`
