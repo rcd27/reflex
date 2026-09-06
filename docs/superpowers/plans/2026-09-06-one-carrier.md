@@ -42,6 +42,19 @@
 
 Знание о форме уходит в сообщение коммита, код — в историю.
 
+## Прибор: `grep` здесь НЕ GNU grep
+
+Установлено на прогоне задачи 2. В этой оболочке `grep` — функция-обёртка над `ugrep`
+(`--ignore-files --hidden -I`), и у неё два свойства, которых у GNU grep нет:
+
+* **пути печатаются БЕЗ `./`** — значит фильтры вида `grep -v "^./путь"` не срабатывают
+  вовсе и молча пропускают всё;
+* **уважается `.gitignore`** — `target/` исключается им, а не фильтром.
+
+Все фильтры в этом плане переписаны на подстроку без якоря (`grep -v "путь"`), потому что
+такая работает под обоими. Если проверочный `grep` вернул больше, чем ожидает шаг, —
+**сперва проверь, не пустышка ли фильтр**, и лишь потом докладывай о потребителях.
+
 ## Global Constraints
 
 - **Новых зависимостей не добавлять.**
@@ -211,9 +224,9 @@ Run:
 ```bash
 grep -rn "expand_effects\|drive_owned\|InterpStep" --include=*.rs . \
   | grep -v target \
-  | grep -v "^./runtime/src/expand.rs" \
-  | grep -v "^./runtime/src/drive_owned.rs" \
-  | grep -v "^./runtime/tests/expand.rs"
+  | grep -v "runtime/src/expand.rs" \
+  | grep -v "runtime/src/drive_owned.rs" \
+  | grep -v "runtime/tests/expand.rs"
 ```
 
 Expected: только две строки `pub mod`/`pub use` в `runtime/src/lib.rs`.
@@ -306,7 +319,7 @@ Run:
 ```bash
 grep -rn "Reactor\|Transition" --include=*.rs . \
   | grep -v target | grep -vE ":[0-9]+:\s*(//|///|//!)" \
-  | grep -v "^./core/src/reactor.rs" | grep -v "^./core/tests/reactor.rs"
+  | grep -v "core/src/reactor.rs" | grep -v "core/tests/reactor.rs"
 ```
 
 Expected: только `core/src/lib.rs` (реэкспорт), `core/src/lifting.rs` (обёртка `Reacting`) и `core/tests/lifting.rs` (фикстуры) — всё удаляется ниже.
