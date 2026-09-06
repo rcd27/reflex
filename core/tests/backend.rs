@@ -41,14 +41,8 @@ mod counting {
         SILENCED_PORT.load(Ordering::SeqCst)
     }
 
-    pub fn reset() {
-        SENT.store(0, Ordering::SeqCst)
-    }
     pub fn add(n: u32) {
         SENT.fetch_add(n, Ordering::SeqCst);
-    }
-    pub fn total() -> u32 {
-        SENT.load(Ordering::SeqCst)
     }
 }
 
@@ -74,30 +68,6 @@ impl Sink for Loopback {
     }
 }
 impl CanInject for Loopback {
-    fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
-        packet.serialize()
-    }
-}
-
-/// ДРУГОЙ бэкенд: другой источник, другая ошибка — и та же цепочка поверх.
-struct Recorded;
-impl CanObserve for Recorded {}
-impl Source for Recorded {
-    type Packet = u8;
-    type Packets<'a> = stream::Iter<std::vec::IntoIter<u8>>;
-    fn packets(&mut self) -> Self::Packets<'_> {
-        stream::iter(vec![9u8, 9])
-    }
-}
-impl Sink for Recorded {
-    type Command = Vec<u8>;
-    type Error = String;
-    fn emit(&mut self, command: Vec<u8>) -> Result<(), String> {
-        counting::add(command.len() as u32 * 10);
-        Ok(())
-    }
-}
-impl CanInject for Recorded {
     fn inject(packet: reflex_core::command::InjectablePacket) -> Vec<u8> {
         packet.serialize()
     }
@@ -161,11 +131,6 @@ impl Clone for Verdicting {
 impl Clone for Loopback {
     fn clone(&self) -> Self {
         Loopback
-    }
-}
-impl Clone for Recorded {
-    fn clone(&self) -> Self {
-        Recorded
     }
 }
 
