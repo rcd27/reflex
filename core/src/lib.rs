@@ -29,7 +29,6 @@ pub mod step;
 // нужно не всякому потребителю: на коробке провод живой. Зависимостей нет — только `std`.
 #[cfg(feature = "pcap")]
 pub mod pcap;
-pub mod reactor;
 pub mod role;
 pub mod sight;
 pub mod stream;
@@ -60,6 +59,5 @@ pub use detector::{
 pub use ext::ReflexExt;
 #[cfg(feature = "tls")]
 pub use l7::L7;
-pub use reactor::{drive, drive_observed, group_by_reactor, Reactor, Transition};
 pub use serves::Serves;
 pub use stack::{AnyProtocol, Dns, Http, Protocol, Quic, Reads, Tcp, Tls, Udp};
