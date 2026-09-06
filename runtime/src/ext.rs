@@ -1,24 +1,30 @@
 use std::time::Duration;
 
 use futures::Stream;
-use reflex_core::detector::Detector;
+use reflex_core::step::Step;
 use reflex_core::types::{HasConnectionId, HasFlow};
+use reflex_core::DetectorEvent;
+use smallvec::SmallVec;
 
 use crate::stream::{
     DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
 };
 
 pub trait ReflexRuntimeExt: Stream + Sized {
-    fn detect<D>(self, detector: D) -> DetectStream<Self, D>
+    fn detect<D, Sig>(self, detector: D) -> DetectStream<Self, D, Sig>
     where
-        D: Detector<Input = Self::Item>,
+        D: Step<From = DetectorEvent<Self::Item>, To = SmallVec<[Sig; 2]>>,
     {
         self.detect_with_tick(detector, Duration::from_millis(100))
     }
 
-    fn detect_with_tick<D>(self, detector: D, tick_interval: Duration) -> DetectStream<Self, D>
+    fn detect_with_tick<D, Sig>(
+        self,
+        detector: D,
+        tick_interval: Duration,
+    ) -> DetectStream<Self, D, Sig>
     where
-        D: Detector<Input = Self::Item>,
+        D: Step<From = DetectorEvent<Self::Item>, To = SmallVec<[Sig; 2]>>,
     {
         DetectStream::new(self, detector, tick_interval)
     }

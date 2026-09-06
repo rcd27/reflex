@@ -1,6 +1,7 @@
 use futures::StreamExt;
+use reflex_core::step::Step;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::{Detector, DetectorEvent};
+use reflex_core::DetectorEvent;
 use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -20,9 +21,9 @@ struct RstSignal {
     ttl_delta: i16,
 }
 
-impl Detector for SimpleRstDetector {
-    type Input = TcpSegment;
-    type Signal = RstSignal;
+impl Step for SimpleRstDetector {
+    type From = DetectorEvent<TcpSegment>;
+    type To = SmallVec<[RstSignal; 2]>;
 
     fn step(mut self, event: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[RstSignal; 2]>) {
         let mut signals = SmallVec::new();

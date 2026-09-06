@@ -1,5 +1,6 @@
 use futures::StreamExt;
-use reflex_core::{Detector, DetectorEvent};
+use reflex_core::step::Step;
+use reflex_core::DetectorEvent;
 use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
 
@@ -59,9 +60,9 @@ impl RstDetector {
     }
 }
 
-impl Detector for RstDetector {
-    type Input = Packet;
-    type Signal = RstSignal;
+impl Step for RstDetector {
+    type From = DetectorEvent<Packet>;
+    type To = SmallVec<[RstSignal; 2]>;
 
     fn step(mut self, event: DetectorEvent<Packet>) -> (Self, SmallVec<[RstSignal; 2]>) {
         let mut signals = SmallVec::new();

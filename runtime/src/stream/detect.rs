@@ -5,28 +5,24 @@ use std::time::Duration;
 
 use futures::Stream;
 use pin_project_lite::pin_project;
+use smallvec::SmallVec;
 use tokio::time::{self, Interval};
 
-use reflex_core::detector::{Detector, DetectorEvent};
+use reflex_core::step::Step;
+use reflex_core::DetectorEvent;
 
 pin_project! {
-    pub struct DetectStream<S, D>
-    where
-        D: Detector,
-    {
+    pub struct DetectStream<S, D, Sig> {
         #[pin]
         source: S,
         detector: Option<D>,
-        buffer: VecDeque<D::Signal>,
+        buffer: VecDeque<Sig>,
         #[pin]
         tick: Interval,
     }
 }
 
-impl<S, D> DetectStream<S, D>
-where
-    D: Detector,
-{
+impl<S, D, Sig> DetectStream<S, D, Sig> {
     pub fn new(source: S, detector: D, tick_interval: Duration) -> Self {
         Self {
             source,
@@ -37,12 +33,12 @@ where
     }
 }
 
-impl<S, D> Stream for DetectStream<S, D>
+impl<S, D, Sig> Stream for DetectStream<S, D, Sig>
 where
-    S: Stream<Item = D::Input>,
-    D: Detector,
+    S: Stream,
+    D: Step<From = DetectorEvent<S::Item>, To = SmallVec<[Sig; 2]>>,
 {
-    type Item = D::Signal;
+    type Item = Sig;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
