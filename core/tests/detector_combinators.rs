@@ -20,7 +20,8 @@
 //! НА КЛЮЧ — то есть переход считается по той цели, о которой высказывание. Две цели,
 //! чередуясь, прошли бы оператор потока насквозь.
 
-use reflex_core::{Detector, DetectorEvent, DetectorExt};
+use reflex_core::detector::DetectorEvent;
+use reflex_core::step::{Step, StepExt};
 use smallvec::{smallvec, SmallVec};
 
 /// Вход: что случилось на проводе. Роль «мирового» словаря в этих тестах.
@@ -54,11 +55,11 @@ struct Trouble {
 #[derive(Debug, Clone, Copy, Default)]
 struct Rst;
 
-impl Detector for Rst {
-    type Input = Kind;
-    type Signal = Distress;
+impl Step for Rst {
+    type From = DetectorEvent<Kind>;
+    type To = SmallVec<[Distress; 2]>;
 
-    fn step(self, event: DetectorEvent<Kind>) -> (Self, SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet {
                 input: Kind::Rst, ..
@@ -75,11 +76,14 @@ fn packet(input: Kind) -> DetectorEvent<Kind> {
     DetectorEvent::packet_now(input)
 }
 
-/// Прогнать детектор по событиям, собрать сигналы.
+/// Прогнать шаг по событиям, собрать сигналы.
 ///
 /// Поток здесь намеренно не участвует: предмет — сам детектор, и подмешивать к нему `detect_per`
 /// значило бы поверять два механизма одним тестом.
-fn run<D: Detector>(detector: D, events: Vec<DetectorEvent<D::Input>>) -> Vec<D::Signal> {
+fn run<D, I, S>(detector: D, events: Vec<DetectorEvent<I>>) -> Vec<S>
+where
+    D: Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+{
     events
         .into_iter()
         .fold((detector, Vec::new()), |(state, said), event| {
@@ -148,11 +152,11 @@ fn rmap_composes() {
 #[derive(Debug, Clone, Copy, Default)]
 struct Clock;
 
-impl Detector for Clock {
-    type Input = Kind;
-    type Signal = Distress;
+impl Step for Clock {
+    type From = DetectorEvent<Kind>;
+    type To = SmallVec<[Distress; 2]>;
 
-    fn step(self, event: DetectorEvent<Kind>) -> (Self, SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst]),
             DetectorEvent::Packet { .. } => (self, smallvec![]),
@@ -232,11 +236,11 @@ fn lmap_with_a_total_narrowing_changes_nothing() {
 #[derive(Debug, Clone, Copy, Default)]
 struct Level;
 
-impl Detector for Level {
-    type Input = Kind;
-    type Signal = Kind;
+impl Step for Level {
+    type From = DetectorEvent<Kind>;
+    type To = SmallVec<[Kind; 2]>;
 
-    fn step(self, event: DetectorEvent<Kind>) -> (Self, SmallVec<[Kind; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { input, .. } => (self, smallvec![input]),
             DetectorEvent::Tick { .. } => (self, smallvec![]),

@@ -72,16 +72,16 @@ pub trait Detector: Sized {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Both<A, B>(pub A, pub B);
 
-impl<A, B> Detector for Both<A, B>
+impl<A, B, I, S> crate::step::Step for Both<A, B>
 where
-    A: Detector,
-    B: Detector<Input = A::Input, Signal = A::Signal>,
-    A::Input: Clone,
+    A: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    B: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    I: Clone,
 {
-    type Input = A::Input;
-    type Signal = A::Signal;
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[S; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let (first, mut signals) = self.0.step(event.clone());
         let (second, more) = self.1.step(event);
         signals.extend(more);
@@ -95,15 +95,15 @@ pub struct RMap<D, F> {
     f: F,
 }
 
-impl<D, F, Renamed> Detector for RMap<D, F>
+impl<D, F, I, S, Renamed> crate::step::Step for RMap<D, F>
 where
-    D: Detector,
-    F: Fn(D::Signal) -> Renamed,
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    F: Fn(S) -> Renamed,
 {
-    type Input = D::Input;
-    type Signal = Renamed;
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[Renamed; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let Self { inner, f } = self;
         let (stepped, signals) = inner.step(event);
         let renamed = signals.into_iter().map(&f).collect();
@@ -122,15 +122,15 @@ pub struct LMap<D, F, Wide> {
     wide: core::marker::PhantomData<fn(&Wide)>,
 }
 
-impl<D, F, Wide> Detector for LMap<D, F, Wide>
+impl<D, F, Wide, I, S> crate::step::Step for LMap<D, F, Wide>
 where
-    D: Detector,
-    F: Fn(&Wide) -> Option<D::Input>,
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    F: Fn(&Wide) -> Option<I>,
 {
-    type Input = Wide;
-    type Signal = D::Signal;
+    type From = DetectorEvent<Wide>;
+    type To = SmallVec<[S; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let Self { inner, f, wide } = self;
         match event {
             DetectorEvent::Packet { input, at } => match f(&input) {
@@ -170,10 +170,22 @@ where
 /// чередуясь, прошли бы его насквозь.
 ///
 /// Сравнение с ПОСЛЕДНИМ показанием, а не со всеми виденными: возврат к прежнему есть событие.
-pub struct Changes<D: Detector> {
+///
+/// # ПОЧЕМУ У СТРУКТУРЫ ПОЯВИЛСЯ `S` (06.09.2026)
+///
+/// Прежде тип показания брался проекцией `D::Signal`. Проекции нет: `Step` держит алфавит целиком
+/// (`To = SmallVec<[S; 2]>`), а вынуть из него элемент нечем. Тип был здесь всегда — изменилось
+/// лишь то, что теперь его обязаны назвать.
+pub struct Changes<D, S> {
     inner: D,
     /// Первое показание проходит всегда: ему не с чем совпадать.
-    said: Option<D::Signal>,
+    said: Option<S>,
+}
+
+impl<D, S> Changes<D, S> {
+    pub(crate) fn new(inner: D) -> Self {
+        Self { inner, said: None }
+    }
 }
 
 /// Одеть сигнал в контекст ПОСЛЕДНЕГО наблюдения — нужен приборам, что говорят по тику, когда
@@ -189,17 +201,17 @@ pub struct Contextual<D, Ctx, Pick, Dress> {
     context: Option<Ctx>,
 }
 
-impl<D, Ctx, Pick, Dress, Dressed> Detector for Contextual<D, Ctx, Pick, Dress>
+impl<D, Ctx, Pick, Dress, Dressed, I, S> crate::step::Step for Contextual<D, Ctx, Pick, Dress>
 where
-    D: Detector,
-    D::Input: Clone,
-    Pick: Fn(&D::Input) -> Ctx,
-    Dress: Fn(Option<&Ctx>, D::Signal) -> Option<Dressed>,
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    I: Clone,
+    Pick: Fn(&I) -> Ctx,
+    Dress: Fn(Option<&Ctx>, S) -> Option<Dressed>,
 {
-    type Input = D::Input;
-    type Signal = Dressed;
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[Dressed; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let Self {
             inner,
             pick,
@@ -228,15 +240,15 @@ where
     }
 }
 
-impl<D> Detector for Changes<D>
+impl<D, I, S> crate::step::Step for Changes<D, S>
 where
-    D: Detector,
-    D::Signal: PartialEq + Clone,
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    S: PartialEq + Clone,
 {
-    type Input = D::Input;
-    type Signal = D::Signal;
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[S; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let Self { inner, said } = self;
         let (stepped, signals) = inner.step(event);
         // Повтор внутри одного шага — тоже повтор.
@@ -271,11 +283,14 @@ pub struct Timed<D> {
     inner: D,
 }
 
-impl<D: Detector> Detector for Timed<D> {
-    type Input = D::Input;
-    type Signal = (Instant, D::Signal);
+impl<D, I, S> crate::step::Step for Timed<D>
+where
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+{
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[(Instant, S); 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let at = event.at();
         let (stepped, signals) = self.inner.step(event);
         let stamped = signals.into_iter().map(|signal| (at, signal)).collect();
@@ -322,10 +337,7 @@ impl<D: Clone, Ctx: Clone, Pick: Clone, Dress: Clone> Clone for Contextual<D, Ct
     }
 }
 
-impl<D: Detector + Clone> Clone for Changes<D>
-where
-    D::Signal: Clone,
-{
+impl<D: Clone, S: Clone> Clone for Changes<D, S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -351,11 +363,14 @@ pub struct By<D> {
     by: &'static str,
 }
 
-impl<D: Detector> Detector for By<D> {
-    type Input = D::Input;
-    type Signal = Told<D::Signal>;
+impl<D, I, S> crate::step::Step for By<D>
+where
+    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+{
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[Told<S>; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         let Self { inner, by } = self;
         let (stepped, signals) = inner.step(event);
         let told = signals
@@ -375,75 +390,46 @@ impl<D: Clone> Clone for By<D> {
     }
 }
 
-/// Комбинаторы детектора. Реализован для всех — писать `impl DetectorExt` не требуется.
-pub trait DetectorExt: Detector + Sized {
-    /// Наблюдать обоими. См. [`Both`].
-    fn and<B>(self, other: B) -> Both<Self, B>
-    where
-        B: Detector<Input = Self::Input, Signal = Self::Signal>,
-        Self::Input: Clone,
-    {
-        Both(self, other)
+impl<D, F> RMap<D, F> {
+    pub(crate) fn new(inner: D, f: F) -> Self {
+        Self { inner, f }
     }
+}
 
-    /// Переименовать сигнал. См. [`RMap`].
-    fn rmap<Renamed, F>(self, f: F) -> RMap<Self, F>
-    where
-        F: Fn(Self::Signal) -> Renamed,
-    {
-        RMap { inner: self, f }
-    }
-
-    /// Одеть сигнал в контекст наблюдения. См. [`Contextual`].
-    fn contextual<Ctx, Pick, Dress, Dressed>(
-        self,
-        pick: Pick,
-        dress: Dress,
-    ) -> Contextual<Self, Ctx, Pick, Dress>
-    where
-        Pick: Fn(&Self::Input) -> Ctx,
-        Dress: Fn(Option<&Ctx>, Self::Signal) -> Option<Dressed>,
-    {
-        Contextual {
-            inner: self,
-            pick,
-            dress,
-            context: None,
-        }
-    }
-
-    /// Приписать показаниям автора. См. [`Told`].
-    fn by(self, by: &'static str) -> By<Self> {
-        By { inner: self, by }
-    }
-
-    /// Вынести наружу момент, в который прибор высказался. См. [`Timed`].
-    fn timed(self) -> Timed<Self> {
-        Timed { inner: self }
-    }
-
-    /// Говорить только о смене показания. См. [`Changes`].
-    fn changes(self) -> Changes<Self>
-    where
-        Self::Signal: PartialEq + Clone,
-    {
-        Changes {
-            inner: self,
-            said: None,
-        }
-    }
-
-    /// Сузить вход. См. [`LMap`].
-    fn lmap<Wide, F>(self, f: F) -> LMap<Self, F, Wide>
-    where
-        F: Fn(&Wide) -> Option<Self::Input>,
-    {
-        LMap {
-            inner: self,
+impl<D, F, Wide> LMap<D, F, Wide> {
+    pub(crate) fn new(inner: D, f: F) -> Self {
+        Self {
+            inner,
             f,
             wide: core::marker::PhantomData,
         }
     }
 }
+
+impl<D, Ctx, Pick, Dress> Contextual<D, Ctx, Pick, Dress> {
+    pub(crate) fn new(inner: D, pick: Pick, dress: Dress) -> Self {
+        Self {
+            inner,
+            pick,
+            dress,
+            context: None,
+        }
+    }
+}
+
+impl<D> Timed<D> {
+    pub(crate) fn new(inner: D) -> Self {
+        Self { inner }
+    }
+}
+
+impl<D> By<D> {
+    pub(crate) fn new(inner: D, by: &'static str) -> Self {
+        Self { inner, by }
+    }
+}
+
+/// Комбинаторы детектора. Реализован для всех — писать `impl DetectorExt` не требуется.
+pub trait DetectorExt: Detector + Sized {}
 
 impl<D: Detector> DetectorExt for D {}

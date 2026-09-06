@@ -79,7 +79,7 @@ pub trait ReflexExt: Stream + Sized {
     ///
     /// Правило детекции подставляется значением, а не вшивается в шаг группировки: добавить
     /// новую болезнь значит дописать `.and(…)` к детектору, не читая и не правя соседние.
-    /// См. [`crate::DetectorExt::and`] и [`DetectPer`].
+    /// См. [`crate::step::StepExt::and`] и [`DetectPer`].
     fn detect_per<D, K, KeyFn, Factory>(
         self,
         key_fn: KeyFn,

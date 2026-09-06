@@ -169,6 +169,80 @@ pub trait StepExt: Step + Sized {
             machine: Some(self),
         }
     }
+
+    /// Наблюдать обоими. См. [`crate::detector::Both`].
+    ///
+    /// Не конвейер: событие идёт в оба звена, а не из одного в другое. Имя `and` — речь цепочки,
+    /// а не логическое «и»: в логике `A AND B` значит «сработали оба», здесь — «слушают оба».
+    fn and<B, I, S>(self, other: B) -> crate::detector::Both<Self, B>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+        B: Step<From = Self::From, To = Self::To>,
+        I: Clone,
+    {
+        crate::detector::Both(self, other)
+    }
+
+    /// Переименовать сигнал. См. [`crate::detector::RMap`].
+    fn rmap<F, I, S, Renamed>(self, f: F) -> crate::detector::RMap<Self, F>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+        F: Fn(S) -> Renamed,
+    {
+        crate::detector::RMap::new(self, f)
+    }
+
+    /// Сузить вход. См. [`crate::detector::LMap`].
+    fn lmap<Wide, F, I, S>(self, f: F) -> crate::detector::LMap<Self, F, Wide>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+        F: Fn(&Wide) -> Option<I>,
+    {
+        crate::detector::LMap::new(self, f)
+    }
+
+    /// Одеть сигнал в контекст наблюдения. См. [`crate::detector::Contextual`].
+    fn contextual<Ctx, Pick, Dress, Dressed, I, S>(
+        self,
+        pick: Pick,
+        dress: Dress,
+    ) -> crate::detector::Contextual<Self, Ctx, Pick, Dress>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+        Pick: Fn(&I) -> Ctx,
+        Dress: Fn(Option<&Ctx>, S) -> Option<Dressed>,
+    {
+        crate::detector::Contextual::new(self, pick, dress)
+    }
+
+    /// Вынести наружу момент, в который звено высказалось. См. [`crate::detector::Timed`].
+    fn timed<I, S>(self) -> crate::detector::Timed<Self>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+    {
+        crate::detector::Timed::new(self)
+    }
+
+    /// Приписать показаниям автора. См. [`crate::detector::Told`].
+    ///
+    /// `and` складывает наблюдателей в один поток, и без имени два прибора с общим словарём
+    /// (`Silence` и `Choked` оба говорят «байтов нет») дают неразличимые показания при разном
+    /// лечении. Имя берётся из паспорта прибора, а не пишется у места сборки.
+    fn by<I, S>(self, by: &'static str) -> crate::detector::By<Self>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+    {
+        crate::detector::By::new(self, by)
+    }
+
+    /// Говорить только о смене показания. См. [`crate::detector::Changes`].
+    fn changes<I, S>(self) -> crate::detector::Changes<Self, S>
+    where
+        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
+        S: PartialEq + Clone,
+    {
+        crate::detector::Changes::new(self)
+    }
 }
 
 impl<S: Step> StepExt for S {}

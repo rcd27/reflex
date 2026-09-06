@@ -8,8 +8,35 @@
 use std::time::{Duration, Instant};
 
 use futures::{stream, StreamExt};
-use reflex_core::{Detector, DetectorEvent, DetectorExt, ReflexExt};
+use reflex_core::{Detector, DetectorEvent, ReflexExt};
 use smallvec::{smallvec, SmallVec};
+
+/// ЛОКАЛЬНАЯ ЗАМЕНА `crate::detector::Both` НА ВРЕМЯ ЗАДАЧИ 1.
+///
+/// Задача 1 переводит семь комбинаторов (включая `Both`) на `Step` — они больше не реализуют
+/// `Detector`. `detect_per()` этого файла всё ещё требует `D: Detector` (его перевод на `Step` —
+/// предмет отдельной задачи плана, не этой). Эта пара — узкая, тестовая, повторяющая ровно то
+/// тело `step`, что было у `crate::detector::Both` до переезда: она держит существующее покрытие
+/// композиции живым, не решая архитектурно ничего нового.
+#[derive(Debug, Clone, Copy)]
+struct Both<A, B>(A, B);
+
+impl<A, B> Detector for Both<A, B>
+where
+    A: Detector,
+    B: Detector<Input = A::Input, Signal = A::Signal>,
+    A::Input: Clone,
+{
+    type Input = A::Input;
+    type Signal = A::Signal;
+
+    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+        let (first, mut signals) = self.0.step(event.clone());
+        let (second, more) = self.1.step(event);
+        signals.extend(more);
+        (Both(first, second), signals)
+    }
+}
 
 /// Вход: адрес плюс что случилось. Свой тип, чтобы тест не зависел от словаря `TcpSegment`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +128,7 @@ impl Detector for Quiet {
     }
 }
 
-/// Третий детектор — существует, чтобы доказать, что цепочка `.and` РАСТЁТ, а не переписывается.
+/// Третий детектор — существует, чтобы доказать, что цепочка `Both` РАСТЁТ, а не переписывается.
 #[derive(Debug, Clone, Copy, Default)]
 struct Bytes;
 
@@ -141,7 +168,7 @@ async fn state_is_per_key() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Rst.and(Bytes),
+        || Both(Rst, Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
@@ -245,7 +272,7 @@ async fn composition_lets_both_observe() {
     let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
         .detect_per(
             |e: &Event| e.addr,
-            || Rst.and(Everything),
+            || Both(Rst, Everything),
             reflex_core::stream::Lifetime::Bounded,
         )
         .collect()
@@ -254,8 +281,8 @@ async fn composition_lets_both_observe() {
     assert_eq!(got, vec![(1, Signal::SawRst), (1, Signal::SawByte)]);
 }
 
-/// ЦЕПОЧКА РАСТЁТ ДОПИСЫВАНИЕМ. Третий детектор добавлен `.and(Bytes)` — правила `Rst` и
-/// `Quiet` при этом не читались и не правились. Это и есть требование, ради которого оба
+/// ЦЕПОЧКА РАСТЁТ ДОПИСЫВАНИЕМ. Третий детектор добавлен оборачиванием в `Both`, снаружи — правила
+/// `Rst` и `Quiet` при этом не читались и не правились. Это и есть требование, ради которого оба
 /// примитива заведены.
 #[tokio::test]
 async fn chain_grows_by_appending() {
@@ -269,7 +296,7 @@ async fn chain_grows_by_appending() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Rst.and(Quiet::after(Duration::from_secs(1))).and(Bytes),
+        || Both(Both(Rst, Quiet::after(Duration::from_secs(1))), Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
