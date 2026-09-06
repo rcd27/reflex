@@ -81,7 +81,7 @@ where
 ///
 /// Состояния нет по построению, и это ровно то, что делает его нейтральным: звено с памятью
 /// нейтральным быть не может, потому что меняет то, что видят соседи.
-pub struct Id<T>(std::marker::PhantomData<T>);
+pub struct Id<T>(std::marker::PhantomData<fn(T) -> T>);
 
 impl<T> Id<T> {
     pub fn new() -> Self {
@@ -101,6 +101,37 @@ impl<T> Step for Id<T> {
 
     fn step(self, input: T) -> (Self, T) {
         (self, input)
+    }
+}
+
+// ТОЖДЕСТВО ОБЯЗАНО БЫТЬ НЕЙТРАЛЬНЫМ И В ТИПАХ, А НЕ ТОЛЬКО В ВЫХОДАХ (правка по ревью).
+//
+// `f` было `Copy + Clone + Debug + Eq`, а `id ∘ f` — ничем: производных у `Id` не было вовсе, и
+// `Then<Id<T>, F>` терял их все. Тождество, теряющее свойства соседа, тождеством не является, и
+// закон этого не видел: он сравнивает ВЫХОДЫ, а потеря случалась в типах.
+//
+// РУКАМИ, А НЕ `derive`: производный код навесил бы `impl<T: Clone> Clone for Id<T>` — баунд,
+// ложный по построению, ибо `T` здесь не хранится. Ограничения нет, и в подписи его быть не должно.
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Id<T> {}
+
+impl<T> PartialEq for Id<T> {
+    /// Все тождества равны: различать их нечем и незачем — состояния у них нет.
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Eq for Id<T> {}
+
+impl<T> std::fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Id")
     }
 }
 

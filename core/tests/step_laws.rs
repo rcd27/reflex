@@ -137,4 +137,12 @@ fn identity_is_neutral_on_both_sides() {
         assert_eq!(before, bare, "id слева, вход {input:?}");
         assert_eq!(after, bare, "id справа, вход {input:?}");
     }
+
+    // НЕЙТРАЛЬНОСТЬ В ТИПАХ — ОТДЕЛЬНОЕ УТВЕРЖДЕНИЕ, и закон по выходам его не видит.
+    // Цепочка с тождеством обязана нести то же, что несла без него; иначе `id` не нейтрален, а
+    // обедняет соседа. Проверяется употреблением: не соберись эти строки — тест красный.
+    fn needs_the_lot<M: Step + Copy + Clone + core::fmt::Debug + PartialEq + Eq>(_: M) {}
+    needs_the_lot(Adding(0));
+    needs_the_lot(Id::<u8>::new().then(Adding(0)));
+    needs_the_lot(Adding(0).then(Id::<u8>::new()));
 }

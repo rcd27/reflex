@@ -114,7 +114,9 @@ core + runtime + linux            — 17 файлов с .await
 engine + engine-nfq + instrument  —  0 файлов с .await
 ```
 
-`futures` отсутствует в зависимостях `engine`, `engine-nfq`, `instrument`.
+`futures` отсутствует в ПРЯМЫХ зависимостях `engine`, `engine-nfq`, `instrument`; транзитивно он
+приходит через `reflex-core`, и `engine/Cargo.toml` это признаёт сам. Довод несёт не отсутствие
+крейта, а независимый от него замер: ноль файлов с `.await`.
 Движок, приехавший из продукта, в реактивный носитель не заходит ни разу.
 
 Категория стадий (`core/src/category.rs`) реализована как `self.inner.map(f)`,
