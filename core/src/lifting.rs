@@ -24,6 +24,7 @@
 use smallvec::SmallVec;
 
 use crate::detector::{Detector, DetectorEvent};
+use crate::reactor::Reactor;
 use crate::step::Step;
 
 /// ДЕТЕКТОР КАК МОРФИЗМ КАТЕГОРИИ ШАГА.
@@ -43,5 +44,41 @@ impl<D: Detector> Step for Detecting<D> {
     fn step(self, input: Self::From) -> (Self, Self::To) {
         let (next, told) = self.0.step(input);
         (Detecting(next), told)
+    }
+}
+
+/// РЕАКТОР КАК МОРФИЗМ КАТЕГОРИИ ШАГА.
+///
+/// Алфавит выхода — `Option<Effect>`: «переход состоялся, действия не требует» есть законный
+/// исход, а не пустота. Необязательность выражается значением и потому от подписи ничего не
+/// требует.
+///
+/// # Начальное состояние остаётся у реактора
+///
+/// [`Reactor::start`] здесь не поглощается: его место — способность `CanReplay::seed`, которая
+/// заводится вместе с восьмым законом эталона (шестой vision §8.4). До тех пор [`Self::started`]
+/// лишь ПРОНОСИТ рождение наружу, ничего не решая за вызывающего.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reacting<R>(pub R);
+
+impl<R: Reactor> Reacting<R> {
+    /// РОДИТЬ МАШИНУ ВМЕСТЕ С ЭФФЕКТОМ РОЖДЕНИЯ.
+    ///
+    /// Эффект возвращается, а не отбрасывается. `group_by_reactor` его сегодня глотает — с
+    /// названной причиной («единственный текущий потребитель его не производит»), — но повторять
+    /// потерю в общем подъёме значило бы сделать её умолчанием вместо частного случая.
+    pub fn started() -> (Self, Option<R::Effect>) {
+        let (initial, birth) = R::start();
+        (Reacting(initial), birth)
+    }
+}
+
+impl<R: Reactor> Step for Reacting<R> {
+    type From = R::Event;
+    type To = Option<R::Effect>;
+
+    fn step(self, input: Self::From) -> (Self, Self::To) {
+        let (next, effect) = self.0.step(input);
+        (Reacting(next), effect)
     }
 }

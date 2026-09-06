@@ -6,8 +6,9 @@
 //! совпадение подписей было косметическим.
 
 use reflex_core::detector::{Detector, DetectorEvent};
-use reflex_core::lifting::Detecting;
+use reflex_core::lifting::{Detecting, Reacting};
 use reflex_core::step::{Step, StepExt};
+use reflex_core::Reactor;
 use smallvec::{smallvec, SmallVec};
 use std::time::Instant;
 
@@ -62,4 +63,66 @@ fn detector_enters_the_step_category() {
     assert_eq!(first, 0, "первый пакет: номер 0, сумма 0");
     assert_eq!(second, 1, "второй: номер 1, сумма 0+1");
     assert_eq!(on_tick, 1, "тик сигнала не дал — сумма не сдвинулась");
+}
+
+/// ПЕРЕКЛЮЧАТЕЛЬ: каждое событие меняет состояние и объявляет новое.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Toggle(bool);
+
+impl Reactor for Toggle {
+    type Event = ();
+    type Effect = bool;
+
+    /// РОЖДЕНИЕ САМО ПО СЕБЕ ДЕЙСТВИЕМ НЕ ЯВЛЯЕТСЯ — эффекта нет.
+    fn start() -> (Self, Option<bool>) {
+        (Toggle(false), None)
+    }
+
+    fn step(self, _event: ()) -> (Self, Option<bool>) {
+        (Toggle(!self.0), Some(!self.0))
+    }
+}
+
+/// РЕАКТОР, ЧЬЁ РОЖДЕНИЕ ЕСТЬ ДЕЙСТВИЕ. Второй случай нужен затем, что `started` обязан эффект
+/// рождения ОТДАТЬ, а не проглотить: `group_by_reactor` его сегодня отбрасывает, и это названная
+/// потеря, которую подъём повторять не должен.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Announcing(u8);
+
+impl Reactor for Announcing {
+    type Event = u8;
+    type Effect = u8;
+
+    fn start() -> (Self, Option<u8>) {
+        (Announcing(0), Some(255))
+    }
+
+    fn step(self, event: u8) -> (Self, Option<u8>) {
+        (Announcing(self.0.wrapping_add(event)), Some(self.0))
+    }
+}
+
+/// РЕАКТОР СТАНОВИТСЯ ЗВЕНОМ ЦЕПОЧКИ.
+#[test]
+fn reactor_enters_the_step_category() {
+    let (machine, birth) = Reacting::<Toggle>::started();
+    assert_eq!(birth, None, "рождение переключателя действием не является");
+
+    let (machine, first) = machine.step(());
+    let (_machine, second) = machine.step(());
+
+    assert_eq!(first, Some(true));
+    assert_eq!(second, Some(false));
+}
+
+/// ЭФФЕКТ РОЖДЕНИЯ ОТДАЁТСЯ, А НЕ ГЛОТАЕТСЯ.
+#[test]
+fn birth_effect_is_returned_not_swallowed() {
+    let (_machine, birth) = Reacting::<Announcing>::started();
+    assert_eq!(
+        birth,
+        Some(255),
+        "эффект рождения обязан выйти наружу: проглотив его, подъём повторил бы \
+         названную потерю group_by_reactor"
+    );
 }
