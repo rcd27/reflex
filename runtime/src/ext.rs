@@ -49,16 +49,16 @@ pub trait ReflexRuntimeExt: Stream + Sized {
     }
 
     /// Group items by ConnectionId (bidirectional), with per-connection state and lifecycle.
-    fn group_by_connection<State, Init, Step, R>(
+    fn group_by_connection<State, Init, Fold, R>(
         self,
         config: FlowConfig,
         init: Init,
-        step: Step,
-    ) -> GroupByConnectionStream<Self, State, Init, Step, R>
+        step: Fold,
+    ) -> GroupByConnectionStream<Self, State, Init, Fold, R>
     where
         Self::Item: HasConnectionId,
         Init: Fn(reflex_core::types::ConnectionId) -> State,
-        Step: FnMut(&mut State, Self::Item) -> Option<R>,
+        Fold: FnMut(&mut State, Self::Item) -> Option<R>,
     {
         GroupByConnectionStream::new(self, config, init, step)
     }
