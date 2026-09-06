@@ -100,19 +100,15 @@ impl ResolutionInstrument {
     }
 }
 
-impl reflex_core::Detector for ResolutionInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору. Прежде звалось `Observation` в паспорте — переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = DnsMessage;
+impl reflex_core::step::Step for ResolutionInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<DnsMessage>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Signal = Resolved;
+    type To = smallvec::SmallVec<[Resolved; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -124,6 +120,8 @@ impl reflex_core::Detector for ResolutionInstrument {
 }
 
 impl crate::Instrument for ResolutionInstrument {
+    type Signal = Resolved;
+
     const INSTRUMENT: &'static str = "resolve";
 
     const SUBJECT: crate::Subject = crate::Subject::World;

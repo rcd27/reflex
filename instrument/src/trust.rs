@@ -90,23 +90,16 @@ impl TrustInstrument {
     }
 }
 
-impl reflex_core::Detector for TrustInstrument {
-    /// ОДНА ЗАПИСЬ TLS, а не срез потока.
-    ///
-    /// Прежде вход был `Vec<TlsRecord>` — весь разговор целиком, — и прибор годился только там,
-    /// где поток УЖЕ кончился, то есть на записи. В живую очередь он не вставал вовсе, и это
-    /// стоило ему подключённости: 02.09 доверие было в ленте записи и отсутствовало в ленте
-    /// живого трафика.
-    type Input = TlsRecord;
+impl reflex_core::step::Step for TrustInstrument {
+    /// ОДНА ЗАПИСЬ TLS, а не срез потока: прибор читает разговор ПО МЕРЕ поступления записей, а
+    /// не ждёт, пока поток кончится, — иначе он годился бы только записи, а не живой очереди.
+    type From = reflex_core::DetectorEvent<TlsRecord>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать.
-    type Signal = Trust;
+    type To = smallvec::SmallVec<[Trust; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => self.saw(input),
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
@@ -115,6 +108,8 @@ impl reflex_core::Detector for TrustInstrument {
 }
 
 impl crate::Instrument for TrustInstrument {
+    type Signal = Trust;
+
     const INSTRUMENT: &'static str = "trust";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
@@ -190,8 +185,9 @@ impl crate::Instrument for TrustInstrument {
 #[cfg(test)]
 mod stream_tests {
     use super::*;
+    use reflex_core::step::Step;
     use reflex_core::tls::{TlsContentType, TlsRecord};
-    use reflex_core::{Detector, DetectorEvent};
+    use reflex_core::DetectorEvent;
 
     fn record(fragment: TlsFragment, content_type: TlsContentType) -> TlsRecord {
         TlsRecord {

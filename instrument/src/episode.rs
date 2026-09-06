@@ -73,19 +73,15 @@ impl<W: OpenedAt + LastSeen + PersonLeft> EpisodeInstrument<W> {
     }
 }
 
-impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::Detector for EpisodeInstrument<W> {
-    /// НАБЛЮДЕНИЕ, которое подают прибору. Прежде звалось `Observation` в паспорте — переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = (W, Instant);
+impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::step::Step for EpisodeInstrument<W> {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<(W, Instant)>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Signal = Ending;
+    type To = smallvec::SmallVec<[Ending; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -97,6 +93,8 @@ impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::Detector for EpisodeInstr
 }
 
 impl<W: OpenedAt + LastSeen + PersonLeft> crate::Instrument for EpisodeInstrument<W> {
+    type Signal = Ending;
+
     const INSTRUMENT: &'static str = "episode";
 
     /// О ЧЕЛОВЕКЕ: кончился ли ЕГО просмотр.

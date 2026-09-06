@@ -55,14 +55,11 @@ impl RetransmitInstrument {
     }
 }
 
-impl reflex_core::Detector for RetransmitInstrument {
-    type Input = Seen;
-    type Signal = Distress;
+impl reflex_core::step::Step for RetransmitInstrument {
+    type From = reflex_core::DetectorEvent<Seen>;
+    type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Seen>,
-    ) -> (Self, smallvec::SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, at } => match input {
                 // ПРОСЬБА ОТКРЫВАЕТ ОТСЧЁТ, и повторная его не сдвигает: величина показания есть
@@ -129,6 +126,8 @@ impl reflex_core::Detector for RetransmitInstrument {
 }
 
 impl crate::Instrument for RetransmitInstrument {
+    type Signal = Distress;
+
     const INSTRUMENT: &'static str = "retransmit";
 
     /// О МИРЕ: утверждается, что цель не отвечает на просьбу, — свойство пути, а не наше и не
@@ -207,7 +206,8 @@ impl crate::Instrument for RetransmitInstrument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reflex_core::{Detector, DetectorEvent};
+    use reflex_core::step::Step;
+    use reflex_core::DetectorEvent;
     use std::time::Duration;
 
     fn at(ms: u64) -> Instant {

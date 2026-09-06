@@ -46,15 +46,14 @@ impl RstInstrument {
     }
 }
 
-impl reflex_core::Detector for RstInstrument {
-    /// СЛОВАРЬ СОЕДИНЕНИЯ, а не общий: сброс есть улика TCP, и прибор, читающий её, в поток
-    /// датаграмм не собирается. Прежде вход был общим словарём, и `PROTOCOL: Tcp` ниже был
-    /// объявлением без силы.
-    type Input = SeenTcp;
+impl reflex_core::step::Step for RstInstrument {
+    /// СЛОВАРЬ СОЕДИНЕНИЯ, А НЕ ОБЩИЙ: сброс есть улика TCP, и прибор, читающий её, в поток
+    /// датаграмм не собирается — равенство `PROTOCOLS: Tcp` ниже держится тем же словарём.
+    type From = reflex_core::DetectorEvent<SeenTcp>;
 
     /// Беда. Отсутствие беды сигналом НЕ ЯВЛЯЕТСЯ: прибор высказывается, когда есть что сказать,
     /// а `Option` в сигнале сделал бы «всё в порядке» отдельным сообщением в ленте.
-    type Signal = Distress;
+    type To = smallvec::SmallVec<[Distress; 2]>;
 
     /// # ПОДПИСЬ ТСПУ УЗНАЁТСЯ ДВУМЯ ПРИЗНАКАМИ РАЗОМ
     ///
@@ -64,10 +63,7 @@ impl reflex_core::Detector for RstInstrument {
     ///
     /// ЦЕНА НАЗВАНА: сброс посреди живой сессии пропускается — от штатного закрытия он неотличим
     /// ничем, что видно на проводе.
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<SeenTcp>,
-    ) -> (Self, smallvec::SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 match (&input, self.fired, self.answered) {
@@ -119,6 +115,8 @@ impl reflex_core::Detector for RstInstrument {
 }
 
 impl crate::Instrument for RstInstrument {
+    type Signal = Distress;
+
     const INSTRUMENT: &'static str = "rst";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
@@ -229,22 +227,17 @@ impl SilenceInstrument {
     }
 }
 
-impl reflex_core::Detector for SilenceInstrument {
-    type Input = Seen;
+impl reflex_core::step::Step for SilenceInstrument {
+    type From = reflex_core::DetectorEvent<Seen>;
 
     /// ДВЕ БЕДЫ, А НЕ ОДНА: «цель не ответила вовсе» (`NoBytes`) и «поток встал на середине»
     /// (`Silence`) расследуются и лечатся по-разному. Невод 1 звал обе молчанием — оттого и лечил
     /// обходом упавшие серверы.
     ///
-    /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ. Пока прибор был чистой функцией от
-    /// длительности, различения у него не было вовсе — оно жило в домене, а паспорт объявлял его
-    /// своим.
-    type Signal = Distress;
+    /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ.
+    type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Seen>,
-    ) -> (Self, smallvec::SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // Тишина меряется по ответу ЦЕЛИ: сколько напросил человек, к делу не относится.
@@ -333,6 +326,8 @@ impl reflex_core::Detector for SilenceInstrument {
 }
 
 impl crate::Instrument for SilenceInstrument {
+    type Signal = Distress;
+
     const INSTRUMENT: &'static str = "silence";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
@@ -444,26 +439,23 @@ impl ThrottledInstrument {
     }
 }
 
-impl reflex_core::Detector for ThrottledInstrument {
-    /// СЛОВАРЬ СОЕДИНЕНИЯ, И ЭТО НАХОДКА РАСЩЕПЛЕНИЯ (#320, 02.09).
+impl reflex_core::step::Step for ThrottledInstrument {
+    /// СЛОВАРЬ СОЕДИНЕНИЯ, А НЕ ОБЩИЙ.
     ///
-    /// Предмет прибора от транспорта не зависит — байты во времени есть у всех, и паспорт честно
-    /// объявлял `PROTOCOL: Any`. Но его ПРЕДОХРАНИТЕЛЬ — улика TCP: `client_paused` ставится
-    /// нулевым окном приёма, и без него прибор обвиняет цель за медленность, устроенную НАШИМ
-    /// ЖЕ получателем. У QUIC управление потоком существует, но лежит за шифром — то есть
-    /// предохранителя там нет НЕ по недоделке, а нечем.
+    /// Предмет прибора от транспорта не зависит — байты во времени есть у всех. Но его
+    /// ПРЕДОХРАНИТЕЛЬ — улика TCP: `client_paused` ставится нулевым окном приёма, и без него
+    /// прибор обвиняет цель за медленность, устроенную НАШИМ ЖЕ получателем. У QUIC управление
+    /// потоком существует, но лежит за шифром — то есть предохранителя там нет НЕ по недоделке, а
+    /// нечем.
     ///
     /// Выбор сделан в сторону молчания: ложное обвинение уводит трафик на ногу зря и учит систему
     /// о пути, которого не было, а пропуск лишь оставляет вопрос открытым. Цена названа —
     /// ТРОТТЛИНГ НА QUIC НЕ СЛЫШЕН НИКЕМ. Снимется, когда предохранитель станет отдельным звеном
     /// цепочки (он и есть отдельное правило), а не веткой внутри прибора.
-    type Input = SeenTcp;
-    type Signal = Distress;
+    type From = reflex_core::DetectorEvent<SeenTcp>;
+    type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<SeenTcp>,
-    ) -> (Self, smallvec::SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let next = match input {
@@ -549,6 +541,8 @@ impl reflex_core::Detector for ThrottledInstrument {
 }
 
 impl crate::Instrument for ThrottledInstrument {
+    type Signal = Distress;
+
     const INSTRUMENT: &'static str = "throttled";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
@@ -656,24 +650,16 @@ impl ChokedInstrument {
     }
 }
 
-impl reflex_core::Detector for ChokedInstrument {
-    /// ОБЩИЙ СЛОВАРЬ, И ЭТО ИСПРАВЛЕНИЕ ПАСПОРТА (#320, 02.09).
+impl reflex_core::step::Step for ChokedInstrument {
+    /// ОБЩИЙ СЛОВАРЬ, А НЕ СЛОВАРЬ СОЕДИНЕНИЯ.
     ///
-    /// Паспорт объявлял `PROTOCOL: Tcp` с обоснованием «окно приёма — поле заголовка TCP», но
-    /// окна приёма этот прибор не читает ВОВСЕ: обоснование переехало сюда от соседа
-    /// ([`ThrottledInstrument`]) и держалось два месяца, потому что сверить объявление было не с
-    /// чем. Предмет прибора — «клиент просил, цель не отдала ни разу», и он существует на любом
-    /// транспорте.
-    ///
-    /// Расщепление алфавита и есть тот прибор, которым объявление проверяется: вход, не
-    /// требующий улик соединения, ЕСТЬ доказательство того, что прибор годится обоим протоколам.
-    type Input = Seen;
-    type Signal = Distress;
+    /// Предмет прибора — «клиент просил, цель не отдала ни разу», и он существует на любом
+    /// транспорте: окна приёма этот прибор не читает вовсе, и потому вход не требует улик
+    /// соединения.
+    type From = reflex_core::DetectorEvent<Seen>;
+    type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Seen>,
-    ) -> (Self, smallvec::SmallVec<[Distress; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // МОМЕНТ ПЕРВОЙ ПРОСЬБЫ — начало отсчёта терпения. Повторная просьба его не
@@ -747,6 +733,8 @@ impl reflex_core::Detector for ChokedInstrument {
 }
 
 impl crate::Instrument for ChokedInstrument {
+    type Signal = Distress;
+
     const INSTRUMENT: &'static str = "choked";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
@@ -799,7 +787,8 @@ impl crate::Instrument for ChokedInstrument {
 #[cfg(test)]
 mod silence_tests {
     use super::*;
-    use reflex_core::{Detector, DetectorEvent};
+    use reflex_core::step::Step;
+    use reflex_core::DetectorEvent;
     use std::time::{Duration, Instant};
 
     /// Прогнать прибор по наблюдениям и тикам с ЗАДАННЫМ временем: реальные часы в поверке
@@ -913,17 +902,18 @@ mod silence_tests {
 #[cfg(test)]
 mod throttled_and_choked_tests {
     use super::*;
-    use reflex_core::{Detector, DetectorEvent};
+    use reflex_core::step::Step;
+    use reflex_core::DetectorEvent;
     use std::time::Instant;
 
     /// Прогон со сценарием: наблюдение либо тик (`None`), и смещение времени от начала.
     ///
-    /// Алфавит берётся У ПРИБОРА (`D::Input`), а не задаётся хелпером: соседи по модулю стоят
-    /// теперь на РАЗНЫХ протоколах, и общий хелпер с прибитым словарём заставил бы одного из них
-    /// поверяться чужим входом.
-    fn run<D>(instrument: D, script: Vec<(Option<D::Input>, u64)>) -> Vec<Distress>
+    /// Алфавит берётся У ПРИБОРА (`In`), а не задаётся хелпером: соседи по модулю стоят теперь на
+    /// РАЗНЫХ протоколах, и общий хелпер с прибитым словарём заставил бы одного из них поверяться
+    /// чужим входом.
+    fn run<D, In>(instrument: D, script: Vec<(Option<In>, u64)>) -> Vec<Distress>
     where
-        D: Detector<Signal = Distress>,
+        D: Step<From = DetectorEvent<In>, To = smallvec::SmallVec<[Distress; 2]>>,
     {
         let start = Instant::now();
         script
@@ -1034,7 +1024,8 @@ mod throttled_and_choked_tests {
 #[cfg(test)]
 mod rst_tests {
     use super::*;
-    use reflex_core::{Detector, DetectorEvent};
+    use reflex_core::step::Step;
+    use reflex_core::DetectorEvent;
 
     fn saw(seen: SeenTcp) -> DetectorEvent<SeenTcp> {
         DetectorEvent::packet_now(seen)

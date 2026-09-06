@@ -132,7 +132,8 @@ impl<T: PersonLeft> PersonLeft for &T {
 /// ```compile_fail
 /// use reflex_instrument::ask::SeveredByPerson;
 /// use reflex_instrument::departure::DepartureInstrument;
-/// use reflex_core::{Detector, DetectorEvent};
+/// use reflex_core::step::Step;
+/// use reflex_core::DetectorEvent;
 ///
 /// struct Half(bool);
 /// impl SeveredByPerson for Half {
@@ -148,7 +149,8 @@ impl<T: PersonLeft> PersonLeft for &T {
 /// ```
 /// use reflex_instrument::ask::{SeveredByPerson, TargetDelivered};
 /// use reflex_instrument::departure::{DepartureInstrument, Left};
-/// use reflex_core::{Detector, DetectorEvent};
+/// use reflex_core::step::Step;
+/// use reflex_core::DetectorEvent;
 ///
 /// struct Whole { severed: bool, delivered: bool }
 /// impl SeveredByPerson for Whole {

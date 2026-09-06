@@ -41,19 +41,15 @@ impl AgreementInstrument {
     }
 }
 
-impl reflex_core::Detector for AgreementInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору. Прежде звалось `Observation` в паспорте — переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = (u64, Option<u64>);
+impl reflex_core::step::Step for AgreementInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<(u64, Option<u64>)>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Signal = Agreement;
+    type To = smallvec::SmallVec<[Agreement; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -65,6 +61,8 @@ impl reflex_core::Detector for AgreementInstrument {
 }
 
 impl crate::Instrument for AgreementInstrument {
+    type Signal = Agreement;
+
     const INSTRUMENT: &'static str = "agreement";
 
     const SUBJECT: crate::Subject = crate::Subject::Ourselves;

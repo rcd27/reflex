@@ -20,19 +20,15 @@ impl PaceInstrument {
     }
 }
 
-impl reflex_core::Detector for PaceInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору. Прежде звалось `Observation` в паспорте — переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = Duration;
+impl reflex_core::step::Step for PaceInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<Duration>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Signal = Duration;
+    type To = smallvec::SmallVec<[Duration; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -44,6 +40,8 @@ impl reflex_core::Detector for PaceInstrument {
 }
 
 impl crate::Instrument for PaceInstrument {
+    type Signal = Duration;
+
     const INSTRUMENT: &'static str = "pace";
 
     const SUBJECT: crate::Subject = crate::Subject::Person;

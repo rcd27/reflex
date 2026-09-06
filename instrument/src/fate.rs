@@ -163,19 +163,15 @@ impl ObservedInstrument {
     }
 }
 
-impl reflex_core::Detector for ObservedInstrument {
-    /// НАБЛЮДЕНИЕ, которое подают прибору. Прежде звалось `Observation` в паспорте — переехало в
-    /// подпись детектора вместе с состоянием (#320).
-    type Input = Observed;
+impl reflex_core::step::Step for ObservedInstrument {
+    /// НАБЛЮДЕНИЕ, которое подают прибору.
+    type From = reflex_core::DetectorEvent<Observed>;
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Signal = &'static [Fate];
+    type To = smallvec::SmallVec<[&'static [Fate]; 2]>;
 
-    fn step(
-        self,
-        event: reflex_core::DetectorEvent<Self::Input>,
-    ) -> (Self, smallvec::SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
@@ -187,6 +183,8 @@ impl reflex_core::Detector for ObservedInstrument {
 }
 
 impl crate::Instrument for ObservedInstrument {
+    type Signal = &'static [Fate];
+
     const INSTRUMENT: &'static str = "observed";
 
     const SUBJECT: crate::Subject = crate::Subject::World;
