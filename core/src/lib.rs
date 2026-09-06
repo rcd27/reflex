@@ -19,6 +19,7 @@ pub mod held;
 pub mod interleave;
 #[cfg(feature = "tls")]
 pub mod l7;
+pub mod lifting;
 pub mod meter;
 pub mod parse;
 pub mod serves;
