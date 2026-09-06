@@ -242,42 +242,17 @@ async fn drop_is_expressible_and_reaches_the_sink() {
     );
 }
 
-/// ПАМЯТНЫЙ БЭКЕНД: отдаёт заранее заданные кадры и ничего сверх этого не заявляет, кроме
-/// `CanObserve`.
-struct Mirror(Vec<Vec<u8>>);
-
-impl Mirror {
-    fn new(frames: Vec<Vec<u8>>) -> Self {
-        Mirror(frames)
-    }
-}
-
-impl Source for Mirror {
-    type Packet = Vec<u8>;
-    type Packets<'a>
-        = stream::Iter<std::vec::IntoIter<Vec<u8>>>
-    where
-        Self: 'a;
-
-    fn packets(&mut self) -> Self::Packets<'_> {
-        stream::iter(std::mem::take(&mut self.0))
-    }
-}
-
-impl CanObserve for Mirror {}
-
 /// ДВЕРЬ К НАБЛЮДЕНИЯМ ТРЕБУЕТ ЗАЯВЛЕННОЙ СПОСОБНОСТИ, и это проверяет компилятор.
 ///
 /// Прежде проверка стояла в двух местах и делала одно и то же. Две записи одной идеи расходятся
 /// молча; здесь она одна.
+///
+/// БЕРЁТСЯ СУЩЕСТВУЮЩАЯ ФИКСТУРА, а не заводится своя: четвёртый памятный бэкенд рядом с тремя
+/// такими же был бы ровно тем дублированием, которое эта задача и снимает — только в тестах.
 #[tokio::test]
 async fn observing_takes_packets_from_a_declared_observer() {
-    let mut backend = Mirror::new(vec![vec![1u8, 2], vec![3]]);
-    let seen: Vec<Vec<u8>> = observing(&mut backend).collect().await;
+    let mut backend = Loopback;
+    let seen: Vec<u8> = observing(&mut backend).collect().await;
 
-    assert_eq!(
-        seen,
-        vec![vec![1u8, 2], vec![3]],
-        "все пакеты дошли до потребителя"
-    );
+    assert_eq!(seen, vec![1u8, 5], "все пакеты дошли до потребителя");
 }
