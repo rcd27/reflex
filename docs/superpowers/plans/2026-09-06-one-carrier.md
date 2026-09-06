@@ -484,7 +484,7 @@ grep -rn "Reactor\|category::\|expand_effects\|drive_owned" --include=*.rs . | g
 ```
 
 Expected:
-- `pub trait Step` — две строки: `core/src/step.rs` и `os/src/step.rs`. Второй есть restriction-категория, ортогональная ось, а не диалект Мили (шестой vision §4.4);
+- `pub trait Step` — две строки, **обе в `core/src/step.rs`**: сам `Step` и его расширение `StepExt`. (В крейте `os` есть `pub struct Step<A, B, E>` — restriction-категория, ортогональная ось; это СТРУКТУРА, а не трейт, и в этот grep она не попадает. Прежняя редакция плана называла её трейтом — ошибка автора плана, поправлено 06.09.2026 по замеру исполнителя.);
 - `pub struct Then` — одна строка: `core/src/step.rs`;
 - третий grep — пусто.
 
