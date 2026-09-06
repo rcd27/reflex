@@ -28,7 +28,8 @@ use std::time::Instant;
 
 use smallvec::{smallvec, SmallVec};
 
-use crate::detector::{Detector, DetectorEvent};
+use crate::detector::DetectorEvent;
+use crate::step::Step;
 
 /// КАКОЙ СРОК ИСТЁК. Два слова, потому что говорят они о РАЗНОМ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,11 +100,11 @@ impl<T> Timeout<T> {
     }
 }
 
-impl<T> Detector for Timeout<T> {
-    type Input = T;
-    type Signal = Expiry;
+impl<T> Step for Timeout<T> {
+    type From = DetectorEvent<T>;
+    type To = SmallVec<[Expiry; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match (event, self.waiting) {
             // ВСЯКОЕ СОБЫТИЕ ОТОДВИГАЕТ ТИШИНУ, но не потолок: потолок про то, сколько ждём МЫ.
             (DetectorEvent::Packet { at, .. }, Waiting::Since { opened, .. }) => (

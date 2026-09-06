@@ -31,7 +31,8 @@ use std::time::Instant;
 
 use smallvec::{smallvec, SmallVec};
 
-use crate::detector::{Detector, DetectorEvent};
+use crate::detector::DetectorEvent;
+use crate::step::Step;
 
 /// ДЕРЖИТ ПОСЛЕДНЕЕ СОБЫТИЕ И ОТДАЁТ ЕГО, КОГДА ОКНО ТИШИНЫ ПРОШЛО.
 #[derive(Debug, Clone)]
@@ -47,11 +48,11 @@ impl<T> Debounce<T> {
     }
 }
 
-impl<T> Detector for Debounce<T> {
-    type Input = T;
-    type Signal = T;
+impl<T> Step for Debounce<T> {
+    type From = DetectorEvent<T>;
+    type To = SmallVec<[T; 2]>;
 
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             // НОВОЕ СОБЫТИЕ ВЫТЕСНЯЕТ УДЕРЖАННОЕ и отодвигает окно. Отсчёт идёт от ПОСЛЕДНЕГО, а
             // не от первого: иначе поток, идущий чуть чаще окна, выпускался бы регулярно, и

@@ -8,7 +8,8 @@
 
 use std::time::{Duration, Instant};
 
-use reflex_core::detector::{Detector, DetectorEvent};
+use reflex_core::detector::DetectorEvent;
+use reflex_core::step::Step;
 use reflex_core::tls::{Assembly, RecordAssembler, RecordChunk};
 
 const DEADLINE: Duration = Duration::from_millis(200);

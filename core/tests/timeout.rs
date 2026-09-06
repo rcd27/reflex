@@ -4,7 +4,8 @@
 //! собственный паспорт называет их смешение ложью — «путать это с уходом значит считать своим
 //! знанием своё нетерпение».
 
-use reflex_core::detector::{Detector, DetectorEvent};
+use reflex_core::detector::DetectorEvent;
+use reflex_core::step::Step;
 use reflex_core::timeout::{Expiry, Timeout};
 use std::time::{Duration, Instant};
 

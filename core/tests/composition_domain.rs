@@ -19,19 +19,20 @@
 //! нигде. Отсюда отдельный файл и отдельное имя: предмет здесь не оператор, а СТЫК.
 
 use futures::{stream, StreamExt};
+use reflex_core::step::Step;
 use reflex_core::stream::{Keys, Lifetime};
-use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use reflex_core::{DetectorEvent, ReflexExt};
 use smallvec::{smallvec, SmallVec};
 
 /// Детектор с памятью: считает, сколько раз видел свой ключ, и говорит это на тике.
 #[derive(Debug, Clone, Copy, Default)]
 struct Counting(u8);
 
-impl Detector for Counting {
-    type Input = u8;
-    type Signal = u8;
+impl Step for Counting {
+    type From = DetectorEvent<u8>;
+    type To = SmallVec<[u8; 2]>;
 
-    fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[u8; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![self.0]),

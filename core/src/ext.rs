@@ -2,7 +2,7 @@ use std::hash::Hash;
 
 use futures::{Future, Stream};
 
-use crate::detector::{Detector, DetectorEvent};
+use crate::detector::DetectorEvent;
 use crate::stream::{
     DetectPer, DistinctUntilChangedStream, FoldStream, GroupByDomainStream, GroupByStream,
     MergeMapBounded, ScanStream, SwitchMapStream, TakeThroughStream, TeeStream,
@@ -71,7 +71,7 @@ pub trait ReflexExt: Stream + Sized {
         MergeMapBounded::new(self, cap, f)
     }
 
-    /// Прогнать [`Detector`] по потоку, со своим состоянием на каждый ключ.
+    /// Прогнать [`Step`](crate::step::Step) по потоку, со своим состоянием на каждый ключ.
     ///
     /// Ключ берётся из ВХОДА события; `Tick` доставляется всем живым состояниям, потому что
     /// таймер есть событие времени, а не одной цели — без этого детектор тишины не сработал бы
@@ -80,19 +80,19 @@ pub trait ReflexExt: Stream + Sized {
     /// Правило детекции подставляется значением, а не вшивается в шаг группировки: добавить
     /// новую болезнь значит дописать `.and(…)` к детектору, не читая и не правя соседние.
     /// См. [`crate::step::StepExt::and`] и [`DetectPer`].
-    fn detect_per<D, K, KeyFn, Factory>(
+    fn detect_per<D, K, KeyFn, Factory, In, Sig>(
         self,
         key_fn: KeyFn,
         factory: Factory,
         lifetime: crate::stream::Lifetime,
-    ) -> DetectPer<Self, D, K, KeyFn, Factory>
+    ) -> DetectPer<Self, D, K, KeyFn, Factory, Sig>
     where
-        Self: Stream<Item = DetectorEvent<D::Input>> + Unpin,
-        D: Detector + Unpin,
-        D::Input: Clone,
-        D::Signal: Unpin,
+        Self: Stream<Item = DetectorEvent<In>> + Unpin,
+        D: crate::step::Step<From = DetectorEvent<In>, To = smallvec::SmallVec<[Sig; 2]>> + Unpin,
+        In: Clone,
+        Sig: Unpin,
         K: Ord + Clone + Unpin,
-        KeyFn: Fn(&D::Input) -> K + Unpin,
+        KeyFn: Fn(&In) -> K + Unpin,
         Factory: Fn() -> D + Unpin,
     {
         DetectPer::new(self, key_fn, factory, lifetime)

@@ -1,7 +1,7 @@
 use reflex_core::detector::DetectorEvent;
 use reflex_core::flow_table::FlowTable;
+use reflex_core::step::Step;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::Detector;
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -12,11 +12,11 @@ struct RstCounter {
     flow: Flow,
 }
 
-impl Detector for RstCounter {
-    type Input = TcpSegment;
-    type Signal = u32;
+impl Step for RstCounter {
+    type From = DetectorEvent<TcpSegment>;
+    type To = SmallVec<[u32; 2]>;
 
-    fn step(mut self, event: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[u32; 2]>) {
+    fn step(mut self, event: Self::From) -> (Self, Self::To) {
         let mut signals = SmallVec::new();
         if let DetectorEvent::Packet { input: ref seg, .. } = event {
             if seg.flags.is_rst() {

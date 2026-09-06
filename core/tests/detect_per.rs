@@ -8,35 +8,9 @@
 use std::time::{Duration, Instant};
 
 use futures::{stream, StreamExt};
-use reflex_core::{Detector, DetectorEvent, ReflexExt};
+use reflex_core::step::{Step, StepExt};
+use reflex_core::{DetectorEvent, ReflexExt};
 use smallvec::{smallvec, SmallVec};
-
-/// ЛОКАЛЬНАЯ ЗАМЕНА `crate::detector::Both` НА ВРЕМЯ ЗАДАЧИ 1.
-///
-/// Задача 1 переводит семь комбинаторов (включая `Both`) на `Step` — они больше не реализуют
-/// `Detector`. `detect_per()` этого файла всё ещё требует `D: Detector` (его перевод на `Step` —
-/// предмет отдельной задачи плана, не этой). Эта пара — узкая, тестовая, повторяющая ровно то
-/// тело `step`, что было у `crate::detector::Both` до переезда: она держит существующее покрытие
-/// композиции живым, не решая архитектурно ничего нового.
-#[derive(Debug, Clone, Copy)]
-struct Both<A, B>(A, B);
-
-impl<A, B> Detector for Both<A, B>
-where
-    A: Detector,
-    B: Detector<Input = A::Input, Signal = A::Signal>,
-    A::Input: Clone,
-{
-    type Input = A::Input;
-    type Signal = A::Signal;
-
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>) {
-        let (first, mut signals) = self.0.step(event.clone());
-        let (second, more) = self.1.step(event);
-        signals.extend(more);
-        (Both(first, second), signals)
-    }
-}
 
 /// Вход: адрес плюс что случилось. Свой тип, чтобы тест не зависел от словаря `TcpSegment`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,11 +36,11 @@ enum Signal {
 #[derive(Debug, Clone, Copy, Default)]
 struct Rst;
 
-impl Detector for Rst {
-    type Input = Event;
-    type Signal = Signal;
+impl Step for Rst {
+    type From = DetectorEvent<Event>;
+    type To = SmallVec<[Signal; 2]>;
 
-    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet {
                 input: Event {
@@ -101,11 +75,11 @@ impl Quiet {
     }
 }
 
-impl Detector for Quiet {
-    type Input = Event;
-    type Signal = Signal;
+impl Step for Quiet {
+    type From = DetectorEvent<Event>;
+    type To = SmallVec<[Signal; 2]>;
 
-    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { at, .. } => (
                 Self {
@@ -132,11 +106,11 @@ impl Detector for Quiet {
 #[derive(Debug, Clone, Copy, Default)]
 struct Bytes;
 
-impl Detector for Bytes {
-    type Input = Event;
-    type Signal = Signal;
+impl Step for Bytes {
+    type From = DetectorEvent<Event>;
+    type To = SmallVec<[Signal; 2]>;
 
-    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet {
                 input: Event {
@@ -168,7 +142,7 @@ async fn state_is_per_key() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Both(Rst, Bytes),
+        || Rst.and(Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
@@ -258,10 +232,10 @@ async fn composition_lets_both_observe() {
 
     #[derive(Debug, Clone, Copy, Default)]
     struct Everything;
-    impl Detector for Everything {
-        type Input = Event;
-        type Signal = Signal;
-        fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+    impl Step for Everything {
+        type From = DetectorEvent<Event>;
+        type To = SmallVec<[Signal; 2]>;
+        fn step(self, event: Self::From) -> (Self, Self::To) {
             match event {
                 DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawByte]),
                 DetectorEvent::Tick { .. } => (self, smallvec![]),
@@ -272,7 +246,7 @@ async fn composition_lets_both_observe() {
     let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
         .detect_per(
             |e: &Event| e.addr,
-            || Both(Rst, Everything),
+            || Rst.and(Everything),
             reflex_core::stream::Lifetime::Bounded,
         )
         .collect()
@@ -296,7 +270,7 @@ async fn chain_grows_by_appending() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Both(Both(Rst, Quiet::after(Duration::from_secs(1))), Bytes),
+        || Rst.and(Quiet::after(Duration::from_secs(1))).and(Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
@@ -320,10 +294,10 @@ async fn signals_survive_source_completion() {
 
     #[derive(Debug, Clone, Copy, Default)]
     struct Twice;
-    impl Detector for Twice {
-        type Input = Event;
-        type Signal = Signal;
-        fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Signal; 2]>) {
+    impl Step for Twice {
+        type From = DetectorEvent<Event>;
+        type To = SmallVec<[Signal; 2]>;
+        fn step(self, event: Self::From) -> (Self, Self::To) {
             match event {
                 DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawRst, Signal::SawByte]),
                 DetectorEvent::Tick { .. } => (self, smallvec![]),
@@ -351,11 +325,11 @@ struct Counting(u8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Counted(u8);
 
-impl Detector for Counting {
-    type Input = Event;
-    type Signal = Counted;
+impl Step for Counting {
+    type From = DetectorEvent<Event>;
+    type To = SmallVec<[Counted; 2]>;
 
-    fn step(self, event: DetectorEvent<Event>) -> (Self, SmallVec<[Counted; 2]>) {
+    fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![Counted(self.0)]),

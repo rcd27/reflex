@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use smallvec::SmallVec;
 
 use crate::detector::DetectorEvent;
+use crate::step::Step;
 use crate::types::{Flow, HasFlow};
-use crate::Detector;
 
 /// КАРТА ДЕТЕКТОРОВ ПО ФЛОУ — состояние соединения как ПРИМИТИВ, а не как чужой `HashMap`.
 ///
@@ -19,19 +19,17 @@ use crate::Detector;
 ///
 /// Обобщение обратно совместимо: `Input = TcpSegment` остаётся частным случаем, потребители не
 /// правятся ни строкой.
-pub struct FlowTable<D: Detector>
-where
-    D::Input: HasFlow + Clone,
-{
+pub struct FlowTable<D> {
     flows: HashMap<Flow, D>,
     last_seen: HashMap<Flow, Instant>, // последняя активность потока — для эвикта простоя
     idle_timeout: Duration,            // молчание дольше → поток мёртв (эвикт на тике)
     make_detector: Box<dyn Fn(Flow) -> D + Send>,
 }
 
-impl<D: Detector> FlowTable<D>
+impl<D, In, S> FlowTable<D>
 where
-    D::Input: HasFlow + Clone,
+    D: Step<From = DetectorEvent<In>, To = SmallVec<[S; 2]>>,
+    In: HasFlow + Clone,
 {
     /// `idle_timeout` — сколько поток может молчать (без пакетов), прежде чем считается мёртвым и
     /// эвиктится на тике. Иначе завершённый/затихший поток тикается ВЕЧНО (детектор эмитит пустое
@@ -46,7 +44,7 @@ where
         }
     }
 
-    pub fn process(&mut self, input: &D::Input, at: Instant) -> SmallVec<[D::Signal; 2]> {
+    pub fn process(&mut self, input: &In, at: Instant) -> SmallVec<[S; 2]> {
         let flow = normalize_flow(input.flow());
         let detector = self
             .flows
@@ -61,7 +59,7 @@ where
         signals
     }
 
-    pub fn tick(&mut self, at: Instant) -> Vec<D::Signal> {
+    pub fn tick(&mut self, at: Instant) -> Vec<S> {
         let mut all_signals = Vec::new();
         let flows: Vec<Flow> = self.flows.keys().cloned().collect();
         for flow in flows {
@@ -111,7 +109,6 @@ fn normalize_flow(flow: &Flow) -> Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detector::Detector;
     use crate::types::{Protocol, TcpFlags, TcpOptions, TcpSegment};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
@@ -131,11 +128,11 @@ mod tests {
         #[derive(Clone)]
         struct Counter(usize);
 
-        impl Detector for Counter {
-            type Input = UdpDatagram;
-            type Signal = usize;
+        impl Step for Counter {
+            type From = DetectorEvent<UdpDatagram>;
+            type To = SmallVec<[usize; 2]>;
 
-            fn step(self, ev: DetectorEvent<UdpDatagram>) -> (Self, SmallVec<[usize; 2]>) {
+            fn step(self, ev: Self::From) -> (Self, Self::To) {
                 match ev {
                     DetectorEvent::Packet { .. } => {
                         let next = self.0 + 1;
@@ -170,11 +167,11 @@ mod tests {
     #[derive(Clone)]
     struct TickPing;
 
-    impl Detector for TickPing {
-        type Input = TcpSegment;
-        type Signal = ();
+    impl Step for TickPing {
+        type From = DetectorEvent<TcpSegment>;
+        type To = SmallVec<[(); 2]>;
 
-        fn step(self, ev: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[(); 2]>) {
+        fn step(self, ev: Self::From) -> (Self, Self::To) {
             let mut out = SmallVec::new();
             if let DetectorEvent::Tick { .. } = ev {
                 out.push(());

@@ -1,4 +1,4 @@
-//! `detect_per` — прогон [`Detector`](crate::Detector) по потоку, с отдельным состоянием на ключ.
+//! `detect_per` — прогон [`Step`](crate::step::Step) по потоку, с отдельным состоянием на ключ.
 //!
 //! # Зачем оператор, если есть `group_by`
 //!
@@ -46,7 +46,9 @@ use std::task::{Context, Poll};
 
 use futures::Stream;
 
-use crate::detector::{Detector, DetectorEvent};
+use crate::detector::DetectorEvent;
+use crate::step::Step;
+use smallvec::SmallVec;
 use std::time::{Duration, Instant};
 
 /// СКОЛЬКО ЖИВЁТ СОСТОЯНИЕ КЛЮЧА. Обязательный аргумент [`DetectPer::new`].
@@ -66,13 +68,20 @@ pub enum Lifetime {
     UntilIdle(Duration),
 }
 
-/// `Unpin` у источника требуется намеренно, вместо `pin_project`: поле с ассоциированным типом
-/// (`VecDeque<(K, D::Signal)>`) макрос не разбирает. Ограничение необременительно — источники
+/// `Unpin` у источника требуется намеренно, вместо `pin_project`: поле с сигналом
+/// (`VecDeque<(K, Sig)>`) макрос не разбирает. Ограничение необременительно — источники
 /// событий его удовлетворяют, а взамен разбор структуры остаётся читаемым.
-pub struct DetectPer<S, D, K, KeyFn, Factory>
-where
-    D: Detector,
-{
+///
+/// # ПОЧЕМУ У СТРУКТУРЫ ПОЯВИЛСЯ `Sig`
+///
+/// Прежде тип сигнала брался проекцией `D::Signal`. Проекции больше нет: `Step` держит алфавит
+/// целиком (`To = SmallVec<[Sig; 2]>`), а вынуть из него элемент нечем. Тип был здесь всегда —
+/// изменилось лишь то, что теперь его обязаны НАЗВАТЬ.
+///
+/// `In` параметром НЕ стал: он не встречается ни в одном поле, и `PhantomData` ради него был бы
+/// платой за красоту подписи. Он живёт в границах `impl`, где равенство `From = DetectorEvent<In>`
+/// его связывает.
+pub struct DetectPer<S, D, K, KeyFn, Factory, Sig> {
     source: S,
     key_fn: KeyFn,
     factory: Factory,
@@ -81,14 +90,11 @@ where
     ///
     /// Рядом с детектором — момент ПОСЛЕДНЕГО события по ключу: без него нечем отмерить простой.
     states: BTreeMap<K, (D, Instant)>,
-    pending: VecDeque<(K, D::Signal)>,
+    pending: VecDeque<(K, Sig)>,
     lifetime: Lifetime,
 }
 
-impl<S, D, K, KeyFn, Factory> DetectPer<S, D, K, KeyFn, Factory>
-where
-    D: Detector,
-{
+impl<S, D, K, KeyFn, Factory, Sig> DetectPer<S, D, K, KeyFn, Factory, Sig> {
     pub fn new(source: S, key_fn: KeyFn, factory: Factory, lifetime: Lifetime) -> Self {
         Self {
             source,
@@ -101,17 +107,17 @@ where
     }
 }
 
-impl<S, D, K, KeyFn, Factory> Stream for DetectPer<S, D, K, KeyFn, Factory>
+impl<S, D, K, KeyFn, Factory, In, Sig> Stream for DetectPer<S, D, K, KeyFn, Factory, Sig>
 where
-    S: Stream<Item = DetectorEvent<D::Input>> + Unpin,
-    D: Detector + Unpin,
-    D::Input: Clone,
-    D::Signal: Unpin,
+    D: Step<From = DetectorEvent<In>, To = SmallVec<[Sig; 2]>> + Unpin,
+    S: Stream<Item = DetectorEvent<In>> + Unpin,
+    In: Clone,
+    Sig: Unpin,
     K: Ord + Clone + Unpin,
-    KeyFn: Fn(&D::Input) -> K + Unpin,
+    KeyFn: Fn(&In) -> K + Unpin,
     Factory: Fn() -> D + Unpin,
 {
-    type Item = (K, D::Signal);
+    type Item = (K, Sig);
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();

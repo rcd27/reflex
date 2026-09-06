@@ -6,7 +6,8 @@
 //! становится массивом пар.
 
 use reflex_core::debounce::Debounce;
-use reflex_core::detector::{Detector, DetectorEvent};
+use reflex_core::detector::DetectorEvent;
+use reflex_core::step::Step;
 use std::time::{Duration, Instant};
 
 const WINDOW: Duration = Duration::from_millis(300);
