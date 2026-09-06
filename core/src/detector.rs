@@ -24,8 +24,11 @@
 //! ничего, чего не нёс бы `Step`. Семь комбинаторов этого модуля (`and`, `rmap`, `lmap`,
 //! `contextual`, `timed`, `by`, `changes`) переехали на `Step` первыми, опустевший `DetectorExt`
 //! (`pub trait DetectorExt: Detector + Sized {}`, без единого метода) и сам `Detector` снесены
-//! следом: каждая реализация трейта стала `impl Step`, а границы `D: Detector` — равенствами
-//! `D: Step<From = DetectorEvent<In>, To = SmallVec<[Sig; 2]>>`.
+//! следом: в `core` каждая реализация трейта стала `impl Step`, а границы `D: Detector` —
+//! равенствами `D: Step<From = DetectorEvent<In>, To = SmallVec<[Sig; 2]>>`. За пределами `core`
+//! (`instrument`, `engine`, `engine-nfq`, `runtime`) реализации трейта на момент сноса ещё не
+//! переведены — их перевод предмет задач 4-6 плана `absorbing-the-detector`, и до их выполнения
+//! эти крейты не собираются.
 //!
 //! `DetectorEvent` трейтом не был — это буква входного алфавита, а не диалект машины, — и он
 //! остался без изменений.
