@@ -34,16 +34,16 @@ pub trait ReflexRuntimeExt: Stream + Sized {
     }
 
     /// Group items by Flow (5-tuple), with per-flow state and lifecycle management.
-    fn group_by_flow<State, Init, Step, R>(
+    fn group_by_flow<State, Init, Fold, R>(
         self,
         config: FlowConfig,
         init: Init,
-        step: Step,
-    ) -> GroupByFlowStream<Self, State, Init, Step, R>
+        step: Fold,
+    ) -> GroupByFlowStream<Self, State, Init, Fold, R>
     where
         Self::Item: HasFlow,
         Init: Fn() -> State,
-        Step: FnMut(&mut State, Self::Item) -> Option<R>,
+        Fold: FnMut(&mut State, Self::Item) -> Option<R>,
     {
         GroupByFlowStream::new(self, config, init, step)
     }

@@ -2,8 +2,8 @@
 //!
 //! This crate holds everything that depends on a concrete async runtime (tokio),
 //! OS facilities (libc, std::fs, signals, pid files), or other system primitives.
-//! reflex-core itself stays pure: types, parsing, building, detectors, pure stream
-//! operators. Anything that needs a clock, an OS signal, or a process-wide channel
+//! reflex-core itself stays pure: types, parsing, building, detection combinators, pure
+//! stream operators. Anything that needs a clock, an OS signal, or a process-wide channel
 //! lives here.
 
 pub mod clock;
