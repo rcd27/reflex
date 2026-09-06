@@ -33,33 +33,9 @@
 //!
 //! Довод про несложимость blanket-impl'ов остаётся верным и относится теперь к одному
 //! оставшемуся диалекту.
-
-use smallvec::SmallVec;
-
-use crate::detector::{Detector, DetectorEvent};
-use crate::step::Step;
-
-/// ДЕТЕКТОР КАК МОРФИЗМ КАТЕГОРИИ ШАГА.
-///
-/// Алфавит входа — `Packet | Tick`, и это не украшение: тик есть буква, а не сервис, и потому
-/// детектор, судящий о тишине, выражается без часов (см. [`crate::interleave`]).
-///
-/// Алфавит выхода — `SmallVec` до двух сигналов. Много выходов есть ОДНО значение, и потому
-/// многовыходность не требует от подписи ничего.
-///
-/// ЦЕНА НАЗВАНА: она не исчезает, а ПЕРЕЕЗЖАЕТ. Сосед обязан принимать пачку, а не сигнал, —
-/// фан-аут уходит из подписи морфизма во входной алфавит следующего звена. Видно это в
-/// `core/tests/lifting.rs::detector_enters_the_step_category`, где соседнему звену (`Summing`)
-/// пришлось объявить `type From = SmallVec<…>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Detecting<D>(pub D);
-
-impl<D: Detector> Step for Detecting<D> {
-    type From = DetectorEvent<D::Input>;
-    type To = SmallVec<[D::Signal; 2]>;
-
-    fn step(self, input: Self::From) -> (Self, Self::To) {
-        let (next, told) = self.0.step(input);
-        (Detecting(next), told)
-    }
-}
+//!
+//! Обёртка-детектор снята следом за `Reacting`: она существовала не ради подъёма, а ради того,
+//! что имён было два — трейт `Detector` и трейт `Step` — и блэнкет `impl<D: Detector> Step for
+//! D` невозможен как раз по озвученной выше причине (когерентность отказывает конфликтующим
+//! `impl`). Прибор, у которого имя одно (реализует `Step` напрямую), входит в цепочку без
+//! посредника; см. `core/tests/lifting.rs::detector_enters_the_step_category`.

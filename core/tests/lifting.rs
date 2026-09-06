@@ -5,8 +5,7 @@
 //! чужого диалекта стоит рядом с обычным шагом. Соберётся — носитель общий; не соберётся —
 //! совпадение подписей было косметическим.
 
-use reflex_core::detector::{Detector, DetectorEvent};
-use reflex_core::lifting::Detecting;
+use reflex_core::detector::DetectorEvent;
 use reflex_core::step::{Step, StepExt};
 use smallvec::{smallvec, SmallVec};
 use std::time::Instant;
@@ -18,9 +17,9 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Counting(u32);
 
-impl Detector for Counting {
-    type Input = u8;
-    type Signal = u32;
+impl Step for Counting {
+    type From = DetectorEvent<u8>;
+    type To = SmallVec<[u32; 2]>;
 
     fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[u32; 2]>) {
         match event {
@@ -44,10 +43,15 @@ impl Step for Summing {
     }
 }
 
-/// ДЕТЕКТОР СТАНОВИТСЯ ЗВЕНОМ ЦЕПОЧКИ, и состояние живёт у обоих.
+/// ДЕТЕКТОР ВХОДИТ В ЦЕПОЧКУ НАПРЯМУЮ — обёртка снята, состояние живёт у обоих.
+///
+/// Прежде этот тест доказывал, что диалект детектора входит в категорию шага ЧЕРЕЗ обёртку
+/// над `Detector`. Обёртка была налогом за второе имя: `impl<D: Detector> Step for D` невозможен
+/// как blanket — он конфликтует со всякой другой реализацией `Step`. Одно имя (`Counting`
+/// реализует `Step` напрямую) — конфликта нет, и обёртка не нужна вовсе.
 #[test]
 fn detector_enters_the_step_category() {
-    let chain = Detecting(Counting(0)).then(Summing(0));
+    let chain = Counting(0).then(Summing(0));
 
     let (chain, first) = chain.step(DetectorEvent::Packet {
         input: 1,
