@@ -12,7 +12,6 @@ pub mod expand;
 pub mod ext;
 pub mod pid;
 pub mod signal;
-pub mod stage;
 pub mod stream;
 pub mod subject;
 pub mod timed;
@@ -23,7 +22,6 @@ pub use expand::expand_effects;
 pub use ext::ReflexRuntimeExt;
 pub use pid::{PidError, PidGuard};
 pub use signal::shutdown_signal;
-pub use stage::{Stage, StageExt, StageOutcome, Then};
 pub use stream::{
     DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
 };
