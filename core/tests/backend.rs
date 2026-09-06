@@ -6,11 +6,23 @@
 //! Настоящие бэкенды здесь не годятся: они требуют root, интерфейса и живой сети. Поэтому берутся
 //! два игрушечных — но связь с настоящими проверена компиляцией: `AfPacketBackend` и
 //! `TcAfPacketBackend` реализуют те же `Source`/`Sink`.
+//!
+//! ДВЕ ЗАЯВКИ ЗДЕСЬ БОЛЬШЕ НЕ ПРОВЕРЯЮТСЯ, и это названо, а не забыто.
+//!
+//! `category::Injection` держал ТИПОМ запрет «оператор после инъектора»: он не реализовывал
+//! `Stream`, и операторы до него не дотягивались. Вместе с категорией стадий уходит и он.
+//!
+//! Тест `the_same_chain_runs_over_two_different_backends` предъявлял ПЕРЕНОСИМОСТЬ — «одна и та
+//! же цепочка идёт над двумя разными бэкендами», обещание третьего vision §3.2.
+//!
+//! Обе возвращаются в плане алфавита, и первая — сильнее: в замыкании движка инъекция перестаёт
+//! быть морфизмом цепочки вовсе. Цепочка отдаёт СЛОВО, применяет его драйвер; продолжать нечего,
+//! потому что продолжать не за чем. Вторая возвращается тем же планом: цепочка есть значение,
+//! бэкенды суть драйверы, и переносимость становится свойством, а не тестом.
 
 use futures::{stream, StreamExt};
 use reflex_core::backend::{observing, Sink, Source};
 use reflex_core::capability::{CanDrop, CanInject, CanObserve};
-use reflex_core::category::{from_source, Terminal};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// Бэкенд, складывающий отправленное в общий счёт: сеть в тесте не нужна, нужен факт отправки.
@@ -146,35 +158,6 @@ impl Clone for Verdicting {
     }
 }
 
-/// ОДНА ЦЕПОЧКА, ЛЮБОЙ БЭКЕНД. Текст функции не знает, над чем исполняется.
-async fn run_over<B>(backend: &mut B) -> Terminal
-where
-    B: Source<Packet = u8> + CanObserve + CanInject + Clone,
-    for<'a> B::Packets<'a>: Unpin,
-{
-    let sink = backend.clone();
-    from_source(backend)
-        .map_signals(|byte| byte > 4)
-        .classify(|big| match big {
-            true => 2u32,
-            false => 1,
-        })
-        .react(|weight| weight)
-        // КОМАНДУ СТРОИТ САМ БЭКЕНД, а цепочка её типа не знает. Прежде здесь стоял литерал
-        // `vec![0u8; …]` — то есть текст цепочки утверждал, что команда бэкенда есть байты.
-        // Через `B::inject` это утверждение исчезает: домен говорит «отправить вот этот пакет»,
-        // а чем оно станет — `Vec<u8>`, вариантом энума или вердиктом очереди — дело функтора.
-        .materialize(|weight: u32| {
-            B::inject(reflex_core::command::InjectablePacket::Raw(vec![
-                0u8;
-                weight as usize
-            ]))
-        })
-        .inject_into(sink)
-        .drive()
-        .await
-}
-
 impl Clone for Loopback {
     fn clone(&self) -> Self {
         Loopback
@@ -184,37 +167,6 @@ impl Clone for Recorded {
     fn clone(&self) -> Self {
         Recorded
     }
-}
-
-#[tokio::test]
-async fn the_same_chain_runs_over_two_different_backends() {
-    counting::reset();
-    let end = run_over(&mut Loopback).await;
-    assert_eq!(end, Terminal);
-    assert_eq!(
-        counting::total(),
-        1 + 2,
-        "цепочка над первым бэкендом не отработала"
-    );
-
-    counting::reset();
-    run_over(&mut Recorded).await;
-    assert_eq!(
-        counting::total(),
-        20 + 20,
-        "та же цепочка над другим бэкендом дала не его результат"
-    );
-
-    // ТРЕТИЙ БЭКЕНД НЕ СОВПАДАЕТ С ПЕРВЫМИ ДВУМЯ ТИПОМ КОМАНДЫ, и это ГЛАВНАЯ проверка файла:
-    // пока цепочка требовала `Command = Vec<u8>`, она знала о бэкенде ровно то, чего знать не
-    // должна. Совпадение двух первых по типу команды делало прежний тест зелёным вакуумно.
-    counting::reset();
-    run_over(&mut Verdicting).await;
-    assert_eq!(
-        counting::total(),
-        100 + 200,
-        "цепочка не перенеслась на бэкенд с алгебраической командой"
-    );
 }
 
 /// СПОСОБНОСТЬ РОНЯТЬ ВЫРАЗИМА И ДОХОДИТ ДО СТОКА.
