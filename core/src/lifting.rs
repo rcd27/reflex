@@ -45,8 +45,8 @@ use crate::step::Step;
 ///
 /// ЦЕНА НАЗВАНА: она не исчезает, а ПЕРЕЕЗЖАЕТ. Сосед обязан принимать пачку, а не сигнал, —
 /// фан-аут уходит из подписи морфизма во входной алфавит следующего звена. Видно это в
-/// `core/tests/lifting.rs::two_foreign_dialects_compose_with_each_other`, где реактору пришлось
-/// объявить `type Event = SmallVec<…>`.
+/// `core/tests/lifting.rs::detector_enters_the_step_category`, где соседнему звену (`Summing`)
+/// пришлось объявить `type From = SmallVec<…>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detecting<D>(pub D);
 
