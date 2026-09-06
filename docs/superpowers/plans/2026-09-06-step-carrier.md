@@ -694,7 +694,7 @@ impl<T> Step for Id<T> {
 - [ ] **Step 4: Прогнать и убедиться, что проходит**
 
 Run: `cargo test -p reflex-core --test step_laws`
-Expected: PASS, 3 теста.
+Expected: PASS, 2 теста.
 
 - [ ] **Step 5: Проверить воркспейс и линтер**
 
