@@ -917,7 +917,7 @@ impl<'a> reflex_core::step::Step for Advancing<'a> {
 - [ ] **Step 4: Прогнать и убедиться, что проходит**
 
 Run: `cargo test -p reflex-engine --test lifting`
-Expected: PASS, 3 теста.
+Expected: PASS, 2 теста.
 
 - [ ] **Step 5: Убедиться, что старые тесты движка целы**
 
