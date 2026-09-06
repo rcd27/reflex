@@ -1,3 +1,35 @@
+//! Алфавит входа детектора ([`DetectorEvent`]) и комбинаторы, собирающие детекторы в цепочки на
+//! носителе [`crate::step::Step`].
+//!
+//! # ЧТО ЗДЕСЬ БЫЛО (снесено 06.09.2026)
+//!
+//! До этой правки здесь стоял отдельный трейт `Detector` — вторая подпись машины Мили рядом со
+//! `Step`:
+//!
+//! ```text
+//! pub trait Detector: Sized {
+//!     type Input;
+//!     type Signal;
+//!     fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>);
+//! }
+//! ```
+//!
+//! Задуман он был DDD-паттерном: stateful detector как чистая state machine — `(State, Event) →
+//! (State, Signals)`, без `&mut self` и без побочных эффектов, состоянием управляет фреймворк.
+//! `type Input` фиксировал уровень стека (`TcpSegment`, `UdpDatagram`, …) и проверялся
+//! compile-time через сужение типа в пайплайне.
+//!
+//! Форма была ровно та же, что у `Step` — обе суть `(State, In) → (State, SmallVec<[Sig; 2]>)`, —
+//! и держать оба трейта значило бы платить за одну машину Мили дважды: имя `Detector` не несло
+//! ничего, чего не нёс бы `Step`. Семь комбинаторов этого модуля (`and`, `rmap`, `lmap`,
+//! `contextual`, `timed`, `by`, `changes`) переехали на `Step` первыми, опустевший `DetectorExt`
+//! (`pub trait DetectorExt: Detector + Sized {}`, без единого метода) и сам `Detector` снесены
+//! следом: каждая реализация трейта стала `impl Step`, а границы `D: Detector` — равенствами
+//! `D: Step<From = DetectorEvent<In>, To = SmallVec<[Sig; 2]>>`.
+//!
+//! `DetectorEvent` трейтом не был — это буква входного алфавита, а не диалект машины, — и он
+//! остался без изменений.
+
 use smallvec::SmallVec;
 use std::time::Instant;
 
@@ -41,25 +73,6 @@ impl<T> DetectorEvent<T> {
     pub fn tick_now() -> Self {
         Self::Tick { at: Instant::now() }
     }
-}
-
-/// Stateful detector как чистая state machine.
-///
-/// `(State, Event) → (State, Signals)` — DDD паттерн.
-/// Нет &mut self, нет side effects. Фреймворк управляет state.
-///
-/// # Contract
-///
-/// - `step` вызывается для каждого пакета (DetectorEvent::Packet)
-///   и периодически (DetectorEvent::Tick).
-/// - Возвращает новый state и SmallVec сигналов (stack-allocated до 2).
-/// - type Input определяет уровень стека (TcpSegment, UdpDatagram, etc.)
-///   и проверяется compile-time через type narrowing в pipeline.
-pub trait Detector: Sized {
-    type Input;
-    type Signal;
-
-    fn step(self, event: DetectorEvent<Self::Input>) -> (Self, SmallVec<[Self::Signal; 2]>);
 }
 
 /// Два НЕЗАВИСИМЫХ наблюдателя одного потока — не конвейер: событие идёт в оба.
@@ -428,13 +441,3 @@ impl<D> By<D> {
         Self { inner, by }
     }
 }
-
-/// ОПУСТЕЛ 06.09.2026: семь комбинаторов (`and`, `rmap`, `lmap`, `contextual`, `timed`, `by`,
-/// `changes`) уехали в [`crate::step::StepExt`] — они выражаются через `Step`, а не через
-/// `Detector`, и держать их здесь означало бы две подписи машины Мили вместо одной.
-///
-/// Трейт не снесён: `Detector` ещё жив и его реализуют десятки типов, а пустой ext-трейт им не
-/// мешает. Снос обоих — предмет отдельной задачи плана.
-pub trait DetectorExt: Detector + Sized {}
-
-impl<D: Detector> DetectorExt for D {}
