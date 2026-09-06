@@ -7,8 +7,8 @@
 //! два игрушечных — но связь с настоящими проверена компиляцией: `AfPacketBackend` и
 //! `TcAfPacketBackend` реализуют те же `Source`/`Sink`.
 
-use futures::stream;
-use reflex_core::backend::{Sink, Source};
+use futures::{stream, StreamExt};
+use reflex_core::backend::{observing, Sink, Source};
 use reflex_core::capability::{CanDrop, CanInject, CanObserve};
 use reflex_core::category::{from_source, Terminal};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -239,5 +239,45 @@ async fn drop_is_expressible_and_reaches_the_sink() {
         counting::silenced(),
         443,
         "сток получил дроп, но не посмотрел, КОГО ронять"
+    );
+}
+
+/// ПАМЯТНЫЙ БЭКЕНД: отдаёт заранее заданные кадры и ничего сверх этого не заявляет, кроме
+/// `CanObserve`.
+struct Mirror(Vec<Vec<u8>>);
+
+impl Mirror {
+    fn new(frames: Vec<Vec<u8>>) -> Self {
+        Mirror(frames)
+    }
+}
+
+impl Source for Mirror {
+    type Packet = Vec<u8>;
+    type Packets<'a>
+        = stream::Iter<std::vec::IntoIter<Vec<u8>>>
+    where
+        Self: 'a;
+
+    fn packets(&mut self) -> Self::Packets<'_> {
+        stream::iter(std::mem::take(&mut self.0))
+    }
+}
+
+impl CanObserve for Mirror {}
+
+/// ДВЕРЬ К НАБЛЮДЕНИЯМ ТРЕБУЕТ ЗАЯВЛЕННОЙ СПОСОБНОСТИ, и это проверяет компилятор.
+///
+/// Прежде проверка стояла в двух местах и делала одно и то же. Две записи одной идеи расходятся
+/// молча; здесь она одна.
+#[tokio::test]
+async fn observing_takes_packets_from_a_declared_observer() {
+    let mut backend = Mirror::new(vec![vec![1u8, 2], vec![3]]);
+    let seen: Vec<Vec<u8>> = observing(&mut backend).collect().await;
+
+    assert_eq!(
+        seen,
+        vec![vec![1u8, 2], vec![3]],
+        "все пакеты дошли до потребителя"
     );
 }
