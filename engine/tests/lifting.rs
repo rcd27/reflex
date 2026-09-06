@@ -37,7 +37,7 @@ fn opening(payload: &[u8]) -> Packet<'_> {
 /// ДВИЖОК СТАНОВИТСЯ МОРФИЗМОМ: курсор — состояние, вердикт и наблюдение — выход.
 #[test]
 fn engine_enters_the_step_category() {
-    let machine = Advancing::new(Cursor::Fresh, Epoch(1));
+    let machine = Advancing::new(Cursor::Fresh);
     let bytes = [1u8, 2, 3];
 
     let (machine, (act, told)) = machine.step((plan(), opening(&bytes), Tick(1)));
@@ -70,10 +70,16 @@ impl Step for CountingSightings {
 /// переписывать.
 #[test]
 fn engine_composes_with_a_foreign_link() {
-    let chain = Advancing::new(Cursor::Fresh, Epoch(1)).then(CountingSightings(0));
+    let chain = Advancing::new(Cursor::Fresh).then(CountingSightings(0));
     let bytes = [1u8, 2, 3];
 
-    let (_chain, seen) = chain.step((plan(), opening(&bytes), Tick(1)));
+    let (chain, first) = chain.step((plan(), opening(&bytes), Tick(1)));
+    let (_chain, second) = chain.step((plan(), opening(&bytes), Tick(2)));
 
-    assert_eq!(seen, 1, "открытие дало одно наблюдение");
+    assert_eq!(first, 1, "открытие дало одно наблюдение");
+    assert_eq!(
+        second, 1,
+        "продолжение того же разговора не несёт нового наблюдения — счётчик СОХРАНИЛ единицу, а \
+         не пересобрался: состояние живёт у второго звена"
+    );
 }
