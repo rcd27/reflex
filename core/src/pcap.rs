@@ -370,8 +370,8 @@ fn on_grid<T>(
     window: Duration,
     start: Option<Instant>,
 ) -> Vec<crate::detector::DetectorEvent<T>> {
-    // ЗАКОН СЕТКИ ОДИН НА ВСЕ ЧАСЫ (05.09.2026) — [`crate::grid`]. Здесь он был написан впервые,
-    // и отсюда же разошёлся по трём другим реализациям; теперь все они зовут одну.
+    // ЗАКОН СЕТКИ ОДИН НА ВСЕ ЧАСЫ — [`crate::grid`]. Своего счёта узлов здесь нет намеренно:
+    // сетка, посчитанная дважды, есть две сетки, и расходятся они молча.
     match start {
         None => Vec::new(),
         Some(start) => crate::grid::nodes_between(start, before, after, window)

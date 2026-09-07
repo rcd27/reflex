@@ -66,8 +66,8 @@ where
                 continue; // мёртвый поток эвиктнут — не тикаем
             }
             if let Some(detector) = self.flows.remove(&flow) {
-                // `node: 0` — таблица не хранит `start` сетки: то же условное «вне сетки», что
-                // и у `DetectorEvent::tick_now`.
+                // `node: 0` — таблица не хранит `start` сетки: условное «вне сетки», как у
+                // всякого тика, собранного мимо неё.
                 let (detector, signals) = detector.step(DetectorEvent::Tick { node: 0, at });
                 all_signals.extend(signals);
                 self.flows.insert(flow, detector);

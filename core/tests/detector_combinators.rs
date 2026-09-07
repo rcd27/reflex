@@ -170,8 +170,25 @@ fn wire(flow: u8, kind: Kind) -> DetectorEvent<Wire> {
     DetectorEvent::packet_now(Wire { flow, kind })
 }
 
-fn tick() -> DetectorEvent<Wire> {
-    DetectorEvent::tick_now()
+/// ШАГ СЕТКИ, ОТ КОТОРОЙ ЖИВУТ ТИКИ НАБОРА.
+const GRID_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// НАЧАЛО СЕТКИ, ОБЩЕЕ НА ВЕСЬ НАБОР: номера узлов сравнимы только внутри ОДНОЙ сетки, и две
+/// разные точки отсчёта сделали бы `tick(1)` и `tick(2)` числами про разное.
+fn grid_began() -> std::time::Instant {
+    static BEGAN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *BEGAN.get_or_init(std::time::Instant::now)
+}
+
+/// Тик на НАСТОЯЩЕМ узле сетки: и номер, и момент называет [`reflex_core::grid`].
+///
+/// Номер, взятый мимо сетки, несравним ни с чем — такой тик говорит «время шло», но не говорит,
+/// сколько; здесь же соседние `nth` — соседние узлы, отстоящие ровно на шаг.
+fn tick(nth: u64) -> DetectorEvent<Wire> {
+    DetectorEvent::Tick {
+        node: nth,
+        at: reflex_core::grid::node(grid_began(), GRID_STEP, nth),
+    }
 }
 
 /// СУЖЕНИЕ ВХОДА — прибор, знающий только мировой словарь, встаёт в доменную цепочку.
@@ -211,7 +228,7 @@ fn lmap_drops_what_the_instrument_has_no_business_seeing() {
 fn lmap_never_swallows_the_tick() {
     let seen = run(
         Clock.lmap(|_observed: &Wire| None),
-        vec![tick(), tick(), tick()],
+        vec![tick(1), tick(2), tick(3)],
     );
 
     assert_eq!(
@@ -365,7 +382,7 @@ fn contextual_remembers_across_the_tick() {
                     })
                 },
             ),
-        vec![wire(5, Kind::Byte), tick()],
+        vec![wire(5, Kind::Byte), tick(1)],
     );
 
     assert_eq!(
@@ -423,7 +440,7 @@ fn contextual_admits_when_there_is_no_context_yet() {
                     })
                 },
             ),
-        vec![tick()],
+        vec![tick(1)],
     );
 
     assert_eq!(said, Vec::<Trouble>::new());
