@@ -94,10 +94,12 @@ async fn late_ticks_come_out_as_a_sequence_not_a_repeated_number() {
     // ИМИТАЦИЯ ЗАНЯТОСТИ: поток не опрашивается несколько шагов сетки подряд.
     tokio::time::sleep(step * 5).await;
 
-    let mut nodes = Vec::new();
+    // Подъём выпускает ПАРУ, и узлы добываются из её слова здесь: разворачивать слово — забота
+    // потребителя, а не оператора.
+    let mut nodes: Vec<Node> = Vec::new();
     while nodes.len() < 3 {
         match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
-            Ok(Some(node)) => nodes.push(node),
+            Ok(Some((said, ()))) => nodes.extend(said),
             other => panic!("поток обязан отдать накопленные узлы, а дал {other:?}"),
         }
     }
@@ -123,16 +125,19 @@ async fn a_silent_source_wakes_the_stream_by_itself() {
     let mut stream = Box::pin(source.detect_with_tick(SpeaksOnThirdNode, step));
 
     let began = std::time::Instant::now();
-    let got = tokio::time::timeout(Duration::from_millis(500), stream.next())
-        .await
-        .expect("поток обязан проснуться сам на третьем узле, а не по внешнему таймауту");
+    // Пара выходит с КАЖДОГО узла, включая те, на которых прибор промолчал: подъём отдаёт то, что
+    // дал шаг. Ждём здесь не первой пары, а первого непустого слова — молчание узлов 1 и 2 есть
+    // такая же речь, и притвориться пробуждением на третьем узле она не может.
+    let mut got = None;
+    while got.is_none() {
+        match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+            Ok(Some((said, ()))) => got = said.first().copied(),
+            other => panic!("поток обязан проснуться сам на третьем узле, а дал {other:?}"),
+        }
+    }
     let elapsed = began.elapsed();
 
-    assert_eq!(
-        got,
-        Some(Node(3)),
-        "показание обязано прийти именно с узла 3"
-    );
+    assert_eq!(got, Some(Node(3)), "слово обязано прийти именно с узла 3");
     assert!(
         elapsed < Duration::from_millis(500),
         "узел 3 при шаге {step:?} пришёл через {elapsed:?} — поток спал и был разбужен чужим \

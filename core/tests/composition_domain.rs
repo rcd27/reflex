@@ -62,7 +62,7 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     let limit = std::time::Duration::from_secs(10);
     let packet = |key: u8, at: std::time::Instant| DetectorEvent::Packet { input: key, at };
 
-    let counted: Vec<(u8, Count)> = stream::iter([
+    let counted: Vec<(u8, SmallVec<[Count; 2]>)> = stream::iter([
         packet(1, t0),
         packet(1, t0),
         DetectorEvent::Tick { node: 1, at: t0 },
@@ -80,17 +80,17 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     // Потолок ЗАВЕДОМО НЕ ДОСТИГАЕТСЯ: ключ один, групп хватает на десять.
     .group_by(
-        |(k, _): &(u8, Count)| *k,
+        |(k, _): &(u8, (SmallVec<[Count; 2]>, ()))| *k,
         || 0u32,
-        |_seen: &mut u32, (k, count)| Some((k, count)),
+        |_seen: &mut u32, (k, (said, ()))| Some((k, said)),
         Keys::AtMost(10),
     )
     .collect()
     .await;
 
     assert_eq!(
-        counted.last().map(|(_, c)| *c),
-        Some(Count(1)),
+        counted.last().map(|(_, said)| said.as_slice()),
+        Some([Count(1)].as_slice()),
         "звено по времени забыло, а композиция помнит: {counted:?}"
     );
 }
@@ -114,9 +114,9 @@ async fn the_composition_forgets_when_the_count_bound_is_crossed() {
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
-        |(k, _): &(u8, Count)| *k,
+        |(k, _): &(u8, (SmallVec<[Count; 2]>, ()))| *k,
         || 0u32,
-        |seen: &mut u32, (k, _count)| {
+        |seen: &mut u32, (k, _said)| {
             *seen += 1;
             Some((k, *seen))
         },
@@ -125,10 +125,17 @@ async fn the_composition_forgets_when_the_count_bound_is_crossed() {
     .collect()
     .await;
 
-    let last_about_one = counted.iter().rev().find(|(k, _)| *k == 1).map(|(_, n)| *n);
+    // СЧЁТ ГРУППЫ НАЧИНАЕТСЯ ЗАНОВО ПОСЛЕ КАЖДОГО ВЫТЕСНЕНИЯ. Ключ 1 прошёл композицию пять раз;
+    // помни она всё, счёт шёл бы `1,2,3,4,5`, а потолок в одну группу сбрасывает его всякий раз,
+    // как между двумя его проходами вклинился ключ 2.
+    let about_one: Vec<u32> = counted
+        .iter()
+        .filter(|(k, _)| *k == 1)
+        .map(|(_, n)| *n)
+        .collect();
     assert_eq!(
-        last_about_one,
-        Some(1),
+        about_one,
+        vec![1, 2, 1, 1, 2],
         "звено по числу вытеснило группу, а композиция помнит: {counted:?}"
     );
 }
@@ -143,7 +150,7 @@ async fn within_both_domains_nothing_is_forgotten() {
     let limit = std::time::Duration::from_secs(10);
     let packet = |key: u8, at: std::time::Instant| DetectorEvent::Packet { input: key, at };
 
-    let counted: Vec<(u8, Count)> = stream::iter([
+    let counted: Vec<(u8, SmallVec<[Count; 2]>)> = stream::iter([
         packet(1, t0),
         packet(1, t0),
         packet(1, t0),
@@ -151,17 +158,17 @@ async fn within_both_domains_nothing_is_forgotten() {
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
-        |(k, _): &(u8, Count)| *k,
+        |(k, _): &(u8, (SmallVec<[Count; 2]>, ()))| *k,
         || 0u32,
-        |_seen: &mut u32, (k, count)| Some((k, count)),
+        |_seen: &mut u32, (k, (said, ()))| Some((k, said)),
         Keys::AtMost(10),
     )
     .collect()
     .await;
 
     assert_eq!(
-        counted.last().map(|(_, c)| *c),
-        Some(Count(3)),
+        counted.last().map(|(_, said)| said.as_slice()),
+        Some([Count(3)].as_slice()),
         "внутри обоих доменов состояние потеряно: {counted:?}"
     );
 }

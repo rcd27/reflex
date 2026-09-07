@@ -4,27 +4,27 @@ use futures::Stream;
 use reflex_core::step::Step;
 use reflex_core::types::{HasConnectionId, HasFlow};
 use reflex_core::DetectorEvent;
-use smallvec::SmallVec;
 
 use crate::stream::{
     DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
 };
 
 pub trait ReflexRuntimeExt: Stream + Sized {
-    fn detect<D, Sig>(self, detector: D) -> DetectStream<Self, D, Sig>
+    /// Поднять [`Step`] на поток, сшитый с сеткой узлов.
+    ///
+    /// Шаг берётся ЛЮБОЙ, чей вход есть буква этого алфавита: подъём поднимает шаг, а не разбирает
+    /// его слово. Наружу выходит пара — и слово, и показание.
+    fn detect<D>(self, detector: D) -> DetectStream<Self, D>
     where
-        D: Step<From = DetectorEvent<Self::Item>, To = SmallVec<[Sig; 2]>>,
+        D: Step<From = DetectorEvent<Self::Item>>,
     {
         self.detect_with_tick(detector, Duration::from_millis(100))
     }
 
-    fn detect_with_tick<D, Sig>(
-        self,
-        detector: D,
-        tick_interval: Duration,
-    ) -> DetectStream<Self, D, Sig>
+    /// То же с названным шагом сетки. См. [`detect`](Self::detect).
+    fn detect_with_tick<D>(self, detector: D, tick_interval: Duration) -> DetectStream<Self, D>
     where
-        D: Step<From = DetectorEvent<Self::Item>, To = SmallVec<[Sig; 2]>>,
+        D: Step<From = DetectorEvent<Self::Item>>,
     {
         DetectStream::new(self, detector, tick_interval)
     }

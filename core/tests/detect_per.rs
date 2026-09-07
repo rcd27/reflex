@@ -153,51 +153,48 @@ fn packet(addr: u8, kind: Kind, at: Instant) -> DetectorEvent<Event> {
     }
 }
 
-/// СЛИТЬ ПАРУ ОБРАТНО В ОДИН ВЕКТОР — стенд решает здесь заранее, что обе стороны говорят одним
-/// словарём, и это решение стенда, а не обязанность `Both`: `detect_per` держит состояние по
-/// плоскому алфавиту одного сигнала на ключ, а произведение `Both` отдаёт пару сторон.
-#[derive(Debug, Clone, Copy, Default)]
-struct Merged<D>(D);
-
-impl<D, I, S> Step for Merged<D>
-where
-    D: Step<From = DetectorEvent<I>, To = (SmallVec<[S; 2]>, SmallVec<[S; 2]>)>,
-    S: Word,
-{
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[S; 2]>;
-    type Notes = D::Notes;
-
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
-        let (next, (mut left, right), notes) = self.0.step(event);
-        left.extend(right);
-        (Merged(next), left, notes)
-    }
+/// УПЛОЩЕНИЕ ЖИВЁТ У ПОТРЕБИТЕЛЯ, И ЗДЕСЬ ОН — СТЕНД.
+///
+/// Плоский список «ключ и сигнал» удобен ассерту, но добывается он ЗДЕСЬ, из вышедших наружу пар,
+/// а не в подъёме: подъём поднимает шаг, а не разбирает его слово. Форма помощника нарочно
+/// беднее подъёма — она теряет молчание и показание, — и потому годится только тем проверкам,
+/// чей предмет есть сказанное.
+fn spoke<W: Clone, N>(got: &[(u8, (SmallVec<[W; 2]>, N))]) -> Vec<(u8, W)> {
+    got.iter()
+        .flat_map(|(key, (said, _))| said.iter().map(|signal| (*key, signal.clone())))
+        .collect()
 }
 
 /// СОСТОЯНИЕ ЖИВЁТ ПО КЛЮЧУ и не смешивается между целями.
 #[tokio::test]
 async fn state_is_per_key() {
     let t0 = Instant::now();
-    let got: Vec<(u8, Signal)> = stream::iter([
+    let got: Vec<(
+        u8,
+        ((SmallVec<[Signal; 2]>, SmallVec<[Signal; 2]>), ((), ())),
+    )> = stream::iter([
         packet(1, Kind::Rst, t0),
         packet(2, Kind::Byte, t0),
         packet(1, Kind::Byte, t0),
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Merged(Rst.and(Bytes)),
+        || Rst.and(Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
     .await;
 
+    // СЛОЖЕННЫЕ НАБЛЮДАТЕЛИ ВСТАЮТ В ПОДЪЁМ БЕЗ ПЕРЕХОДНИКА, и слово выходит произведением: кто
+    // из двоих сказал, называет позиция, а не метка в работе.
     assert_eq!(
-        got,
+        got.iter()
+            .map(|(key, (said, _))| (*key, said.clone()))
+            .collect::<Vec<_>>(),
         vec![
-            (1, Signal::SawRst),
-            (2, Signal::SawByte),
-            (1, Signal::SawByte)
+            (1, (smallvec![Signal::SawRst], smallvec![])),
+            (2, (smallvec![], smallvec![Signal::SawByte])),
+            (1, (smallvec![], smallvec![Signal::SawByte])),
         ]
     );
 }
@@ -211,7 +208,7 @@ async fn tick_reaches_every_live_state() {
     let t0 = Instant::now();
     let later = t0 + Duration::from_secs(2);
 
-    let got: Vec<(u8, Signal)> = stream::iter([
+    let got: Vec<(u8, (SmallVec<[Signal; 2]>, ()))> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(2, Kind::Byte, t0),
         DetectorEvent::Tick { node: 1, at: later },
@@ -225,9 +222,9 @@ async fn tick_reaches_every_live_state() {
     .await;
 
     assert_eq!(
-        got,
+        spoke(&got),
         vec![(1, Signal::WentQuiet), (2, Signal::WentQuiet)],
-        "тик обязан дойти до обоих ключей, и в детерминированном порядке"
+        "тик обязан дойти до обоих ключей, и в детерминированном порядке: {got:?}"
     );
 }
 
@@ -236,7 +233,7 @@ async fn tick_reaches_every_live_state() {
 #[tokio::test]
 async fn tick_before_threshold_is_silent() {
     let t0 = Instant::now();
-    let got: Vec<(u8, Signal)> = stream::iter([
+    let got: Vec<(u8, (SmallVec<[Signal; 2]>, ()))> = stream::iter([
         packet(1, Kind::Byte, t0),
         DetectorEvent::Tick {
             node: 1,
@@ -251,13 +248,14 @@ async fn tick_before_threshold_is_silent() {
     .collect()
     .await;
 
-    assert!(got.is_empty(), "сработало раньше порога: {got:?}");
+    // Шаг был на каждом событии, и пара вышла с каждого шага; сказано при этом не было ничего.
+    assert!(spoke(&got).is_empty(), "сработало раньше порога: {got:?}");
 }
 
 /// Тик до первого пакета не сигналит: состояний ещё нет, будить некого.
 #[tokio::test]
 async fn tick_without_any_state_is_silent() {
-    let got: Vec<(u8, Signal)> = stream::iter([DetectorEvent::Tick {
+    let got: Vec<(u8, (SmallVec<[Signal; 2]>, ()))> = stream::iter([DetectorEvent::Tick {
         node: 1,
         at: Instant::now(),
     }])
@@ -269,6 +267,7 @@ async fn tick_without_any_state_is_silent() {
     .collect()
     .await;
 
+    // Ни одного шага не случилось вовсе: будить было некого — значит и пары ни одной.
     assert!(got.is_empty());
 }
 
@@ -294,16 +293,24 @@ async fn composition_lets_both_observe() {
         }
     }
 
-    let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
+    let got: Vec<(
+        u8,
+        ((SmallVec<[Signal; 2]>, SmallVec<[Signal; 2]>), ((), ())),
+    )> = stream::iter([packet(1, Kind::Rst, t0)])
         .detect_per(
             |e: &Event| e.addr,
-            || Merged(Rst.and(Everything)),
+            || Rst.and(Everything),
             reflex_core::stream::Lifetime::Bounded,
         )
         .collect()
         .await;
 
-    assert_eq!(got, vec![(1, Signal::SawRst), (1, Signal::SawByte)]);
+    assert_eq!(
+        got.iter()
+            .map(|(key, (said, _))| (*key, said.clone()))
+            .collect::<Vec<_>>(),
+        vec![(1, (smallvec![Signal::SawRst], smallvec![Signal::SawByte]))]
+    );
 }
 
 /// ЦЕПОЧКА РАСТЁТ ДОПИСЫВАНИЕМ. Третий детектор добавлен оборачиванием в `Both`, снаружи — правила
@@ -314,31 +321,47 @@ async fn chain_grows_by_appending() {
     let t0 = Instant::now();
     let later = t0 + Duration::from_secs(2);
 
-    let got: Vec<(u8, Signal)> = stream::iter([
+    type Word3 = (
+        (SmallVec<[Signal; 2]>, SmallVec<[Signal; 2]>),
+        SmallVec<[Signal; 2]>,
+    );
+
+    let got: Vec<(u8, (Word3, (((), ()), ())))> = stream::iter([
         packet(1, Kind::Rst, t0),
         packet(1, Kind::Byte, t0),
         DetectorEvent::Tick { node: 1, at: later },
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Merged(Merged(Rst.and(Quiet::after(Duration::from_secs(1)))).and(Bytes)),
+        || Rst.and(Quiet::after(Duration::from_secs(1))).and(Bytes),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
     .await;
 
+    // ТРЕТИЙ ПРИБОР ПРИСТРОЕН СБОКУ, А НЕ ВПИСАН В ЧУЖОЕ СЛОВО: место каждого в произведении
+    // видно на глаз, и добавление не тронуло ни одного из двух прежних.
     assert_eq!(
-        got,
+        got.iter()
+            .map(|(key, (said, _))| (*key, said.clone()))
+            .collect::<Vec<_>>(),
         vec![
-            (1, Signal::SawRst),
-            (1, Signal::SawByte),
-            (1, Signal::WentQuiet)
+            (1, ((smallvec![Signal::SawRst], smallvec![]), smallvec![])),
+            (1, ((smallvec![], smallvec![]), smallvec![Signal::SawByte])),
+            (
+                1,
+                ((smallvec![], smallvec![Signal::WentQuiet]), smallvec![])
+            ),
         ]
     );
 }
 
-/// СИГНАЛЫ НЕ ТЕРЯЮТСЯ, когда источник завершается сразу после события, породившего сразу два
-/// сигнала. Очередь обязана быть опустошена прежде, чем поток отдаст `None`.
+/// СЛОВО ВЫХОДИТ ЦЕЛИКОМ, а не по буквам, и не теряется, когда источник завершается сразу за
+/// событием, его породившим.
+///
+/// Разбери подъём слово на сигналы — и он объявил бы себя знатоком его формы; тогда всякое слово,
+/// формы этой не имеющее (произведение, например), в подъём бы не встало. Здесь проверяется, что
+/// он этого не делает: два сигнала выходят ОДНИМ словом, а не двумя элементами потока.
 #[tokio::test]
 async fn signals_survive_source_completion() {
     let t0 = Instant::now();
@@ -361,7 +384,7 @@ async fn signals_survive_source_completion() {
         }
     }
 
-    let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
+    let got: Vec<(u8, (SmallVec<[Signal; 2]>, ()))> = stream::iter([packet(1, Kind::Rst, t0)])
         .detect_per(
             |e: &Event| e.addr,
             || Twice,
@@ -370,7 +393,16 @@ async fn signals_survive_source_completion() {
         .collect()
         .await;
 
-    assert_eq!(got.len(), 2, "потерян сигнал на завершении источника");
+    assert_eq!(
+        got.len(),
+        1,
+        "шаг был один — и пара обязана быть одна: {got:?}"
+    );
+    assert_eq!(
+        spoke(&got),
+        vec![(1, Signal::SawRst), (1, Signal::SawByte)],
+        "потерян сигнал на завершении источника: {got:?}"
+    );
 }
 
 /// ДЕТЕКТОР С ПАМЯТЬЮ: считает пакеты и на тике говорит, сколько насчитал. По нему видно, забыто
@@ -410,7 +442,7 @@ async fn a_key_that_went_quiet_for_too_long_is_forgotten() {
     let t0 = Instant::now();
     let limit = Duration::from_secs(10);
 
-    let counts: Vec<(u8, Counted)> = stream::iter([
+    let counts: Vec<(u8, (SmallVec<[Counted; 2]>, ()))> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0),
         // Простой ДОЛЬШЕ предела: тик приходит, но по ключу 1 событий не было.
@@ -434,7 +466,7 @@ async fn a_key_that_went_quiet_for_too_long_is_forgotten() {
     .await;
 
     assert_eq!(
-        counts.last(),
+        spoke(&counts).last(),
         Some(&(1, Counted(1))),
         "состояние ключа пережило простой: считает {counts:?}, а обязано начать заново"
     );
@@ -450,7 +482,7 @@ async fn an_active_key_keeps_its_state() {
     let limit = Duration::from_secs(10);
     let step = Duration::from_secs(1);
 
-    let counts: Vec<(u8, Counted)> = stream::iter([
+    let counts: Vec<(u8, (SmallVec<[Counted; 2]>, ()))> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0 + step),
         packet(1, Kind::Byte, t0 + step * 2),
@@ -468,7 +500,7 @@ async fn an_active_key_keeps_its_state() {
     .await;
 
     assert_eq!(
-        counts.last(),
+        spoke(&counts).last(),
         Some(&(1, Counted(3))),
         "состояние живого ключа снято: {counts:?}"
     );
@@ -483,7 +515,7 @@ async fn bounded_keys_keep_their_state_forever() {
     let t0 = Instant::now();
     let long = Duration::from_secs(3600);
 
-    let counts: Vec<(u8, Counted)> = stream::iter([
+    let counts: Vec<(u8, (SmallVec<[Counted; 2]>, ()))> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0),
         DetectorEvent::Tick {
@@ -505,8 +537,69 @@ async fn bounded_keys_keep_their_state_forever() {
     .await;
 
     assert_eq!(
-        counts.last(),
+        spoke(&counts).last(),
         Some(&(1, Counted(3))),
         "заявленная ограниченность не почтена — состояние снято: {counts:?}"
+    );
+}
+
+/// ЧЕМ ПРИБОР РАСПОЛАГАЛ, КОГДА ГОВОРИЛ. Адресата у этого нет: цепочке читать его нечем, наружу
+/// оно выходит вбок.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Looked {
+    events: u8,
+}
+
+/// Прибор, который молчит соседу и ОТМЕЧАЕТ, сколько событий видел.
+///
+/// Слово у него пустое всегда: без такого прибора потеря показания неотличима от «сказать было
+/// нечего», и подъём, роняющий третий элемент, зеленел бы на всех прочих стендах.
+#[derive(Debug, Clone, Copy, Default)]
+struct Attentive(u8);
+
+impl Step for Attentive {
+    type From = DetectorEvent<Event>;
+    type To = SmallVec<[Signal; 2]>;
+    type Notes = Looked;
+
+    fn step(self, event: Self::From) -> (Self, Self::To, Looked) {
+        let seen = match event {
+            DetectorEvent::Packet { .. } => self.0 + 1,
+            DetectorEvent::Tick { .. } => self.0,
+            DetectorEvent::Opaque { .. } => self.0,
+        };
+        (Attentive(seen), smallvec![], Looked { events: seen })
+    }
+}
+
+/// ПОКАЗАНИЕ ПОКИДАЕТ ЦЕПОЧКУ ПОДЪЁМОМ — и подъём, расслоённый по ключу, не исключение.
+///
+/// Слово прибора здесь пусто всегда, и единственное, что он произвёл, — показание. Подъём,
+/// выпускающий одно слово, отдал бы наружу пустоту и был бы неотличим от исправного.
+#[tokio::test]
+async fn the_keyed_lift_carries_the_note_out() {
+    let t0 = Instant::now();
+
+    let got: Vec<(u8, (SmallVec<[Signal; 2]>, Looked))> = stream::iter([
+        packet(1, Kind::Byte, t0),
+        packet(2, Kind::Byte, t0),
+        packet(1, Kind::Byte, t0),
+    ])
+    .detect_per(
+        |e: &Event| e.addr,
+        Attentive::default,
+        reflex_core::stream::Lifetime::Bounded,
+    )
+    .collect()
+    .await;
+
+    assert_eq!(
+        got.iter().map(|(k, (_, n))| (*k, *n)).collect::<Vec<_>>(),
+        vec![
+            (1, Looked { events: 1 }),
+            (2, Looked { events: 1 }),
+            (1, Looked { events: 2 })
+        ],
+        "показание не вышло наружу или перепуталось между ключами: {got:?}"
     );
 }

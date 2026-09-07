@@ -22,7 +22,7 @@ impl Word for Count {
     type Of = Bench;
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct RstCounter {
     count: u32,
     flow: Flow,
@@ -77,8 +77,8 @@ fn new_table() -> FlowTable<RstCounter> {
 fn process_creates_detector_on_first_packet() {
     let mut table = new_table();
     let seg = make_segment(12345, 443, TcpFlags::SYN);
-    let signals = table.process(&seg, Instant::now());
-    assert!(signals.is_empty());
+    let (said, ()) = table.process(&seg, Instant::now());
+    assert!(said.is_empty());
     assert_eq!(table.flow_count(), 1);
 }
 
@@ -86,10 +86,10 @@ fn process_creates_detector_on_first_packet() {
 fn process_reuses_detector_for_same_flow() {
     let mut table = new_table();
     let rst = make_segment(12345, 443, TcpFlags::RST);
-    let signals1 = table.process(&rst, Instant::now());
-    assert_eq!(signals1.as_slice(), &[Count(1)]);
-    let signals2 = table.process(&rst, Instant::now());
-    assert_eq!(signals2.as_slice(), &[Count(2)]);
+    let (first, ()) = table.process(&rst, Instant::now());
+    assert_eq!(first.as_slice(), &[Count(1)]);
+    let (second, ()) = table.process(&rst, Instant::now());
+    assert_eq!(second.as_slice(), &[Count(2)]);
     assert_eq!(table.flow_count(), 1);
 }
 
@@ -113,8 +113,8 @@ fn process_normalizes_server_response_to_same_flow() {
         ttl: 53,
         payload: vec![],
     };
-    let signals = table.process(&rst, Instant::now());
-    assert_eq!(signals.as_slice(), &[Count(1)]);
+    let (said, ()) = table.process(&rst, Instant::now());
+    assert_eq!(said.as_slice(), &[Count(1)]);
     assert_eq!(table.flow_count(), 1);
 }
 
@@ -137,9 +137,14 @@ fn tick_visits_all_flows() {
     table.process(&syn2, Instant::now());
     assert_eq!(table.flow_count(), 2);
 
-    // tick() should visit all flows (no signals from RstCounter on Tick)
-    let signals = table.tick(Instant::now());
-    assert!(signals.is_empty());
+    // ТИК ОБХОДИТ ВСЕ ПОТОКИ, и с каждого выходит пара — даже когда сказать было нечего: `tick`
+    // отдаёт то, что дал шаг, а не только непустое.
+    let spoken = table.tick(Instant::now());
+    assert_eq!(spoken.len(), 2, "тик обязан дойти до обоих потоков");
+    assert!(
+        spoken.iter().all(|(_, (said, ()))| said.is_empty()),
+        "счётчик сбросов на тике не говорит: {spoken:?}"
+    );
     // Flows should still be present after tick
     assert_eq!(table.flow_count(), 2);
 }
@@ -207,8 +212,8 @@ fn normalize_reverses_high_port_source() {
         payload: vec![],
     };
 
-    let signals = table.process(&seg_reverse, Instant::now());
-    assert_eq!(signals.as_slice(), &[Count(1)]);
+    let (said, ()) = table.process(&seg_reverse, Instant::now());
+    assert_eq!(said.as_slice(), &[Count(1)]);
     // Both directions should be in the same flow entry
     assert_eq!(table.flow_count(), 1);
 }

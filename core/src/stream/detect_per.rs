@@ -18,9 +18,21 @@
 //!
 //! * состояние заводится на ПЕРВОМ событии ключа и живёт, пока живёт поток;
 //! * `Tick` доставляется каждому живому состоянию — в порядке ключей, детерминированно;
-//! * ни один сигнал не теряется: они выдаются по одному, очередь опустошается прежде, чем
+//! * ни одна пара не теряется: они выдаются по одной, очередь опустошается прежде, чем
 //!   опрашивается источник;
 //! * детектор не дёргает часы сам — время приходит в событии, потому тесты воспроизводимы.
+//!
+//! # ЗАКОН ПОДЪЁМА: ОН ПОДНИМАЕТ ШАГ, А НЕ РАЗБИРАЕТ ЕГО СЛОВО
+//!
+//! Наружу выходит РОВНО то, что дал шаг, — и слово, и показание, — по паре на шаг, включая шаги,
+//! которым сказать соседу было нечего. Отбрось подъём пустое слово, и вместе с ним пропало бы
+//! показание того же шага: «замерил и намерил ноль» стало бы неотличимо от «не мерил вовсе», а
+//! показание есть единственное, чем прибор предъявляет, чем располагал.
+//!
+//! Отсюда же то, чего оператор НЕ делает: он не уплощает слово. Допущение «слово есть вектор
+//! сигналов» верно ровно до первого произведения слов, и встроенное в подъём оно запретило бы
+//! складывать наблюдателей — то самое, ради чего сложение заведено. Кому нужен плоский поток
+//! сигналов, тот выражает уплощение звеном или комбинатором, где оно видно.
 //!
 //! # Политика жизни ключа НАЗЫВАЕТСЯ ВЫЗЫВАЮЩИМ, и промолчать нельзя
 //!
@@ -37,7 +49,6 @@ use futures::Stream;
 
 use crate::detector::DetectorEvent;
 use crate::step::Step;
-use smallvec::SmallVec;
 use std::time::{Duration, Instant};
 
 /// СКОЛЬКО ЖИВЁТ СОСТОЯНИЕ КЛЮЧА. Обязательный аргумент [`DetectPer::new`].
@@ -57,17 +68,18 @@ pub enum Lifetime {
     UntilIdle(Duration),
 }
 
-/// `Unpin` у источника требуется намеренно, вместо `pin_project`: поле с сигналом
-/// (`VecDeque<(K, Sig)>`) макрос не разбирает. Ограничение необременительно — источники
-/// событий его удовлетворяют, а взамен разбор структуры остаётся читаемым.
+/// `Unpin` у источника требуется намеренно, вместо `pin_project`: поле с очередью выходов макрос
+/// не разбирает. Ограничение необременительно — источники событий его удовлетворяют, а взамен
+/// разбор структуры остаётся читаемым.
 ///
-/// Тип сигнала `Sig` назван параметром структуры, а не взят проекцией: `Step` держит алфавит
-/// целиком (`To = SmallVec<[Sig; 2]>`), а вынуть из него элемент нечем.
+/// Выход шага взят ПРОЕКЦИЕЙ (`D::To`, `D::Notes`), а не отдельным параметром: подъём поднимает
+/// шаг, а не разбирает его слово, и потому вынимать из слова нечего. Цена — граница `D: Step` на
+/// самой структуре, и она честна: без неё поля не выразимы.
 ///
 /// `In` параметром НЕ стал: он не встречается ни в одном поле, и `PhantomData` ради него был бы
 /// платой за красоту подписи. Он живёт в границах `impl`, где равенство `From = DetectorEvent<In>`
 /// его связывает.
-pub struct DetectPer<S, D, K, KeyFn, Factory, Sig> {
+pub struct DetectPer<S, D: Step, K, KeyFn, Factory> {
     source: S,
     key_fn: KeyFn,
     factory: Factory,
@@ -76,11 +88,23 @@ pub struct DetectPer<S, D, K, KeyFn, Factory, Sig> {
     ///
     /// Рядом с детектором — момент ПОСЛЕДНЕГО события по ключу: без него нечем отмерить простой.
     states: BTreeMap<K, (D, Instant)>,
-    pending: VecDeque<(K, Sig)>,
+    /// ОЧЕРЕДЬ ЖИВЁТ РАДИ ТИКА, а не ради пакета: тик расходится по всем живым ключам разом, и
+    /// отдать наружу за один опрос можно лишь одну пару. Пакет адресован ОДНОМУ ключу, даёт ровно
+    /// одну пару и очереди не касается вовсе.
+    pending: VecDeque<(K, (D::To, D::Notes))>,
     lifetime: Lifetime,
 }
 
-impl<S, D, K, KeyFn, Factory, Sig> DetectPer<S, D, K, KeyFn, Factory, Sig> {
+/// ОЧЕРЕДЬ ДЕРЖИТ ЗНАЧЕНИЯ, А НЕ ЗАКРЕПЛЁННЫЕ МЕСТА, — и потому не вправе закреплять оператор.
+///
+/// Выведи компилятор `Unpin` по полям, он потребовал бы его от обеих букв выхода шага: и от
+/// СЛОВА, и от ПОКАЗАНИЯ. Ни одна из них здесь не закрепляется — они лежат в очереди значением и
+/// уезжают наружу целиком; закрепляется единственно источник, и он требует `Unpin` сам, своей
+/// границей у [`Stream`]. Показанию же границы не ставится ни одной: оно не адресовано никому, и
+/// всякое требование к нему было бы требованием, которого некому исполнить.
+impl<S: Unpin, D: Step, K, KeyFn, Factory> Unpin for DetectPer<S, D, K, KeyFn, Factory> {}
+
+impl<S, D: Step, K, KeyFn, Factory> DetectPer<S, D, K, KeyFn, Factory> {
     pub fn new(source: S, key_fn: KeyFn, factory: Factory, lifetime: Lifetime) -> Self {
         Self {
             source,
@@ -93,26 +117,27 @@ impl<S, D, K, KeyFn, Factory, Sig> DetectPer<S, D, K, KeyFn, Factory, Sig> {
     }
 }
 
-impl<S, D, K, KeyFn, Factory, In, Sig> Stream for DetectPer<S, D, K, KeyFn, Factory, Sig>
+impl<S, D, K, KeyFn, Factory, In> Stream for DetectPer<S, D, K, KeyFn, Factory>
 where
-    D: Step<From = DetectorEvent<In>, To = SmallVec<[Sig; 2]>> + Unpin,
+    D: Step<From = DetectorEvent<In>> + Unpin,
     S: Stream<Item = DetectorEvent<In>> + Unpin,
     In: Clone,
-    Sig: Unpin,
     K: Ord + Clone + Unpin,
     KeyFn: Fn(&In) -> K + Unpin,
     Factory: Fn() -> D + Unpin,
 {
-    type Item = (K, Sig);
+    /// ПАРА НАРУЖУ, ПОМЕЧЕННАЯ КЛЮЧОМ. Подъём выпускает всё, что дал шаг; ключ приписывается
+    /// затем, что в одном выходе смешаны машины разных ключей, и без него не видно, чья это речь.
+    type Item = (K, (D::To, D::Notes));
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
         loop {
-            // Сначала отдаём накопленное: сигнал, произведённый шагом, не может быть потерян
+            // Сначала отдаём накопленное: пара, произведённая шагом, не может быть потеряна
             // из-за того, что источник завершился следом.
             match this.pending.pop_front() {
-                Some(signal) => return Poll::Ready(Some(signal)),
+                Some(spoken) => return Poll::Ready(Some(spoken)),
                 None => (),
             }
 
@@ -120,19 +145,16 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(None) => return Poll::Ready(None),
 
-                // ПАКЕТ — в состояние своего ключа.
+                // ПАКЕТ — в состояние своего ключа. Шаг один, пара одна, очередь не нужна.
                 Poll::Ready(Some(DetectorEvent::Packet { input, at })) => {
                     let key = (this.key_fn)(&input);
                     let detector = match this.states.remove(&key) {
                         Some((existing, _)) => existing,
                         None => (this.factory)(),
                     };
-                    let (next, signals, _notes) =
-                        detector.step(DetectorEvent::Packet { input, at });
+                    let (next, said, noted) = detector.step(DetectorEvent::Packet { input, at });
                     this.states.insert(key.clone(), (next, at));
-                    signals
-                        .into_iter()
-                        .for_each(|signal| this.pending.push_back((key.clone(), signal)));
+                    return Poll::Ready(Some((key, (said, noted))));
                 }
 
                 // ТИК — во все живые состояния. Это и есть причина существования оператора.
@@ -145,7 +167,7 @@ where
                                 // ТИК ДОСТАВЛЯЕТСЯ ПРЕЖДЕ, ЧЕМ РЕШАЕТСЯ СУДЬБА КЛЮЧА: снять
                                 // состояние, не дав ему сказать последнее слово, значит потерять
                                 // беду, о которой детектор уже знал.
-                                let (next, signals, _notes) =
+                                let (next, said, noted) =
                                     detector.step(DetectorEvent::Tick { node, at });
                                 let idle = at.saturating_duration_since(seen_at);
                                 match this.lifetime {
@@ -154,9 +176,7 @@ where
                                         this.states.insert(key.clone(), (next, seen_at));
                                     }
                                 }
-                                signals.into_iter().for_each(|signal| {
-                                    this.pending.push_back((key.clone(), signal))
-                                });
+                                this.pending.push_back((key, (said, noted)));
                             }
                         };
                     });

@@ -81,17 +81,20 @@ pub trait ReflexExt: Stream + Sized {
     /// Правило детекции подставляется значением, а не вшивается в шаг группировки: добавить
     /// новую болезнь значит дописать `.and(…)` к детектору, не читая и не правя соседние.
     /// См. [`crate::step::StepExt::and`] и [`DetectPer`].
-    fn detect_per<D, K, KeyFn, Factory, In, Sig>(
+    ///
+    /// Шаг берётся ЛЮБОЙ, чей вход есть буква этого алфавита: подъём поднимает шаг, а не разбирает
+    /// его слово. Потребуй он от слова определённой формы — сложение наблюдателей, дающее
+    /// произведение слов, не встало бы сюда никогда, и обещание строкой выше стало бы ложным.
+    fn detect_per<D, K, KeyFn, Factory, In>(
         self,
         key_fn: KeyFn,
         factory: Factory,
         lifetime: crate::stream::Lifetime,
-    ) -> DetectPer<Self, D, K, KeyFn, Factory, Sig>
+    ) -> DetectPer<Self, D, K, KeyFn, Factory>
     where
         Self: Stream<Item = DetectorEvent<In>> + Unpin,
-        D: crate::step::Step<From = DetectorEvent<In>, To = smallvec::SmallVec<[Sig; 2]>> + Unpin,
+        D: crate::step::Step<From = DetectorEvent<In>> + Unpin,
         In: Clone,
-        Sig: Unpin,
         K: Ord + Clone + Unpin,
         KeyFn: Fn(&In) -> K + Unpin,
         Factory: Fn() -> D + Unpin,

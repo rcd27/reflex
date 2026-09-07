@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use futures::Stream;
 use pin_project_lite::pin_project;
-use smallvec::SmallVec;
 use tokio::time::{self, Interval};
 
 use reflex_core::step::Step;
@@ -24,11 +23,25 @@ fn now() -> Instant {
 }
 
 pin_project! {
-    pub struct DetectStream<S, D, Sig> {
+    /// ПОДЪЁМ ШАГА НА АСИНХРОННЫЙ ПОТОК, СШИТЫЙ С СЕТКОЙ УЗЛОВ.
+    ///
+    /// # ЗАКОН ПОДЪЁМА: НАРУЖУ ВЫХОДИТ ПАРА
+    ///
+    /// Что дал шаг, то и выходит: слово соседу и показание вбок, по паре на шаг, включая шаги, на
+    /// которых сказать было нечего. Отбрось подъём пустое слово — вместе с ним пропало бы
+    /// показание того же шага, а показание есть единственное, чем прибор предъявляет, чем
+    /// располагал.
+    ///
+    /// Формы у слова не требуется никакой: подъём поднимает шаг, а не разбирает его речь. Кому
+    /// нужен плоский поток сигналов, тот выражает уплощение явным звеном, где оно видно.
+    pub struct DetectStream<S, D: Step> {
         #[pin]
         source: S,
         detector: Option<D>,
-        buffer: VecDeque<Sig>,
+        // БУФЕР ЖИВЁТ РАДИ СЕТКИ, а не ради пакета: одно пробуждение таймера способно накрыть
+        // несколько узлов сразу, а отдать наружу за опрос можно одну пару. Пакет даёт ровно одну
+        // пару и буфера не касается.
+        buffer: VecDeque<(D::To, D::Notes)>,
         #[pin]
         tick: Interval,
         // НАЧАЛО СЕТКИ, ЕЁ ШАГ И ПОСЛЕДНИЙ УЖЕ УЧТЁННЫЙ МОМЕНТ — всё по часам рантайма.
@@ -50,7 +63,7 @@ pin_project! {
     }
 }
 
-impl<S, D, Sig> DetectStream<S, D, Sig> {
+impl<S, D: Step> DetectStream<S, D> {
     pub fn new(source: S, detector: D, tick_interval: Duration) -> Self {
         // НАЧАЛО СЕТКИ СНИМАЕТСЯ ДО ПОСТРОЙКИ ТАЙМЕРА: первый узел таймера приходится на момент
         // его создания, и `began`, снятый после, оказался бы ПОЗЖЕ первого узла — сетка начала бы
@@ -68,12 +81,13 @@ impl<S, D, Sig> DetectStream<S, D, Sig> {
     }
 }
 
-impl<S, D, Sig> Stream for DetectStream<S, D, Sig>
+impl<S, D> Stream for DetectStream<S, D>
 where
     S: Stream,
-    D: Step<From = DetectorEvent<S::Item>, To = SmallVec<[Sig; 2]>>,
+    D: Step<From = DetectorEvent<S::Item>>,
 {
-    type Item = Sig;
+    /// ПАРА НАРУЖУ: за границей цепочки показания читает лента, отчёт, расследование.
+    type Item = (D::To, D::Notes);
 
     /// # ЗАКОН (Ruling 14): `Pending` — ТОЛЬКО ПОСЛЕ ТОГО, КАК ОБА ИСТОЧНИКА ПРОБУЖДЕНИЯ ОПРОШЕНЫ
     /// ДО `Pending`.
@@ -92,9 +106,9 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // 1. Drain buffered signals first
-        if let Some(signal) = this.buffer.pop_front() {
-            return Poll::Ready(Some(signal));
+        // 1. Сначала отдаём накопленное узлами сетки.
+        if let Some(spoken) = this.buffer.pop_front() {
+            return Poll::Ready(Some(spoken));
         }
 
         // 2. Опросить тик ДО `Pending` — цикл, а не одиночный вызов (закон см. в докстроке метода).
@@ -112,40 +126,32 @@ where
                         .collect();
                 for at in nodes {
                     let node = reflex_core::grid::due(*this.began, at, *this.every);
-                    let (next_detector, signals, _notes) =
+                    let (next_detector, said, noted) =
                         detector.step(DetectorEvent::Tick { node, at });
                     detector = next_detector;
-                    for signal in signals {
-                        this.buffer.push_back(signal);
-                    }
+                    this.buffer.push_back((said, noted));
                 }
                 *this.last = upto;
             }
             *this.detector = Some(detector);
-            if let Some(signal) = this.buffer.pop_front() {
-                return Poll::Ready(Some(signal));
+            if let Some(spoken) = this.buffer.pop_front() {
+                return Poll::Ready(Some(spoken));
             }
         }
 
-        // 3. Poll source
+        // 3. Опросить источник. Шаг на пакете один, пара одна — она и уходит наружу, минуя буфер.
         match this.source.as_mut().poll_next(cx) {
-            Poll::Ready(Some(input)) => {
-                if let Some(detector) = this.detector.take() {
+            Poll::Ready(Some(input)) => match this.detector.take() {
+                // Машины нет — значит прошлый шаг её не вернул. Наблюдаемо это лишь при панике
+                // между изъятием и возвратом; поток честно кончается, а не выдаёт чужой ответ.
+                None => Poll::Ready(None),
+                Some(detector) => {
                     let at = now();
-                    let (new_detector, signals, _notes) =
-                        detector.step(DetectorEvent::Packet { input, at });
-                    *this.detector = Some(new_detector);
-                    for signal in signals {
-                        this.buffer.push_back(signal);
-                    }
+                    let (next, said, noted) = detector.step(DetectorEvent::Packet { input, at });
+                    *this.detector = Some(next);
+                    Poll::Ready(Some((said, noted)))
                 }
-                if let Some(signal) = this.buffer.pop_front() {
-                    Poll::Ready(Some(signal))
-                } else {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-            }
+            },
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }

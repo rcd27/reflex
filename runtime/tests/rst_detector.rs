@@ -150,7 +150,13 @@ async fn rst_injection_detected_and_strategy_selected() {
     ]);
 
     // Floor 1: detect
-    let signals: Vec<RstSignal> = packets.detect(RstDetector::new()).collect().await;
+    // УПЛОЩЕНИЕ НАЗВАНО ЗВЕНОМ, а не спрятано в подъёме: подъём выпускает пару, и что с нею
+    // делать — слово ли развернуть, показание ли отложить, — решает потребитель.
+    let signals: Vec<RstSignal> = packets
+        .detect(RstDetector::new())
+        .flat_map(|(said, ())| futures::stream::iter(said))
+        .collect()
+        .await;
 
     assert_eq!(signals.len(), 1);
     assert_eq!(signals[0].domain, "rutracker.org");
@@ -195,6 +201,7 @@ async fn full_pipeline_rst_to_command() {
     // Floor 3: select strategy, materialize command
     let commands: Vec<Command> = packets
         .detect(RstDetector::new())
+        .flat_map(|(said, ())| futures::stream::iter(said))
         // Floor 2: classify
         .map(|signal| {
             if signal.ttl_delta.abs() > 5 {

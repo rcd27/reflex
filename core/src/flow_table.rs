@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use smallvec::SmallVec;
-
 use crate::detector::DetectorEvent;
 use crate::step::Step;
 use crate::types::{Flow, HasFlow};
@@ -18,6 +16,13 @@ use crate::types::{Flow, HasFlow};
 ///
 /// Обобщение обратно совместимо: `In = TcpSegment` (равенство в границах `impl`, ниже) остаётся
 /// частным случаем, потребители не правятся ни строкой.
+///
+/// # ЗАКОН ПОДЪЁМА: НАРУЖУ ВЫХОДИТ ПАРА
+///
+/// Таблица есть подъём шага на СЕМЬЮ машин, ключёванную потоком, и как всякий подъём выпускает
+/// ровно то, что дал шаг, — слово и показание. Форма у слова не требуется никакая: подъём
+/// поднимает шаг, а не разбирает его речь, и допущение «слово есть вектор сигналов» запретило бы
+/// класть сюда сложенных наблюдателей, чьё слово есть произведение.
 pub struct FlowTable<D> {
     flows: HashMap<Flow, D>,
     last_seen: HashMap<Flow, Instant>, // последняя активность потока — для эвикта простоя
@@ -25,9 +30,9 @@ pub struct FlowTable<D> {
     make_detector: Box<dyn Fn(Flow) -> D + Send>,
 }
 
-impl<D, In, S> FlowTable<D>
+impl<D, In> FlowTable<D>
 where
-    D: Step<From = DetectorEvent<In>, To = SmallVec<[S; 2]>>,
+    D: Step<From = DetectorEvent<In>>,
     In: HasFlow + Clone,
 {
     /// `idle_timeout` — сколько поток может молчать (без пакетов), прежде чем считается мёртвым и
@@ -43,23 +48,33 @@ where
         }
     }
 
-    pub fn process(&mut self, input: &In, at: Instant) -> SmallVec<[S; 2]> {
+    /// Пакет — в машину своего потока; наружу пара, которую та сказала.
+    ///
+    /// Ключ здесь не приписывается: машина одна и названа она входом, который дал вызывающий.
+    pub fn process(&mut self, input: &In, at: Instant) -> (D::To, D::Notes) {
         let flow = normalize_flow(input.flow());
         let detector = self
             .flows
             .remove(&flow)
             .unwrap_or_else(|| (self.make_detector)(flow.clone()));
-        let (detector, signals, _notes) = detector.step(DetectorEvent::Packet {
+        let (detector, said, noted) = detector.step(DetectorEvent::Packet {
             input: input.clone(),
             at,
         });
         self.flows.insert(flow.clone(), detector);
         self.last_seen.insert(flow, at); // активность продлевает жизнь потока
-        signals
+        (said, noted)
     }
 
-    pub fn tick(&mut self, at: Instant) -> Vec<S> {
-        let mut all_signals = Vec::new();
+    /// Тик — во все живые потоки; наружу по паре с каждого, помеченной его потоком.
+    ///
+    /// ПАРА ВЫХОДИТ И ОТ ТОГО, КОМУ СКАЗАТЬ БЫЛО НЕЧЕГО: пустое слово есть речь, а показание при
+    /// нём — единственное, чем машина предъявляет, чем располагала. Отбрось таблица молчащих, и
+    /// «замерил и намерил ноль» стало бы неотличимо от «не мерил вовсе».
+    ///
+    /// Поток приписывается затем, что в одном ответе смешаны машины разных потоков.
+    pub fn tick(&mut self, at: Instant) -> Vec<(Flow, (D::To, D::Notes))> {
+        let mut spoken = Vec::new();
         let flows: Vec<Flow> = self.flows.keys().cloned().collect();
         for flow in flows {
             if self.reap_if_idle(&flow, at) {
@@ -68,13 +83,12 @@ where
             if let Some(detector) = self.flows.remove(&flow) {
                 // `node: 0` — таблица не хранит `start` сетки: условное «вне сетки», как у
                 // всякого тика, собранного мимо неё.
-                let (detector, signals, _notes) =
-                    detector.step(DetectorEvent::Tick { node: 0, at });
-                all_signals.extend(signals);
+                let (detector, said, noted) = detector.step(DetectorEvent::Tick { node: 0, at });
+                spoken.push((flow.clone(), (said, noted)));
                 self.flows.insert(flow, detector);
             }
         }
-        all_signals
+        spoken
     }
 
     /// Эвикт потока, молчавшего дольше `idle_timeout` (детектор + last-seen удаляются). Возвращает
@@ -112,6 +126,7 @@ fn normalize_flow(flow: &Flow) -> Flow {
 mod tests {
     use super::*;
     use crate::types::{Protocol, TcpFlags, TcpOptions, TcpSegment};
+    use smallvec::SmallVec;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
@@ -175,14 +190,18 @@ mod tests {
         let mut table = FlowTable::new(IDLE, |_flow| Counter(0));
 
         // ДВА РАЗНЫХ ФЛОУ СЧИТАЮТСЯ ПОРОЗНЬ: состояние принадлежит соединению, а не таблице.
-        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[Count(1)]);
-        assert_eq!(table.process(&datagram(2222), now).as_slice(), &[Count(1)]);
-        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[Count(2)]);
+        let said = |table: &mut FlowTable<Counter>, port| {
+            let (word, ()) = table.process(&datagram(port), now);
+            word
+        };
+        assert_eq!(said(&mut table, 1111).as_slice(), &[Count(1)]);
+        assert_eq!(said(&mut table, 2222).as_slice(), &[Count(1)]);
+        assert_eq!(said(&mut table, 1111).as_slice(), &[Count(2)]);
         assert_eq!(table.flow_count(), 2);
     }
 
     /// Тривиальный детектор: тик всегда эмитит сигнал — так видно, тикается ли поток (жив в таблице).
-    #[derive(Clone)]
+    #[derive(Debug, Clone)]
     struct TickPing;
 
     impl Step for TickPing {
@@ -227,11 +246,15 @@ mod tests {
         // Тик в пределах idle — поток жив, тикается.
         let out = ft.tick(t0 + WINDOW);
         assert_eq!(ft.flow_count(), 1);
-        assert_eq!(out.len(), 1, "живой поток тикается");
-        // Тик за idle-таймаутом без активности — поток мёртв → эвикт, сигнала нет.
+        assert_eq!(
+            out.iter().map(|(_, (word, ()))| word.len()).sum::<usize>(),
+            1,
+            "живой поток тикается: {out:?}"
+        );
+        // Тик за idle-таймаутом без активности — поток мёртв → эвикт, шага нет вовсе.
         let out2 = ft.tick(t0 + IDLE);
         assert_eq!(ft.flow_count(), 0, "простойный поток эвиктнут");
-        assert!(out2.is_empty(), "мёртвый поток не эмитит на тике эвикта");
+        assert!(out2.is_empty(), "мёртвый поток не шагает на тике эвикта");
         // Навсегда молчит — не переоткрывается сам собой.
         let out3 = ft.tick(t0 + IDLE + WINDOW);
         assert!(out3.is_empty(), "эвиктнутый поток молчит");
@@ -246,6 +269,9 @@ mod tests {
         ft.process(&seg(), t0 + WINDOW); // активность в окне
         let out = ft.tick(t0 + WINDOW + Duration::from_secs(1)); // <(last_seen + IDLE)
         assert_eq!(ft.flow_count(), 1, "активный поток жив");
-        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out.iter().map(|(_, (word, ()))| word.len()).sum::<usize>(),
+            1
+        );
     }
 }
