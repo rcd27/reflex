@@ -8,8 +8,8 @@ use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::step::{sever, step};
 use reflex_engine::watch::{watched, Watch};
 use reflex_engine::{
-    advance, About, Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Noted, Packet, Plan,
-    Programme, Said, Sighting, Tick,
+    advance, About, Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Lost, Noted, Noticed,
+    Packet, Plan, Programme, Said, Sighting, Tick,
 };
 
 /// КЛЮЧ ЦЕЛИ ТАК, КАК ЕГО ВИДИТ ПЛОСКОСТЬ: имя — сужённое `narrow`, безымянная ветвь — ТОЧНЫЙ
@@ -357,7 +357,7 @@ impl Plane {
         self.charge_target(&wire, now);
         let opened = matches!(
             advanced.sighting.map(|noted| noted.what),
-            Some(Sighting::Opened { .. })
+            Some(Noticed::Talk(Sighting::Opened { .. }))
         );
         // КЛЮЧ БОЛЬШЕ НЕ ПРИДЕЛЫВАЕТСЯ СНАРУЖИ. Прежде край брал голое наблюдение и приписывал
         // ему `wire.flow` сам — то есть связь «наблюдение ↔ разговор» существовала ровно в этом
@@ -717,10 +717,10 @@ impl Plane {
                 about: About::Talk(wire.flow),
                 // РАЗЛИЧИТЕЛЬ, А НЕ ИМЯ: имя добавит `drain`, одним местом на все наблюдения.
                 target: said_of(&self.naming_of_flow(wire.flow)),
-                what: Sighting::Peaked {
+                what: Noticed::Talk(Sighting::Peaked {
                     dst: wire.dst,
                     pace: charged.target.best,
-                },
+                }),
             }),
         }
     }
@@ -944,7 +944,7 @@ impl Plane {
                         // её разговоры выселены этой же уборкой. `Awaited` здесь честен: о
                         // личности НЕ СКАЗАНО ничего, потому что сказать больше некому.
                         target: Naming::Awaited,
-                        what: Sighting::Lost { dst },
+                        what: Noticed::Loss(Lost { dst }),
                     })
                 });
             }

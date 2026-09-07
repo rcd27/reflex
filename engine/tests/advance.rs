@@ -1,6 +1,7 @@
 use reflex_engine::meter::Tally;
 use reflex_engine::{
-    advance, About, Act, Addr, Cursor, Dir, FlowKey, Noted, Packet, Sighting, Stepped, Tick,
+    advance, About, Act, Addr, Cursor, Dir, FlowKey, Noted, Noticed, Packet, Sighting, Stepped,
+    Tick,
 };
 
 fn empty_tally() -> Tally {
@@ -114,9 +115,11 @@ fn advance_forwards_the_steps_verdict_without_inventing_anything() {
             at: now,
             about: About::Talk(packet.flow),
             target: reflex_engine::row::Naming::Spoken(()),
-            what: Sighting::Lost {
+            // НАБЛЮДЕНИЕ РАЗГОВОРА — под буквой разговора: пара «адресат ↔ слово» больше не
+            // собирается вразнобой.
+            what: Noticed::Talk(Sighting::Severed {
                 dst: Addr(0x0A000001),
-            },
+            }),
         }),
     };
 
@@ -131,9 +134,9 @@ fn advance_forwards_the_steps_verdict_without_inventing_anything() {
 
     assert_eq!(
         advanced.sighting.map(|noted| noted.what),
-        Some(Sighting::Lost {
+        Some(Noticed::Talk(Sighting::Severed {
             dst: Addr(0x0A000001)
-        })
+        }))
     );
     // АДРЕСАТ И МОМЕНТ ДОЕЗЖАЮТ ЦЕЛИКОМ. Без этой половины `advance` мог бы пересобирать
     // наблюдение по дороге, теряя то, что шаг о нём знал, — а имя проверки обещает обратное.

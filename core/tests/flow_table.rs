@@ -4,6 +4,8 @@ use reflex_core::step::Step;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::word::{Region, Word};
 use smallvec::SmallVec;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::time::{Duration, Instant};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
 ///
@@ -19,8 +21,6 @@ struct Count(u32);
 impl Word for Count {
     type Of = Bench;
 }
-use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 struct RstCounter {

@@ -383,9 +383,6 @@ pub enum Sighting {
         dst: Addr,
         pace: meter::Pace,
     },
-    Lost {
-        dst: Addr,
-    },
     /// ПРИКАЗ ОБОРВАТЬ ИСПОЛНЕН. Свидетельство берётся с провода, а не из журнала: «мы послали
     /// сброс» есть намерение, а вот что разговор кончился — наблюдение.
     Severed {
@@ -393,15 +390,47 @@ pub enum Sighting {
     },
 }
 
-/// СКАЗАНО РАЗГОВОРУ: наблюдение плоскости есть свойство ОДНОГО разговора — открылся, цель
+/// СКАЗАНО РАЗГОВОРУ: всякое наблюдение здесь есть свойство ОДНОГО разговора — открылся, цель
 /// отозвалась, оборвали, закрылся, узнали имя, знание устарело, темп упёрся в потолок, приказ
-/// исполнен. Разговор ожидание терпит: наблюдения копятся и выдаются пачкой.
-///
-/// ЦЕНА НАЗВАНА: `Lost` говорит о ЦЕЛИ, потерянной целиком, — её разговоры к тому времени
-/// выселены. Одна область на весь словарь есть упрощение, и снимается оно разделением типа
-/// надвое, а не выбором области помягче.
+/// исполнен. Разговор ожидание терпит: сказать о нём можно и позже того шага, где увидено.
 impl reflex_core::word::Word for Sighting {
     type Of = reflex_core::word::Conversation;
+}
+
+/// ЦЕЛЬ ПОТЕРЯНА ЦЕЛИКОМ — отдельное слово, а не вариант рядом с наблюдениями разговора.
+///
+/// # Почему врозь, а не буквой в общем словаре
+///
+/// У наблюдений разговора адресат — разговор, у этого — цель, и слово, объявившее одну область на
+/// оба, не говорит, кому сказано. Молчит такая подпись вдвойне: обе области ожидание терпят, и
+/// расхождение не выпадает ни на одной проверке — его нечем заметить, кроме чтения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lost {
+    pub dst: Addr,
+}
+
+impl Lost {
+    /// ПУБЛИЧНОЕ ИМЯ СОБЫТИЯ — снято с ТИПА, а не написано у места сборки: за границей процесса
+    /// имя показания компилятор не сторожит, и второе его написание разошлось бы молча.
+    pub const EVENT: &'static str = "lost";
+}
+
+/// СКАЗАНО ЦЕЛИ: разговоров у неё к этому мигу нет — они кончились раньше, чем случилась потеря.
+impl reflex_core::word::Word for Lost {
+    type Of = reflex_core::word::Target;
+}
+
+/// ЧТО ИМЕННО УВИДЕНО. Разделено по АДРЕСАТУ, а не по важности.
+///
+/// Буква нужна ровно потому, что слова внутри адресованы разным областям: держи их один тип, и
+/// подпись перестала бы называть адресата. Здесь адресат виден буквой, а каждое слово остаётся
+/// при своей области.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noticed {
+    /// О разговоре.
+    Talk(Sighting),
+    /// О цели целиком.
+    Loss(Lost),
 }
 
 /// АДРЕС СЛОВАМИ. Четыре байта, старший первым: `Addr` держит адрес в порядке хоста, и `a.b.c.d`
@@ -499,8 +528,24 @@ impl core::fmt::Display for Sighting {
                 "peaked dst={dst} bytes={} over_ns={}",
                 pace.bytes, pace.over_nanos
             ),
-            Sighting::Lost { dst } => write!(f, "lost dst={dst}"),
             Sighting::Severed { dst } => write!(f, "severed dst={dst}"),
+        }
+    }
+}
+
+/// ПЕРВОЕ СЛОВО УЛИКИ — то же, что [`Lost::EVENT`]: имя события одно, где бы оно ни печаталось.
+impl core::fmt::Display for Lost {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} dst={}", Lost::EVENT, self.dst)
+    }
+}
+
+/// Улику печатает то слово, которое увидено; буква адресата ничего к ней не добавляет.
+impl core::fmt::Display for Noticed {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Noticed::Talk(sighting) => write!(f, "{sighting}"),
+            Noticed::Loss(lost) => write!(f, "{lost}"),
         }
     }
 }
@@ -554,7 +599,7 @@ pub struct Noted<N = ()> {
     /// по-разному, и `None` с двумя смыслами в приёмочном приборе дороже всего — там пустая
     /// клетка есть вердикт о датаплейне, а не пропуск в показе.
     pub target: row::Naming<N>,
-    pub what: Sighting,
+    pub what: Noticed,
 }
 
 impl<N> Noted<N> {
@@ -654,7 +699,6 @@ impl reflex_instrument::ask::TargetDelivered for Sighting {
             Sighting::Reset { target_spoke, .. } => *target_spoke,
             Sighting::Severed { .. }
             | Sighting::Closed { .. }
-            | Sighting::Lost { .. }
             | Sighting::Stale { .. }
             | Sighting::Opened { .. }
             | Sighting::Recognised { .. }
@@ -711,21 +755,21 @@ impl reflex_instrument::Instrument for SightingInstrument {
     ///
     /// ЦЕНА НАЗВАНА: `Stale` и `Peaked` — исключения. Их предмет (устаревание знания, темп) живёт
     /// во времени и в тишине не наблюдается вовсе. Для них решётка нулевая, и паспорт этого не
-    /// различает: один темп на девять исходов есть упрощение.
+    /// различает: один темп на весь словарь есть упрощение.
     const CADENCE: reflex_instrument::Cadence = reflex_instrument::Cadence::Foreign;
 
     /// СОСТОЯНИЕ, а не событие: у наблюдения есть равенство, и `distinct_until_changed` над ним
     /// осмыслен — повторный `Peaked` с тем же темпом сообщения не несёт.
     const SHAPE: reflex_instrument::Shape = reflex_instrument::Shape::State;
 
-    /// `Lost` И ЕСТЬ КЛЕТКА МОЛЧАНИЯ: «состояние потеряно, и мы не знаем, что применяли». Это
-    /// `Blind`, а не `Nothing` — прибор не установил, что ничего не было, он признаёт, что не
-    /// смог. Различие не косметическое: `Nothing` разрешает действовать, `Blind` требует
+    /// МОЛЧАНИЕ ЗДЕСЬ ЕСТЬ ПРИЗНАНИЕ, А НЕ ПУСТОТА: состояние разговора бывает потеряно, и тогда
+    /// неизвестно, что мы применяли. Это `Blind`, а не `Nothing` — прибор не установил, что ничего
+    /// не было, он признаёт, что не смог. Различие не косметическое: `Nothing` разрешает действовать, `Blind` требует
     /// безопасного умолчания (`Act::Pass`).
     const SILENCE: Option<reflex_instrument::Silence> = Some(reflex_instrument::Silence::Blind);
 
     const LIES: &'static [&'static str] = &[
-        "ОДИН ТЕМП НА ДЕВЯТЬ ИСХОДОВ. `Stale` и `Peaked` про время, а не про пакет; в тишине они \
+        "ОДИН ТЕМП НА ВЕСЬ СЛОВАРЬ. `Stale` и `Peaked` про время, а не про пакет; в тишине они \
          не наступают, хотя предмет их меняется сам. Паспорт этого не выражает, и клетка \
          наблюдаемости перехода у них нулевая при исправной у соседей.",
         "НАБЛЮДЕНИЕ О НАС ЧИТАЕТСЯ КАК НАБЛЮДЕНИЕ О МИРЕ. `Reset` несёт обе половины различения \
@@ -767,7 +811,6 @@ impl reflex_instrument::Instrument for SightingInstrument {
         "recognised",
         "stale",
         "peaked",
-        "lost",
         "severed",
     ];
 
@@ -780,7 +823,6 @@ impl reflex_instrument::Instrument for SightingInstrument {
             Sighting::Recognised { .. } => "recognised",
             Sighting::Stale { .. } => "stale",
             Sighting::Peaked { .. } => "peaked",
-            Sighting::Lost { .. } => "lost",
             Sighting::Severed { .. } => "severed",
         }
     }
@@ -804,12 +846,33 @@ mod sighting_passport_tests {
             dst: Addr(0x0A00_0001),
             basis: Basis::Measured,
         };
-        let lost = Sighting::Lost {
+        let severed = Sighting::Severed {
             dst: Addr(0x0A00_0002),
         };
 
         assert_eq!(SightingInstrument.read(&opened, 0), opened);
-        assert_eq!(SightingInstrument.read(&lost, 0), lost);
+        assert_eq!(SightingInstrument.read(&severed, 0), severed);
+    }
+
+    /// ПОТЕРЯ ЦЕЛИ ЗОВЁТСЯ ТЕМ ЖЕ СЛОВОМ, ЧТО И ПЕЧАТАЕТСЯ. Слово вынесено из общего словаря
+    /// вместе со своей областью, и проверка держит его имя ровно так же, как паспорт держит
+    /// имена остальных: снятым с типа, а не написанным у места сборки.
+    #[test]
+    fn the_loss_opens_with_its_own_name() {
+        let evidence = std::format!(
+            "{}",
+            Lost {
+                dst: Addr(0x0A00_0002)
+            }
+        );
+        let word = evidence.split(' ').next().unwrap_or_default();
+
+        assert_eq!(word, Lost::EVENT, "улика и имя события разошлись");
+        assert!(
+            !SightingInstrument::EVENTS.contains(&Lost::EVENT),
+            "потеря цели адресована не разговору — её имени в реестре наблюдений разговора быть \
+             не должно"
+        );
     }
 
     /// КЛЕТКА МОЛЧАНИЯ — `Blind`, А НЕ `Nothing`, и различие несёт лечение: `Nothing` разрешает
@@ -824,7 +887,7 @@ mod sighting_passport_tests {
     ///
     /// Дело разметчика печатается уликой, метрика метится паспортом. Разойдись слова — публичный
     /// круг получит два имени одного события, и человек, ищущий в корпусе `closed`, не найдёт
-    /// дела, где написано что-то иное. Сверяются ВСЕ девять исходов: образец-другой поймал бы
+    /// дела, где написано что-то иное. Сверяются ВСЕ исходы: образец-другой поймал бы
     /// опечатку и пропустил бы расхождение в редкой ветке, а редкие ветки здесь и есть предмет.
     #[test]
     fn the_evidence_opens_with_the_passport_name() {
@@ -862,7 +925,6 @@ mod sighting_passport_tests {
                     over_nanos: 1_000,
                 },
             },
-            Sighting::Lost { dst },
             Sighting::Severed { dst },
         ];
 

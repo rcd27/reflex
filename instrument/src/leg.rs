@@ -15,7 +15,7 @@ impl reflex_core::word::CanDefer for Link {}
 
 /// ЗАХЛЕБНУЛАСЬ ЛИ НОГА. Не `bool`: у булева адресата нет — «истина» не говорит, о чём она, и в
 /// позицию слова такое значение не встаёт.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Leg {
     /// Половина разговоров и больше стоит: канал в заторе.
     Stalled,

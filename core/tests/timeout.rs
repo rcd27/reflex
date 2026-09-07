@@ -6,13 +6,40 @@
 
 use reflex_core::detector::DetectorEvent;
 use reflex_core::step::Step;
-use reflex_core::timeout::{Expiry, Timeout};
+use reflex_core::timeout::{Deadline, Expiry, Timeout};
+use reflex_core::word::{Region, Word};
 use std::time::{Duration, Instant};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// ПРЕДМЕТ, ЗА КОТОРЫМ СМОТРИТ ОПЕРАТОР. Своё имя, а не голое число: срок наследует АДРЕС
+/// предмета, и предмет обязан его иметь.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Watched(i32);
+
+impl Word for Watched {
+    type Of = Bench;
+}
+
+/// Срок, названный предмету стенда.
+fn idle() -> Deadline<Watched> {
+    Deadline::of(Expiry::Idle)
+}
+
+/// Потолок ожидания, названный предмету стенда.
+fn ceiling() -> Deadline<Watched> {
+    Deadline::of(Expiry::Ceiling)
+}
 
 const IDLE: Duration = Duration::from_millis(300);
 const CEILING: Duration = Duration::from_millis(1_000);
 
-fn run(events: Vec<DetectorEvent<i32>>) -> Vec<Expiry> {
+fn run(events: Vec<DetectorEvent<Watched>>) -> Vec<Deadline<Watched>> {
     events
         .into_iter()
         .fold(
@@ -26,14 +53,14 @@ fn run(events: Vec<DetectorEvent<i32>>) -> Vec<Expiry> {
         .1
 }
 
-fn packet(t: Instant, millis: u64) -> DetectorEvent<i32> {
+fn packet(t: Instant, millis: u64) -> DetectorEvent<Watched> {
     DetectorEvent::Packet {
-        input: 1,
+        input: Watched(1),
         at: t + Duration::from_millis(millis),
     }
 }
 
-fn tick(t: Instant, millis: u64) -> DetectorEvent<i32> {
+fn tick(t: Instant, millis: u64) -> DetectorEvent<Watched> {
     DetectorEvent::Tick {
         node: millis,
         at: t + Duration::from_millis(millis),
@@ -47,7 +74,7 @@ fn silence_longer_than_the_threshold_is_idle() {
 
     assert_eq!(
         run(vec![packet(t, 0), tick(t, 200), tick(t, 400)]),
-        vec![Expiry::Idle]
+        vec![idle()]
     );
 }
 
@@ -64,7 +91,7 @@ fn any_event_pushes_the_silence_threshold_back() {
             tick(t, 400),
             tick(t, 500),
         ]),
-        Vec::<Expiry>::new(),
+        Vec::<Deadline<Watched>>::new(),
         "к 500 мс с последнего события прошло 250 — тишины ещё нет"
     );
 }
@@ -87,7 +114,7 @@ fn the_ceiling_fires_even_while_events_keep_arriving() {
             packet(t, 1_000),
             tick(t, 1_050),
         ]),
-        vec![Expiry::Ceiling],
+        vec![ceiling()],
         "события шли без перерыва — значит это не про них, а про нас"
     );
 }
@@ -112,7 +139,7 @@ fn whichever_threshold_is_crossed_first_wins() {
 
     assert_eq!(
         out,
-        vec![Expiry::Ceiling],
+        vec![ceiling()],
         "потолок в 100 мс наступил раньше тишины в 900 — он и назван"
     );
 }
@@ -134,7 +161,7 @@ fn it_speaks_once_per_arming_and_a_new_event_arms_it_again() {
             packet(t, 700),
             tick(t, 1_100),
         ]),
-        vec![Expiry::Idle, Expiry::Idle],
+        vec![idle(), idle()],
         "два простоя — два высказывания, и ни одного лишнего между ними"
     );
 }
@@ -146,6 +173,6 @@ fn nothing_ever_seen_means_nothing_to_expire() {
 
     assert_eq!(
         run(vec![tick(t, 500), tick(t, 5_000)]),
-        Vec::<Expiry>::new()
+        Vec::<Deadline<Watched>>::new()
     );
 }

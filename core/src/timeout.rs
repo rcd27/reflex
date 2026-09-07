@@ -39,10 +39,58 @@ pub enum Expiry {
     Ceiling,
 }
 
-/// СРОК НАЗВАН РАЗГОВОРУ, ЗА КОТОРЫМ СМОТРЕЛИ: он один и есть тот предмет, что замолчал либо
-/// которого мы перестали ждать.
-impl crate::word::Word for Expiry {
-    type Of = crate::word::Conversation;
+/// СРОК, НАЗВАННЫЙ ТОМУ, ЗА КЕМ СМОТРЕЛИ.
+///
+/// # Почему адрес наследуется, а не назначается
+///
+/// Оператор говорит «ПРЕДМЕТ замолчал», а не «разговор замолчал», и годится сроку разговора, цели,
+/// эпизода, канала — всякой стадии, у которой есть события. Прибей область к одной из них — и
+/// подпись соврала бы про все остальные. Предмет здесь `T`, адрес берётся у него, и оператор
+/// остаётся тем же обобщением, каким был.
+pub struct Deadline<T> {
+    /// Какой именно срок истёк.
+    pub expiry: Expiry,
+    /// `fn(T)`, а не `T`: предмет не хранится, авто-трейты его не наследуются.
+    subject: core::marker::PhantomData<fn(T)>,
+}
+
+impl<T> Deadline<T> {
+    /// Назвать срок предмету `T`.
+    pub fn of(expiry: Expiry) -> Self {
+        Self {
+            expiry,
+            subject: core::marker::PhantomData,
+        }
+    }
+}
+
+/// АДРЕС БЕРЁТСЯ У ПРЕДМЕТА: срок сказан тому, за кем смотрели.
+impl<T: crate::word::Word> crate::word::Word for Deadline<T> {
+    type Of = T::Of;
+}
+
+// РУКАМИ, А НЕ `derive`: производный код навесил бы `T: Clone`, `T: PartialEq` и прочие баунды,
+// ложные по построению — предмет здесь не хранится.
+impl<T> Clone for Deadline<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Deadline<T> {}
+
+impl<T> PartialEq for Deadline<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.expiry == other.expiry
+    }
+}
+
+impl<T> Eq for Deadline<T> {}
+
+impl<T> core::fmt::Debug for Deadline<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&self.expiry, f)
+    }
 }
 
 /// ЧТО ИЗВЕСТНО О ТЕКУЩЕМ ОЖИДАНИИ.
@@ -105,9 +153,9 @@ impl<T> Timeout<T> {
     }
 }
 
-impl<T> Step for Timeout<T> {
+impl<T: crate::word::Word> Step for Timeout<T> {
     type From = DetectorEvent<T>;
-    type To = SmallVec<[Expiry; 2]>;
+    type To = SmallVec<[Deadline<T>; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match (event, self.waiting) {
@@ -139,7 +187,7 @@ impl<T> Step for Timeout<T> {
                             waiting: Waiting::Spoken,
                             ..self
                         },
-                        smallvec![expiry],
+                        smallvec![Deadline::of(expiry)],
                     ),
                 }
             }

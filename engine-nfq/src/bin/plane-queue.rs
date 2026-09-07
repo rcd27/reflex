@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reflex_engine::watch::Watch;
-use reflex_engine::{Act, Addr, Basis, Interest, Mark, Programme, Sighting, Tick};
+use reflex_engine::{Act, Addr, Basis, Interest, Mark, Noticed, Programme, Tick};
 use reflex_engine_nfq::parse::{read, Read, SERVER_PORT};
 use reflex_engine_nfq::plane::Plane;
 use reflex_core::command::InjectablePacket;
@@ -129,13 +129,21 @@ impl NfqHandler for Shell {
 /// правилами — плоскость таких пакетов больше не видит вовсе. Запуск `nft` на каждый адрес
 /// законен потому, что адресов единицы и появляются они в темпе смены знания, а не пакета.
 
-/// ИМЯ НАБЛЮДЕНИЯ БЕРЁТСЯ У ПАСПОРТА, а не считается здесь во второй раз.
+/// ИМЯ НАБЛЮДЕНИЯ БЕРЁТСЯ У ТИПА, а не считается здесь во второй раз.
 ///
 /// Прежде тут стоял свой перевод русскими словами для журнала, а паспорт отдавал наружу одно имя
-/// на все восемь исходов. Два перевода одного предмета расходятся молча — и разошлись бы в первый
-/// же день, когда у `Sighting` появилась девятая буква: журнал бы её назвал, реестр событий нет.
-fn named(told: &Sighting) -> &'static str {
-    <reflex_engine::SightingInstrument as reflex_instrument::Instrument>::name(told)
+/// на все исходы. Два перевода одного предмета расходятся молча — и разошлись бы в первый же день,
+/// когда у наблюдения появилась новая буква: журнал бы её назвал, реестр событий нет.
+///
+/// Слова двух областей названы каждое своим держателем имени: наблюдения разговора — паспортом
+/// прибора, потеря цели — самим типом. Ни одно имя не написано здесь.
+fn named(told: &Noticed) -> &'static str {
+    match told {
+        Noticed::Talk(sighting) => {
+            <reflex_engine::SightingInstrument as reflex_instrument::Instrument>::name(sighting)
+        }
+        Noticed::Loss(_lost) => reflex_engine::Lost::EVENT,
+    }
 }
 
 /// Сужение для замера: имя берётся как есть. Целей с именами этот прибор не наблюдает.

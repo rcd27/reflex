@@ -1,4 +1,6 @@
-use reflex_engine::{Act, Addr, Basis, Cursor, FlowKey, Interest, Mark, Programme, Sighting, Tick};
+use reflex_engine::{
+    Act, Addr, Basis, Cursor, FlowKey, Interest, Lost, Mark, Noticed, Programme, Sighting, Tick,
+};
 use reflex_engine_nfq::parse::{keyed, read, Read, SERVER_PORT};
 use reflex_engine_nfq::plane::Plane;
 
@@ -72,7 +74,7 @@ fn the_tail_of_a_closed_conversation_is_not_told_as_a_new_one() {
     assert!(!plane
         .drain()
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Opened { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Opened { .. }))));
     assert_eq!(plane.pressure().held, 1);
 }
 
@@ -96,10 +98,10 @@ fn teaching_the_plane_makes_live_conversations_stale_exactly_once() {
 
     assert!(first
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Stale { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Stale { .. }))));
     assert!(!second
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Stale { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Stale { .. }))));
 }
 
 #[test]
@@ -118,7 +120,7 @@ fn a_conversation_opened_after_teaching_is_never_stale() {
     assert!(!plane
         .drain()
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Stale { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Stale { .. }))));
 }
 
 #[test]
@@ -144,7 +146,7 @@ fn teaching_another_target_leaves_a_live_conversation_alone() {
     assert!(!plane
         .drain()
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Stale { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Stale { .. }))));
 }
 
 #[test]
@@ -184,7 +186,7 @@ fn the_peak_of_a_target_is_told_upward_so_that_forgetting_it_costs_nothing() {
     assert!(plane
         .drain()
         .iter()
-        .any(|noted| matches!(noted.what, Sighting::Peaked { .. })));
+        .any(|noted| matches!(noted.what, Noticed::Talk(Sighting::Peaked { .. }))));
 }
 
 #[test]
@@ -637,7 +639,7 @@ fn a_target_lost_in_silence_is_spoken_about() {
 
     assert!(
         told.iter()
-            .any(|noted| matches!(noted.what, Sighting::Lost { dst } if dst == Addr(SERVER))),
+            .any(|noted| matches!(noted.what, Noticed::Loss(Lost { dst }) if dst == Addr(SERVER))),
         "цель пропала молча: за горизонтом тишины плоскость не сказала о ней ничего, {told:?}"
     );
 }
@@ -658,7 +660,7 @@ fn a_target_still_within_the_horizon_is_not_buried() {
     assert!(
         !told
             .iter()
-            .any(|noted| matches!(noted.what, Sighting::Lost { .. })),
+            .any(|noted| matches!(noted.what, Noticed::Loss(_))),
         "живую цель похоронили на половине горизонта: {told:?}"
     );
 }

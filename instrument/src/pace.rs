@@ -8,7 +8,7 @@ use std::time::Duration;
 ///
 /// Имя заведено затем, что адрес объявляет ЗНАЧЕНИЕ, а длительность сама по себе не говорит ни о
 /// ком: «шесть секунд» есть число, пока не сказано, чего именно шесть секунд ждали.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Waited(pub Duration);
 
 /// СКАЗАНО РАЗГОВОРУ: ожидание меряется внутри него — прибор не видит промежутков между

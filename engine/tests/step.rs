@@ -4,8 +4,8 @@ use reflex_engine::row::{Answered, Naming};
 use reflex_engine::step::{sever, step, RETELL_HORIZON};
 use reflex_engine::Span;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Mark, Packet, Plan, Programme,
-    Sighting, Stepped, Tick,
+    Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Mark, Noticed, Packet, Plan,
+    Programme, Sighting, Stepped, Tick,
 };
 
 /// ЧТО НАБЛЮДЕНО — без адресата и момента.
@@ -14,7 +14,11 @@ use reflex_engine::{
 /// нужны. Их стережёт отдельная проверка — иначе они бы не покрывались вовсе, и `Noted` завёлся бы
 /// с полями, о которых никто ничего не утверждает.
 fn told(stepped: &Stepped) -> Option<Sighting> {
-    stepped.sighting.map(|noted| noted.what)
+    stepped.sighting.map(|noted| match noted.what {
+        Noticed::Talk(sighting) => sighting,
+        // ШАГ ВИДИТ ТОЛЬКО РАЗГОВОР: потеря цели случается не на пакете и сюда не приходит.
+        Noticed::Loss(lost) => panic!("шаг сказал о цели, а не о разговоре: {lost}"),
+    })
 }
 
 /// ЧТО ОСТАЛОСЬ ОТ ЗАКРЫВШЕГОСЯ РАЗГОВОРА: цель ответила через `after`, и мы видели три пакета.
