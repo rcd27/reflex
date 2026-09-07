@@ -801,6 +801,51 @@ fn retention_is_a_named_span_not_a_side_effect() {
     );
 }
 
+/// ВЫСЕЛЕННЫЙ СЧИТАЕТ УХОДЫ, А НЕ РАССМОТРЕНИЯ.
+///
+/// Запись внутри удержания законно возвращается в кандидаты уборки на каждом проходе — это
+/// пересмотр, а не выселение. Если счётчик растёт на каждом таком проходе, он перестаёт отвечать
+/// на свой собственный вопрос: «сколько разговоров забыто уборкой».
+#[test]
+fn evicted_cursors_counts_departures_not_reconsiderations() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let port = 44_150u16;
+    feed(&mut plane, &syn(port), 0);
+    feed(&mut plane, &fin(port), 1_000_000);
+
+    let flow = flow_of(port);
+    let horizon = reflex_engine::meter::horizon().0;
+    let retention = reflex_engine_nfq::plane::RETENTION_HORIZONS * horizon;
+    let before = plane.pressure().evicted;
+
+    // Несколько проходов СТРОГО МЕЖДУ первым горизонтом и концом удержания: запись уже видна
+    // уборке как кандидат (прошёл горизонт), но удержание ещё не истекло. Именно здесь прежде
+    // росло число за каждый проход.
+    for step in 1..=4u64 {
+        let now = 1_000_000 + horizon + step * (retention - horizon) / 5;
+        plane.tick(Tick(now));
+        assert!(
+            !matches!(plane.cursor_of(flow), Cursor::Fresh),
+            "запись обязана дожить до конца удержания"
+        );
+        assert_eq!(
+            plane.pressure().evicted,
+            before,
+            "пересмотр внутри удержания не есть выселение"
+        );
+    }
+
+    // За удержанием — ровно один фактический уход.
+    plane.tick(Tick(1_000_000 + retention + horizon));
+    plane.tick(Tick(1_000_000 + retention + 2 * horizon));
+    assert!(matches!(plane.cursor_of(flow), Cursor::Fresh));
+    assert_eq!(
+        plane.pressure().evicted,
+        before + 1,
+        "уход из таблицы после удержания обязан засчитаться ровно один раз"
+    );
+}
+
 /// ЗАВАЛ ВИДЕН ВЕЛИЧИНОЙ, А НЕ ОПОЗДАНИЕМ.
 ///
 /// Проход осматривает не больше бюджета. Если записей больше, остаток копится — и узнать об этом
