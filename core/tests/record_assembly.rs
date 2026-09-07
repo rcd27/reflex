@@ -43,7 +43,7 @@ fn chunk_at(seq: u32, payload: Vec<u8>, at: Instant) -> DetectorEvent<RecordChun
 #[test]
 fn запись_в_одном_сегменте_отдаётся_сразу() {
     let whole = record(512, 0xAA);
-    let (_, signals) = RecordAssembler::new(DEADLINE).step(chunk(1000, whole.clone()));
+    let (_, signals, _) = RecordAssembler::new(DEADLINE).step(chunk(1000, whole.clone()));
 
     assert_eq!(
         signals.as_slice(),
@@ -63,14 +63,14 @@ fn запись_через_границу_собирается_и_адресуе
     let whole = record(1570, 0xBB);
     let (head, tail) = whole.split_at(1400);
 
-    let (assembler, first) = RecordAssembler::new(DEADLINE).step(chunk(7000, head.to_vec()));
+    let (assembler, first, _) = RecordAssembler::new(DEADLINE).step(chunk(7000, head.to_vec()));
     assert_eq!(
         first.as_slice(),
         [Assembly::Held],
         "голова обязана быть удержана"
     );
 
-    let (_, second) = assembler.step(chunk(7000 + 1400, tail.to_vec()));
+    let (_, second, _) = assembler.step(chunk(7000 + 1400, tail.to_vec()));
     assert_eq!(
         second.as_slice(),
         [Assembly::Assembled {
@@ -87,7 +87,7 @@ fn запись_через_границу_собирается_и_адресуе
 /// а ожидание стало бы задержкой на каждом не-TLS соединении.
 #[test]
 fn не_tls_проходит_нетронутым() {
-    let (_, signals) =
+    let (_, signals, _) =
         RecordAssembler::new(DEADLINE).step(chunk(1, b"GET / HTTP/1.1\r\n".to_vec()));
 
     assert_eq!(signals.as_slice(), [Assembly::PassThrough]);
@@ -101,8 +101,9 @@ fn удержанное_отдаётся_по_сроку_когда_хвоста
     let head = whole[..1400].to_vec();
     let started = Instant::now();
 
-    let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk_at(4242, head.clone(), started));
-    let (_, signals) = assembler.step(DetectorEvent::Tick {
+    let (assembler, _, _) =
+        RecordAssembler::new(DEADLINE).step(chunk_at(4242, head.clone(), started));
+    let (_, signals, _) = assembler.step(DetectorEvent::Tick {
         node: 1,
         at: started + DEADLINE,
     });
@@ -124,9 +125,9 @@ fn до_срока_удержание_не_размыкается() {
     let whole = record(1570, 0xDD);
     let started = Instant::now();
 
-    let (assembler, _) =
+    let (assembler, _, _) =
         RecordAssembler::new(DEADLINE).step(chunk_at(1, whole[..1400].to_vec(), started));
-    let (assembler, signals) = assembler.step(DetectorEvent::Tick {
+    let (assembler, signals, _) = assembler.step(DetectorEvent::Tick {
         node: 1,
         at: started + DEADLINE / 2,
     });
@@ -142,8 +143,8 @@ fn повтор_головы_не_рождает_дубля() {
     let whole = record(1570, 0xEE);
     let head = whole[..1400].to_vec();
 
-    let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk(900, head.clone()));
-    let (assembler, signals) = assembler.step(chunk(900, head));
+    let (assembler, _, _) = RecordAssembler::new(DEADLINE).step(chunk(900, head.clone()));
+    let (assembler, signals, _) = assembler.step(chunk(900, head));
 
     assert_eq!(signals.as_slice(), [Assembly::Held], "дубль поглощён");
     assert!(assembler.is_holding());
@@ -156,8 +157,8 @@ fn дыра_в_потоке_размыкает_удержание_без_пот�
     let whole = record(1570, 0x11);
     let head = whole[..1400].to_vec();
 
-    let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk(500, head.clone()));
-    let (_, signals) = assembler.step(chunk(999_999, vec![0x42; 10]));
+    let (assembler, _, _) = RecordAssembler::new(DEADLINE).step(chunk(500, head.clone()));
+    let (_, signals, _) = assembler.step(chunk(999_999, vec![0x42; 10]));
 
     assert_eq!(
         signals.as_slice(),
@@ -179,8 +180,8 @@ fn байты_сохраняются_при_склейке() {
     let whole = record(2267, 0x7F); // 2272 на проводе — полевой googlevideo
     let (head, tail) = whole.split_at(1400);
 
-    let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk(0, head.to_vec()));
-    let (_, signals) = assembler.step(chunk(1400, tail.to_vec()));
+    let (assembler, _, _) = RecordAssembler::new(DEADLINE).step(chunk(0, head.to_vec()));
+    let (_, signals, _) = assembler.step(chunk(1400, tail.to_vec()));
 
     let собрано = match signals.first() {
         Some(Assembly::Assembled { record, .. }) => record.clone(),
@@ -200,8 +201,8 @@ fn байты_сохраняются_при_склейке() {
 fn после_решения_поток_идёт_мимо() {
     let вся = record(300, 0x22);
     let за_записью = 10 + вся.len() as u32;
-    let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk(10, вся));
-    let (_, signals) = assembler.step(chunk(за_записью, vec![0x17, 0x03, 0x03, 0x00, 0x10]));
+    let (assembler, _, _) = RecordAssembler::new(DEADLINE).step(chunk(10, вся));
+    let (_, signals, _) = assembler.step(chunk(за_записью, vec![0x17, 0x03, 0x03, 0x00, 0x10]));
 
     assert_eq!(signals.as_slice(), [Assembly::PassThrough]);
 }
@@ -214,11 +215,11 @@ fn повтор_отданной_записи_называется_повтор�
     let вся = record(1570, 0x33);
     let (голова, хвост) = вся.split_at(1400);
 
-    let (сб, _) = RecordAssembler::new(DEADLINE).step(chunk(5000, голова.to_vec()));
-    let (сб, _) = сб.step(chunk(5000 + 1400, хвост.to_vec()));
+    let (сб, _, _) = RecordAssembler::new(DEADLINE).step(chunk(5000, голова.to_vec()));
+    let (сб, _, _) = сб.step(chunk(5000 + 1400, хвост.to_vec()));
 
     // клиент повторяет ГОЛОВУ
-    let (сб, first) = сб.step(chunk(5000, голова.to_vec()));
+    let (сб, first, _) = сб.step(chunk(5000, голова.to_vec()));
     assert_eq!(
         first.as_slice(),
         [
@@ -229,7 +230,7 @@ fn повтор_отданной_записи_называется_повтор�
     );
 
     // и ХВОСТ — он законная часть той же потери, счёт продолжается
-    let (_, second) = сб.step(chunk(5000 + 1400, хвост.to_vec()));
+    let (_, second, _) = сб.step(chunk(5000 + 1400, хвост.to_vec()));
     assert_eq!(
         second.as_slice(),
         [
@@ -244,9 +245,9 @@ fn повтор_отданной_записи_называется_повтор�
 #[test]
 fn данные_за_записью_повтором_не_считаются() {
     let вся = record(500, 0x44);
-    let (сб, _) = RecordAssembler::new(DEADLINE).step(chunk(100, вся.clone()));
+    let (сб, _, _) = RecordAssembler::new(DEADLINE).step(chunk(100, вся.clone()));
 
-    let (_, signals) = сб.step(chunk(
+    let (_, signals, _) = сб.step(chunk(
         100 + вся.len() as u32,
         vec![0x17, 0x03, 0x03, 0x00, 0x10],
     ));

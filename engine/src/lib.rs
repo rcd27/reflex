@@ -409,6 +409,14 @@ impl reflex_core::word::Word for Sighting {
 /// У наблюдений разговора адресат — разговор, у этого — цель, и слово, объявившее одну область на
 /// оба, не говорит, кому сказано. Молчит такая подпись вдвойне: обе области ожидание терпят, и
 /// расхождение не выпадает ни на одной проверке — его нечем заметить, кроме чтения.
+///
+/// # Паспорт — не здесь, и это не пробел
+///
+/// У слова нет и не может быть паспорта: паспорт объявляет прибор, а не показание — слово говорит,
+/// ЧТО увидено, паспорт говорит, ЧЕМ мерено. Искать паспорт у самого `Lost` значит путать эти две
+/// роли: адрес слова — закон этого файла, паспорт прибора — закон крейта `reflex-instrument`, и
+/// смешивать их в одном типе значило бы вернуть ту же путаницу, ради снятия которой слово и цель
+/// разведены раздельными типами выше.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lost {
     pub dst: Addr,
@@ -729,15 +737,18 @@ impl reflex_core::step::Step for SightingInstrument {
     /// что сказать.
     type To = smallvec::SmallVec<[Sighting; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading])
+                (self, smallvec::smallvec![reading], ())
             }
-            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
             // Прибор докладывает уже снятое наблюдение; непонятое им не является и молчит.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
         }
     }
 }

@@ -44,8 +44,10 @@ impl<T> Debounce<T> {
 impl<T: crate::word::Word> Step for Debounce<T> {
     type From = DetectorEvent<T>;
     type To = SmallVec<[T; 2]>;
+    /// Показаний этот оператор не заводит — задача 6, не эта.
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             // НОВОЕ СОБЫТИЕ ВЫТЕСНЯЕТ УДЕРЖАННОЕ и отодвигает окно. Отсчёт идёт от ПОСЛЕДНЕГО, а
             // не от первого: иначе поток, идущий чуть чаще окна, выпускался бы регулярно, и
@@ -56,10 +58,11 @@ impl<T: crate::word::Word> Step for Debounce<T> {
                     ..self
                 },
                 smallvec![],
+                (),
             ),
             DetectorEvent::Tick { at, .. } => match self.held {
                 Some((held, since)) if at.saturating_duration_since(since) >= self.window => {
-                    (Self { held: None, ..self }, smallvec![held])
+                    (Self { held: None, ..self }, smallvec![held], ())
                 }
                 still_waiting => (
                     Self {
@@ -67,12 +70,13 @@ impl<T: crate::word::Word> Step for Debounce<T> {
                         ..self
                     },
                     smallvec![],
+                    (),
                 ),
             },
             // НЕПОНЯТОЕ НЕ ЕСТЬ РАЗГОВОР, КОТОРЫЙ ЗАТИХАЕТ: оператор мерит паузу МЕЖДУ
             // разобранными значениями, и байты, которые не удалось прочесть, к ней не
             // относятся — ни отодвигать окно, ни выпускать удержанное они не вправе.
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }

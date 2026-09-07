@@ -59,8 +59,11 @@ impl reflex_core::step::Step for RetransmitInstrument {
     type From = reflex_core::DetectorEvent<Seen>;
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => match input {
                 // ПРОСЬБА ОТКРЫВАЕТ ОТСЧЁТ, и повторная его не сдвигает: величина показания есть
                 // ожидание ЧЕЛОВЕКА, а он ждёт с первой отправки, а не с последней.
@@ -124,7 +127,8 @@ impl reflex_core::step::Step for RetransmitInstrument {
             // Прибор мерит РАЗОБРАННЫЙ `Seen`; непонятое им не является — не сдвигает отсчёт
             // просьбы и не снимает подозрения, как и голый ACK/FIN.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -241,10 +245,10 @@ mod tests {
     #[test]
     fn a_repeat_with_nothing_back_is_the_suspicion() {
         let instrument = RetransmitInstrument::new();
-        let (instrument, quiet) = instrument.step(packet(hello(), 0));
+        let (instrument, quiet, _) = instrument.step(packet(hello(), 0));
         assert!(quiet.is_empty(), "первая просьба бедой не является");
 
-        let (_instrument, said) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
+        let (_instrument, said, _) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
 
         assert_eq!(
             said.as_slice(),
@@ -258,10 +262,10 @@ mod tests {
     #[test]
     fn a_repeat_after_the_target_answered_is_not_trouble() {
         let instrument = RetransmitInstrument::new();
-        let (instrument, _) = instrument.step(packet(hello(), 0));
-        let (instrument, _) = instrument.step(packet(Seen::Received { count: 1400 }, 120));
+        let (instrument, _, _) = instrument.step(packet(hello(), 0));
+        let (instrument, _, _) = instrument.step(packet(Seen::Received { count: 1400 }, 120));
 
-        let (_instrument, said) = instrument.step(packet(Seen::Resent { count: 517 }, 480));
+        let (_instrument, said, _) = instrument.step(packet(Seen::Resent { count: 517 }, 480));
 
         assert!(
             said.is_empty(),
@@ -273,9 +277,9 @@ mod tests {
     #[test]
     fn only_the_first_repeat_speaks() {
         let instrument = RetransmitInstrument::new();
-        let (instrument, _) = instrument.step(packet(hello(), 0));
-        let (instrument, first) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
-        let (_instrument, second) = instrument.step(packet(Seen::Resent { count: 517 }, 1080));
+        let (instrument, _, _) = instrument.step(packet(hello(), 0));
+        let (instrument, first, _) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
+        let (_instrument, second, _) = instrument.step(packet(Seen::Resent { count: 517 }, 1080));
 
         assert_eq!(first.len(), 1, "первый повтор говорит");
         assert!(second.is_empty(), "второй повтор о том же молчит");
@@ -285,9 +289,9 @@ mod tests {
     #[test]
     fn a_tick_says_nothing() {
         let instrument = RetransmitInstrument::new();
-        let (instrument, _) = instrument.step(packet(hello(), 0));
+        let (instrument, _, _) = instrument.step(packet(hello(), 0));
 
-        let (_instrument, said) = instrument.step(DetectorEvent::Tick {
+        let (_instrument, said, _) = instrument.step(DetectorEvent::Tick {
             node: 9_000,
             at: at(9_000),
         });

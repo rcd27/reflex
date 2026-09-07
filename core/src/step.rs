@@ -41,8 +41,9 @@ pub trait Step: Sized {
     /// impl Step for Echo {
     ///     type From = Beat;
     ///     type To = Beat;
-    ///     fn step(self, input: Beat) -> (Self, Beat) {
-    ///         (self, input)
+    ///     type Notes = ();
+    ///     fn step(self, input: Beat) -> (Self, Beat, ()) {
+    ///         (self, input, ())
     ///     }
     /// }
     /// ```
@@ -54,15 +55,23 @@ pub trait Step: Sized {
     /// impl Step for Naked {
     ///     type From = u8;
     ///     type To = u8;
-    ///     fn step(self, input: u8) -> (Self, u8) {
-    ///         (self, input)
+    ///     type Notes = ();
+    ///     fn step(self, input: u8) -> (Self, u8, ()) {
+    ///         (self, input, ())
     ///     }
     /// }
     /// ```
     type To: crate::word::Word;
 
-    /// Один шаг: вход → выход, и НОВОЕ состояние машины.
-    fn step(self, input: Self::From) -> (Self, Self::To);
+    /// ПОКАЗАНИЯ: не адресованы никому и не читаются никем — копятся вбок, а не соседу по стрелке.
+    ///
+    /// Тройкой, а не парой в `To`: будь пара одним типом, композиция `B: Step<From = A::To>`
+    /// заставила бы соседа ЕСТЬ чужие показания — читать то, что было сказано не ему. Ход вбок
+    /// обязан быть невыразим иначе, а не оговорён прозой у места вызова.
+    type Notes;
+
+    /// Один шаг: вход → слово и показания, и НОВОЕ состояние машины.
+    fn step(self, input: Self::From) -> (Self, Self::To, Self::Notes);
 }
 
 /// ПОСЛЕДОВАТЕЛЬНОЕ СОЕДИНЕНИЕ ДВУХ ШАГОВ — композиция категории.
@@ -80,14 +89,17 @@ where
 {
     type From = A::From;
     type To = B::To;
+    /// ПРОИЗВЕДЕНИЕ, А НЕ ОБЩИЙ СЛОВАРЬ: два звена не обязаны говорить на одном языке, чтобы их
+    /// показания сложились, а позиция в типе называет автора вернее всякой метки.
+    type Notes = (A::Notes, B::Notes);
 
     /// ВОЗВРАЩАЕТСЯ НОВАЯ ПАРА МАШИН, а не пересобранная из начальных. Забудь композиция
     /// состояние второго звена — оно обнулялось бы на каждом входе, и цепочка выглядела бы
     /// исправной ровно до второго вызова.
-    fn step(self, input: A::From) -> (Self, B::To) {
-        let (first, middle) = self.0.step(input);
-        let (second, out) = self.1.step(middle);
-        (Then(first, second), out)
+    fn step(self, input: A::From) -> (Self, B::To, (A::Notes, B::Notes)) {
+        let (first, middle, said) = self.0.step(input);
+        let (second, out, also) = self.1.step(middle);
+        (Then(first, second), out, (said, also))
     }
 }
 
@@ -121,9 +133,11 @@ impl<T> Default for Id<T> {
 impl<T: crate::word::Word> Step for Id<T> {
     type From = T;
     type To = T;
+    /// Тождество обязано быть нейтральным и в показаниях: отмечающее звено соседям не безразлично.
+    type Notes = ();
 
-    fn step(self, input: T) -> (Self, T) {
-        (self, input)
+    fn step(self, input: T) -> (Self, T, ()) {
+        (self, input, ())
     }
 }
 
@@ -283,7 +297,8 @@ where
     S: futures::Stream<Item = K::From>,
     K: Step,
 {
-    type Item = K::To;
+    /// ПАРА НАРУЖУ: за границей цепочки показания читает лента, отчёт, расследование.
+    type Item = (K::To, K::Notes);
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -297,9 +312,9 @@ where
                 // между изъятием и возвратом; поток честно кончается, а не выдаёт чужой ответ.
                 None => std::task::Poll::Ready(None),
                 Some(machine) => {
-                    let (next, out) = machine.step(input);
+                    let (next, out, notes) = machine.step(input);
                     *this.machine = Some(next);
-                    std::task::Poll::Ready(Some(out))
+                    std::task::Poll::Ready(Some((out, notes)))
                 }
             },
             std::task::Poll::Ready(None) => std::task::Poll::Ready(None),

@@ -51,18 +51,19 @@ struct Rst;
 impl Step for Rst {
     type From = DetectorEvent<Event>;
     type To = SmallVec<[Signal; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             DetectorEvent::Packet {
                 input: Event {
                     kind: Kind::Rst, ..
                 },
                 ..
-            } => (self, smallvec![Signal::SawRst]),
-            DetectorEvent::Packet { .. } => (self, smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            } => (self, smallvec![Signal::SawRst], ()),
+            DetectorEvent::Packet { .. } => (self, smallvec![], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -91,8 +92,9 @@ impl Quiet {
 impl Step for Quiet {
     type From = DetectorEvent<Event>;
     type To = SmallVec<[Signal; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             DetectorEvent::Packet { at, .. } => (
                 Self {
@@ -100,6 +102,7 @@ impl Step for Quiet {
                     ..self
                 },
                 smallvec![],
+                (),
             ),
             DetectorEvent::Tick { at, .. } => match (self.last, self.fired) {
                 (Some(last), false) if at.duration_since(last) >= self.after => (
@@ -108,12 +111,13 @@ impl Step for Quiet {
                         ..self
                     },
                     smallvec![Signal::WentQuiet],
+                    (),
                 ),
-                _ => (self, smallvec![]),
+                _ => (self, smallvec![], ()),
             },
             // ТИШИНА МЕРИТСЯ МЕЖДУ РАЗОБРАННЫМИ СОБЫТИЯМИ: непонятое не гарантирует, что это
             // вообще наш разговор, и не вправе отодвигать порог, — состояние не трогается.
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -125,18 +129,19 @@ struct Bytes;
 impl Step for Bytes {
     type From = DetectorEvent<Event>;
     type To = SmallVec<[Signal; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             DetectorEvent::Packet {
                 input: Event {
                     kind: Kind::Byte, ..
                 },
                 ..
-            } => (self, smallvec![Signal::SawByte]),
-            DetectorEvent::Packet { .. } => (self, smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            } => (self, smallvec![Signal::SawByte], ()),
+            DetectorEvent::Packet { .. } => (self, smallvec![], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -256,12 +261,13 @@ async fn composition_lets_both_observe() {
     impl Step for Everything {
         type From = DetectorEvent<Event>;
         type To = SmallVec<[Signal; 2]>;
-        fn step(self, event: Self::From) -> (Self, Self::To) {
+        type Notes = ();
+        fn step(self, event: Self::From) -> (Self, Self::To, ()) {
             match event {
-                DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawByte]),
-                DetectorEvent::Tick { .. } => (self, smallvec![]),
+                DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawByte], ()),
+                DetectorEvent::Tick { .. } => (self, smallvec![], ()),
                 // Витнес «видит всё» из разобранного потока; непонятое в это «всё» не входит.
-                DetectorEvent::Opaque { .. } => (self, smallvec![]),
+                DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
             }
         }
     }
@@ -320,12 +326,15 @@ async fn signals_survive_source_completion() {
     impl Step for Twice {
         type From = DetectorEvent<Event>;
         type To = SmallVec<[Signal; 2]>;
-        fn step(self, event: Self::From) -> (Self, Self::To) {
+        type Notes = ();
+        fn step(self, event: Self::From) -> (Self, Self::To, ()) {
             match event {
-                DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawRst, Signal::SawByte]),
-                DetectorEvent::Tick { .. } => (self, smallvec![]),
+                DetectorEvent::Packet { .. } => {
+                    (self, smallvec![Signal::SawRst, Signal::SawByte], ())
+                }
+                DetectorEvent::Tick { .. } => (self, smallvec![], ()),
                 // Витнес видит только разобранные события; непонятое молчит так же, как тик.
-                DetectorEvent::Opaque { .. } => (self, smallvec![]),
+                DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
             }
         }
     }
@@ -357,13 +366,14 @@ impl Word for Counted {
 impl Step for Counting {
     type From = DetectorEvent<Event>;
     type To = SmallVec<[Counted; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![Counted(self.0)]),
+            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![Counted(self.0)], ()),
             // Считающий детектор мерит разобранные события; непонятое ни пакет, ни тик — молчит.
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }

@@ -72,7 +72,9 @@ fn run<M: Step<From = Beat, To = Beat>>(machine: M, input: &[u8]) -> Vec<Beat> {
     let mut machine = machine;
     let mut told = Vec::with_capacity(input.len());
     for byte in input {
-        let (next, out) = machine.step(Beat(*byte));
+        // Показания — не предмет закона категории: он о слове и о состоянии, а не о том, что
+        // копится вбок.
+        let (next, out, _notes) = machine.step(Beat(*byte));
         machine = next;
         told.push(out);
     }
@@ -86,10 +88,11 @@ struct Adding(u8);
 impl Step for Adding {
     type From = Beat;
     type To = Beat;
+    type Notes = ();
 
-    fn step(self, input: Beat) -> (Self, Beat) {
+    fn step(self, input: Beat) -> (Self, Beat, ()) {
         let sum = self.0.wrapping_add(input.0);
-        (Adding(sum), Beat(sum))
+        (Adding(sum), Beat(sum), ())
     }
 }
 
@@ -103,10 +106,11 @@ struct Doubling(u8);
 impl Step for Doubling {
     type From = Beat;
     type To = Beat;
+    type Notes = ();
 
-    fn step(self, input: Beat) -> (Self, Beat) {
+    fn step(self, input: Beat) -> (Self, Beat, ()) {
         let out = input.0.wrapping_mul(2).wrapping_add(self.0);
-        (Doubling(input.0), Beat(out))
+        (Doubling(input.0), Beat(out), ())
     }
 }
 
@@ -117,10 +121,11 @@ struct Maxing(u8);
 impl Step for Maxing {
     type From = Beat;
     type To = Beat;
+    type Notes = ();
 
-    fn step(self, input: Beat) -> (Self, Beat) {
+    fn step(self, input: Beat) -> (Self, Beat, ()) {
         let top = self.0.max(input.0);
-        (Maxing(top), Beat(top))
+        (Maxing(top), Beat(top), ())
     }
 }
 

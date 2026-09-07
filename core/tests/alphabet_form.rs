@@ -49,13 +49,16 @@ struct Rst;
 impl Step for Rst {
     type From = DetectorEvent<Beat>;
     type To = SmallVec<[Sig; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Packet { input: Beat(1), .. } => (self, SmallVec::from_slice(&[Sig(7)])),
-            DetectorEvent::Packet { .. } => (self, SmallVec::new()),
-            DetectorEvent::Tick { .. } => (self, SmallVec::new()),
-            DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
+            DetectorEvent::Packet { input: Beat(1), .. } => {
+                (self, SmallVec::from_slice(&[Sig(7)]), ())
+            }
+            DetectorEvent::Packet { .. } => (self, SmallVec::new(), ()),
+            DetectorEvent::Tick { .. } => (self, SmallVec::new(), ()),
+            DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -69,7 +72,7 @@ fn packet(input: u8) -> DetectorEvent<Beat> {
 
 #[test]
 fn оба_слушателя_говорят_в_один_словарь() {
-    let (_, told) = Rst.and(Rst).step(packet(1));
+    let (_, told, _) = Rst.and(Rst).step(packet(1));
     assert_eq!(&told[..], &[Sig(7), Sig(7)], "событие дошло до обоих");
 }
 
@@ -77,7 +80,7 @@ fn оба_слушателя_говорят_в_один_словарь() {
 fn вложение_комбинаторов_выводится_без_единой_аннотации() {
     // САМОЕ ХРУПКОЕ ДЛЯ ВЫВОДА: комбинатор над комбинатором. Если форма выражена неверно,
     // падает именно здесь, а не на одиночном звене.
-    let (_, told) = Rst
+    let (_, told, _) = Rst
         .and(Rst)
         .rmap(|Sig(s)| Loud(s as u32 * 10))
         .step(packet(1));
@@ -92,7 +95,7 @@ fn вложение_комбинаторов_выводится_без_един�
 fn тождество_нейтрально_и_в_этой_форме() {
     // Второй закон категории на алфавите детектора: `f ∘ id` даёт то же, что `f`.
     use reflex_core::step::Id;
-    let (_, прямо) = Rst.step(packet(1));
-    let (_, через_тождество) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
+    let (_, прямо, _) = Rst.step(packet(1));
+    let (_, через_тождество, _) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
     assert_eq!(прямо, через_тождество, "тождество ничего не изменило");
 }

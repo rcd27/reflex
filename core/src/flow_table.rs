@@ -49,7 +49,7 @@ where
             .flows
             .remove(&flow)
             .unwrap_or_else(|| (self.make_detector)(flow.clone()));
-        let (detector, signals) = detector.step(DetectorEvent::Packet {
+        let (detector, signals, _notes) = detector.step(DetectorEvent::Packet {
             input: input.clone(),
             at,
         });
@@ -68,7 +68,8 @@ where
             if let Some(detector) = self.flows.remove(&flow) {
                 // `node: 0` — таблица не хранит `start` сетки: условное «вне сетки», как у
                 // всякого тика, собранного мимо неё.
-                let (detector, signals) = detector.step(DetectorEvent::Tick { node: 0, at });
+                let (detector, signals, _notes) =
+                    detector.step(DetectorEvent::Tick { node: 0, at });
                 all_signals.extend(signals);
                 self.flows.insert(flow, detector);
             }
@@ -144,17 +145,18 @@ mod tests {
         impl Step for Counter {
             type From = DetectorEvent<UdpDatagram>;
             type To = SmallVec<[Count; 2]>;
+            type Notes = ();
 
-            fn step(self, ev: Self::From) -> (Self, Self::To) {
+            fn step(self, ev: Self::From) -> (Self, Self::To, ()) {
                 match ev {
                     DetectorEvent::Packet { .. } => {
                         let next = self.0 + 1;
-                        (Counter(next), SmallVec::from_slice(&[Count(next)]))
+                        (Counter(next), SmallVec::from_slice(&[Count(next)]), ())
                     }
-                    DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+                    DetectorEvent::Tick { .. } => (self, SmallVec::new(), ()),
                     // Таблица кормит детектор только `Packet` и `Tick` (см. `process`/`tick`
                     // ниже) — витнес честен об этом, а не молчит веткой-приёмником.
-                    DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
+                    DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
                 }
             }
         }
@@ -186,13 +188,14 @@ mod tests {
     impl Step for TickPing {
         type From = DetectorEvent<TcpSegment>;
         type To = SmallVec<[(); 2]>;
+        type Notes = ();
 
-        fn step(self, ev: Self::From) -> (Self, Self::To) {
+        fn step(self, ev: Self::From) -> (Self, Self::To, ()) {
             let mut out = SmallVec::new();
             if let DetectorEvent::Tick { .. } = ev {
                 out.push(());
             }
-            (self, out)
+            (self, out, ())
         }
     }
 

@@ -127,7 +127,8 @@ where
                         Some((existing, _)) => existing,
                         None => (this.factory)(),
                     };
-                    let (next, signals) = detector.step(DetectorEvent::Packet { input, at });
+                    let (next, signals, _notes) =
+                        detector.step(DetectorEvent::Packet { input, at });
                     this.states.insert(key.clone(), (next, at));
                     signals
                         .into_iter()
@@ -144,7 +145,7 @@ where
                                 // ТИК ДОСТАВЛЯЕТСЯ ПРЕЖДЕ, ЧЕМ РЕШАЕТСЯ СУДЬБА КЛЮЧА: снять
                                 // состояние, не дав ему сказать последнее слово, значит потерять
                                 // беду, о которой детектор уже знал.
-                                let (next, signals) =
+                                let (next, signals, _notes) =
                                     detector.step(DetectorEvent::Tick { node, at });
                                 let idle = at.saturating_duration_since(seen_at);
                                 match this.lifetime {

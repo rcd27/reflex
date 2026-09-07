@@ -131,15 +131,18 @@ impl reflex_core::step::Step for HistoryInstrument {
     /// сказать, и «ничего не случилось» не занимает места в ленте.
     type To = smallvec::SmallVec<[Shift; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading])
+                (self, smallvec::smallvec![reading], ())
             }
-            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
             // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
         }
     }
 }

@@ -105,13 +105,17 @@ impl reflex_core::step::Step for TrustInstrument {
     /// сказать.
     type To = smallvec::SmallVec<[Trust; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => self.saw(input),
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
             // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -211,7 +215,7 @@ mod stream_tests {
             .fold(
                 (TrustInstrument::new(), Vec::new()),
                 |(state, said), record| {
-                    let (stepped, signals) = state.step(DetectorEvent::packet_now(record));
+                    let (stepped, signals, _) = state.step(DetectorEvent::packet_now(record));
                     (stepped, said.into_iter().chain(signals).collect())
                 },
             )

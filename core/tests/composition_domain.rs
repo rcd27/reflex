@@ -35,12 +35,13 @@ struct Counting(u8);
 impl Step for Counting {
     type From = DetectorEvent<u8>;
     type To = SmallVec<[Count; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![Count(self.0)]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![Count(self.0)], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }

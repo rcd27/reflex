@@ -36,13 +36,14 @@ struct Counting(u32);
 impl Step for Counting {
     type From = DetectorEvent<u8>;
     type To = SmallVec<[Count; 2]>;
+    type Notes = ();
 
-    fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[Count; 2]>) {
+    fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[Count; 2]>, ()) {
         match event {
-            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![Count(self.0)]),
-            DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![Count(self.0)], ()),
+            DetectorEvent::Tick { .. } => (self, SmallVec::new(), ()),
             // Счётчик считает разобранные пакеты; непонятое ему не пакет и не тик — молчит так же.
-            DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
+            DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -54,10 +55,11 @@ struct Summing(u32);
 impl Step for Summing {
     type From = SmallVec<[Count; 2]>;
     type To = Count;
+    type Notes = ();
 
-    fn step(self, input: SmallVec<[Count; 2]>) -> (Self, Count) {
+    fn step(self, input: SmallVec<[Count; 2]>) -> (Self, Count, ()) {
         let total = self.0 + input.iter().map(|Count(n)| n).sum::<u32>();
-        (Summing(total), Count(total))
+        (Summing(total), Count(total), ())
     }
 }
 
@@ -70,15 +72,15 @@ impl Step for Summing {
 fn detector_enters_the_step_category() {
     let chain = Counting(0).then(Summing(0));
 
-    let (chain, first) = chain.step(DetectorEvent::Packet {
+    let (chain, first, _) = chain.step(DetectorEvent::Packet {
         input: 1,
         at: Instant::now(),
     });
-    let (chain, second) = chain.step(DetectorEvent::Packet {
+    let (chain, second, _) = chain.step(DetectorEvent::Packet {
         input: 2,
         at: Instant::now(),
     });
-    let (_chain, on_tick) = chain.step(DetectorEvent::Tick {
+    let (_chain, on_tick, _) = chain.step(DetectorEvent::Tick {
         node: 1,
         at: Instant::now(),
     });

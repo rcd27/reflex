@@ -161,7 +161,7 @@ impl<T: PersonLeft> PersonLeft for &T {
 /// }
 ///
 /// let seen = Whole { severed: true, delivered: false };
-/// let (_, said) = DepartureInstrument::new().step(DetectorEvent::packet_now(seen));
+/// let (_, said, ()) = DepartureInstrument::new().step(DetectorEvent::packet_now(seen));
 /// assert_eq!(said.as_slice(), &[Left::Unserved]);
 /// ```
 /// Константа-носитель примеров: у документации нет иного места, куда их повесить, а сами примеры

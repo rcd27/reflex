@@ -156,8 +156,10 @@ impl<T> Timeout<T> {
 impl<T: crate::word::Word> Step for Timeout<T> {
     type From = DetectorEvent<T>;
     type To = SmallVec<[Deadline<T>; 2]>;
+    /// Показаний этот оператор не заводит — задача 6, не эта.
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match (event, self.waiting) {
             // ВСЯКОЕ СОБЫТИЕ ОТОДВИГАЕТ ТИШИНУ, но не потолок: потолок про то, сколько ждём МЫ.
             (DetectorEvent::Packet { at, .. }, Waiting::Since { opened, .. }) => (
@@ -166,6 +168,7 @@ impl<T: crate::word::Word> Step for Timeout<T> {
                     ..self
                 },
                 smallvec![],
+                (),
             ),
             // ПЕРВОЕ СОБЫТИЕ ЗАВОДИТ ОЖИДАНИЕ; оно же заводит его заново после названного срока —
             // поток, замерший дважды, обязан дать два высказывания, а не одно длинное.
@@ -178,26 +181,30 @@ impl<T: crate::word::Word> Step for Timeout<T> {
                     ..self
                 },
                 smallvec![],
+                (),
             ),
             (DetectorEvent::Tick { at, .. }, Waiting::Since { opened, last }) => {
                 match self.crossed(opened, last, at) {
-                    None => (self, smallvec![]),
+                    None => (self, smallvec![], ()),
                     Some(expiry) => (
                         Self {
                             waiting: Waiting::Spoken,
                             ..self
                         },
                         smallvec![Deadline::of(expiry)],
+                        (),
                     ),
                 }
             }
             // Истекать нечему: либо ничего не приходило, либо срок уже назван.
-            (DetectorEvent::Tick { .. }, Waiting::Unarmed | Waiting::Spoken) => (self, smallvec![]),
+            (DetectorEvent::Tick { .. }, Waiting::Unarmed | Waiting::Spoken) => {
+                (self, smallvec![], ())
+            }
             // ОПЕРАТОР ВИДИТ `T`, НО НЕ СОДЕРЖИМОЕ — а непонятое даже не гарантирует, что оно
             // вообще нашего предмета: разбор не состоялся раньше, чем стало известно, тому ли
             // разговору байты принадлежат. Считать его «признаком жизни» значило бы отодвигать
             // тишину по факту, которого прибор не вправе утверждать. Ожидание не трогается.
-            (DetectorEvent::Opaque { .. }, _) => (self, smallvec![]),
+            (DetectorEvent::Opaque { .. }, _) => (self, smallvec![], ()),
         }
     }
 }

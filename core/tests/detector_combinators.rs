@@ -86,17 +86,18 @@ struct Rst;
 impl Step for Rst {
     type From = DetectorEvent<Kind>;
     type To = SmallVec<[Distress; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
             DetectorEvent::Packet {
                 input: Kind::Rst, ..
-            } => (self, smallvec![Distress::Rst]),
+            } => (self, smallvec![Distress::Rst], ()),
             DetectorEvent::Packet {
                 input: Kind::Byte, ..
-            } => (self, smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            } => (self, smallvec![], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -116,7 +117,7 @@ where
     events
         .into_iter()
         .fold((detector, Vec::new()), |(state, said), event| {
-            let (stepped, signals) = state.step(event);
+            let (stepped, signals, _notes) = state.step(event);
             (stepped, said.into_iter().chain(signals).collect())
         })
         .1
@@ -184,12 +185,13 @@ struct Clock;
 impl Step for Clock {
     type From = DetectorEvent<Kind>;
     type To = SmallVec<[Distress; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst]),
-            DetectorEvent::Packet { .. } => (self, smallvec![]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst], ()),
+            DetectorEvent::Packet { .. } => (self, smallvec![], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -286,12 +288,13 @@ struct Level;
 impl Step for Level {
     type From = DetectorEvent<Kind>;
     type To = SmallVec<[Kind; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Packet { input, .. } => (self, smallvec![input]),
-            DetectorEvent::Tick { .. } => (self, smallvec![]),
-            DetectorEvent::Opaque { .. } => (self, smallvec![]),
+            DetectorEvent::Packet { input, .. } => (self, smallvec![input], ()),
+            DetectorEvent::Tick { .. } => (self, smallvec![], ()),
+            DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
         }
     }
 }

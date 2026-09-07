@@ -112,7 +112,8 @@ where
                         .collect();
                 for at in nodes {
                     let node = reflex_core::grid::due(*this.began, at, *this.every);
-                    let (next_detector, signals) = detector.step(DetectorEvent::Tick { node, at });
+                    let (next_detector, signals, _notes) =
+                        detector.step(DetectorEvent::Tick { node, at });
                     detector = next_detector;
                     for signal in signals {
                         this.buffer.push_back(signal);
@@ -131,7 +132,7 @@ where
             Poll::Ready(Some(input)) => {
                 if let Some(detector) = this.detector.take() {
                     let at = now();
-                    let (new_detector, signals) =
+                    let (new_detector, signals, _notes) =
                         detector.step(DetectorEvent::Packet { input, at });
                     *this.detector = Some(new_detector);
                     for signal in signals {

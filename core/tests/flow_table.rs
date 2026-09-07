@@ -31,8 +31,9 @@ struct RstCounter {
 impl Step for RstCounter {
     type From = DetectorEvent<TcpSegment>;
     type To = SmallVec<[Count; 2]>;
+    type Notes = ();
 
-    fn step(mut self, event: Self::From) -> (Self, Self::To) {
+    fn step(mut self, event: Self::From) -> (Self, Self::To, ()) {
         let mut signals = SmallVec::new();
         if let DetectorEvent::Packet { input: ref seg, .. } = event {
             if seg.flags.is_rst() {
@@ -40,7 +41,7 @@ impl Step for RstCounter {
                 signals.push(Count(self.count));
             }
         }
-        (self, signals)
+        (self, signals, ())
     }
 }
 

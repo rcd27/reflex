@@ -117,12 +117,15 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[S; 2]>;
+    /// ПРОИЗВЕДЕНИЕ, КАК И У [`crate::step::Then`]: два прибора не обязаны говорить на одном
+    /// языке показаний, чтобы их показания сложились, а позиция в типе называет автора.
+    type Notes = (A::Notes, B::Notes);
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        let (first, mut signals) = self.0.step(event.clone());
-        let (second, more) = self.1.step(event);
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+        let (first, mut signals, said) = self.0.step(event.clone());
+        let (second, more, also) = self.1.step(event);
         signals.extend(more);
-        (Both(first, second), signals)
+        (Both(first, second), signals, (said, also))
     }
 }
 
@@ -141,12 +144,15 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Renamed; 2]>;
+    /// ПЕРЕИМЕНОВАНИЕ МЕНЯЕТ СЛОВО, НЕ ПОКАЗАНИЯ: комбинатор сужает слово и проносит показания
+    /// насквозь, без изменений — добавь он от себя показание, он был бы звеном, а не комбинатором.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, f } = self;
-        let (stepped, signals) = inner.step(event);
+        let (stepped, signals, notes) = inner.step(event);
         let renamed = signals.into_iter().map(&f).collect();
-        (Self { inner: stepped, f }, renamed)
+        (Self { inner: stepped, f }, renamed, notes)
     }
 }
 
@@ -166,16 +172,21 @@ where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     F: Fn(&Wide) -> Option<I>,
     S: crate::word::Word,
+    // ЗАФИЛЬТРОВАННЫЙ ВХОД НЕ ЗОВЁТ ВНУТРЕННЕЕ ЗВЕНО — показанию неоткуда взяться, и `Default`
+    // называет то самое «нечего сказать», каким уже для всякого звена этого дерева стоит `()`.
+    D::Notes: Default,
 {
     type From = DetectorEvent<Wide>;
     type To = SmallVec<[S; 2]>;
+    /// Сужение меняет слово, не показания: показания идут сквозь без изменений.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, f, wide } = self;
         match event {
             DetectorEvent::Packet { input, at } => match f(&input) {
                 Some(narrowed) => {
-                    let (stepped, signals) = inner.step(DetectorEvent::Packet {
+                    let (stepped, signals, notes) = inner.step(DetectorEvent::Packet {
                         input: narrowed,
                         at,
                     });
@@ -186,12 +197,17 @@ where
                             wide,
                         },
                         signals,
+                        notes,
                     )
                 }
-                None => (Self { inner, f, wide }, SmallVec::new()),
+                None => (
+                    Self { inner, f, wide },
+                    SmallVec::new(),
+                    D::Notes::default(),
+                ),
             },
             DetectorEvent::Tick { node, at } => {
-                let (stepped, signals) = inner.step(DetectorEvent::Tick { node, at });
+                let (stepped, signals, notes) = inner.step(DetectorEvent::Tick { node, at });
                 (
                     Self {
                         inner: stepped,
@@ -199,12 +215,13 @@ where
                         wide,
                     },
                     signals,
+                    notes,
                 )
             }
             // НЕПОНЯТОЕ НЕ НЕСЁТ `Wide` — сужать нечего, сужение фильтрует значение, а не факт
             // о его отсутствии. Проходит к внутреннему звену как есть, тем же путём, что тик.
             DetectorEvent::Opaque { why, at } => {
-                let (stepped, signals) = inner.step(DetectorEvent::Opaque { why, at });
+                let (stepped, signals, notes) = inner.step(DetectorEvent::Opaque { why, at });
                 (
                     Self {
                         inner: stepped,
@@ -212,6 +229,7 @@ where
                         wide,
                     },
                     signals,
+                    notes,
                 )
             }
         }
@@ -262,8 +280,10 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Dressed; 2]>;
+    /// Наряд меняет слово, не показания: показания идут сквозь без изменений.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self {
             inner,
             pick,
@@ -277,7 +297,7 @@ where
             // как и на тике.
             DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => context,
         };
-        let (stepped, signals) = inner.step(event);
+        let (stepped, signals, notes) = inner.step(event);
         let dressed = signals
             .into_iter()
             .filter_map(|signal| dress(context.as_ref(), signal))
@@ -290,6 +310,7 @@ where
                 context,
             },
             dressed,
+            notes,
         )
     }
 }
@@ -301,10 +322,12 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[S; 2]>;
+    /// Сравнение с прошлым меняет слово, не показания: показания идут сквозь без изменений.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, said } = self;
-        let (stepped, signals) = inner.step(event);
+        let (stepped, signals, notes) = inner.step(event);
         // Повтор внутри одного шага — тоже повтор.
         let (last, fresh) =
             signals
@@ -325,6 +348,7 @@ where
                 said: last,
             },
             fresh,
+            notes,
         )
     }
 }
@@ -344,12 +368,14 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[(Instant, S); 2]>;
+    /// Штамп времени меняет слово, не показания: показания идут сквозь без изменений.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let at = event.at();
-        let (stepped, signals) = self.inner.step(event);
+        let (stepped, signals, notes) = self.inner.step(event);
         let stamped = signals.into_iter().map(|signal| (at, signal)).collect();
-        (Self { inner: stepped }, stamped)
+        (Self { inner: stepped }, stamped, notes)
     }
 }
 
@@ -430,15 +456,17 @@ where
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Told<S>; 2]>;
+    /// Подпись автора меняет слово, не показания: показания идут сквозь без изменений.
+    type Notes = D::Notes;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, by } = self;
-        let (stepped, signals) = inner.step(event);
+        let (stepped, signals, notes) = inner.step(event);
         let told = signals
             .into_iter()
             .map(|signal| Told { by, signal })
             .collect();
-        (Self { inner: stepped, by }, told)
+        (Self { inner: stepped, by }, told, notes)
     }
 }
 

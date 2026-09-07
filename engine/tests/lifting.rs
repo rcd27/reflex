@@ -9,7 +9,7 @@
 use reflex_core::step::{Step, StepExt};
 use reflex_core::word::{Region, Word};
 use reflex_engine::row::Naming;
-use reflex_engine::step::{Advancing, Answer};
+use reflex_engine::step::Advancing;
 use reflex_engine::{
     Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Packet, Plan, Programme, Tick,
 };
@@ -52,53 +52,74 @@ fn opening(payload: &[u8]) -> Packet<'_> {
     }
 }
 
-/// ДВИЖОК СТАНОВИТСЯ МОРФИЗМОМ: курсор — состояние, вердикт и наблюдение — выход.
+/// ДВИЖОК СТАНОВИТСЯ МОРФИЗМОМ: курсор — состояние, вердикт — слово, наблюдение — показание.
+///
+/// ТРОЙКА, А НЕ `Answer`: прежде вердикт и наблюдение были слиты в один тип ровно потому, что
+/// голому кортежу нельзя было объявить адрес, не соврав про половину — `Act` адресован пакету,
+/// `Noted` не адресован никому. Второй выход шага снял нужду во временной обёртке.
 #[test]
 fn engine_enters_the_step_category() {
     let machine = Advancing::new(Cursor::Fresh);
     let bytes = [1u8, 2, 3];
 
-    let (machine, answer) = machine.step((plan(), opening(&bytes), Tick(1)));
+    let (machine, act, notes) = machine.step((plan(), opening(&bytes), Tick(1)));
 
-    assert_eq!(answer.act, Act::Pass, "план говорит пропускать");
-    assert!(answer.noted.is_some(), "открытие разговора есть наблюдение");
+    assert_eq!(act, Act::Pass, "план говорит пропускать");
+    assert!(notes.is_some(), "открытие разговора есть наблюдение");
     assert!(
         matches!(machine.cursor, Cursor::Running(_)),
         "курсор обязан переехать в состояние машины, а не остаться в выходе"
     );
 }
 
-/// СЧЁТЧИК НАБЛЮДЕНИЙ — обычное звено, не движок. В этом и предмет теста: носитель ОБЩИЙ.
+/// СЧЁТЧИК ШАГОВ — обычное звено, не движок. В этом и предмет теста: носитель ОБЩИЙ.
+///
+/// РАНЬШЕ ОН СЧИТАЛ НАБЛЮДЕНИЯ (`answer.noted.is_some()`), потому что наблюдение приезжало
+/// слитым со словом. Показание уходит ВБОК, а не в `From` соседа, и потому сосед по цепочке его
+/// читать не может — это и есть закон, а не пробел в счётчике: он считает шаги, а наблюдение
+/// достаётся только тому, кто вызвал `.step()` на цепочке целиком (см. ниже).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CountingSightings(u32);
+struct CountingSteps(u32);
 
-impl Step for CountingSightings {
-    type From = Answer;
+impl Step for CountingSteps {
+    type From = Act;
     type To = Seen;
+    type Notes = ();
 
-    fn step(self, answer: Self::From) -> (Self, Seen) {
-        let seen = self.0 + u32::from(answer.noted.is_some());
-        (CountingSightings(seen), Seen(seen))
+    fn step(self, _act: Act) -> (Self, Seen, ()) {
+        let seen = self.0 + 1;
+        (CountingSteps(seen), Seen(seen), ())
     }
 }
 
-/// ЦЕПОЧКА «ДВИЖОК → ЧУЖОЕ ЗВЕНО» СОБИРАЕТСЯ.
+/// ЦЕПОЧКА «ДВИЖОК → ЧУЖОЕ ЗВЕНО» СОБИРАЕТСЯ, И ПОКАЗАНИЕ ИДЁТ МИМО СОСЕДА.
 ///
-/// Не собралась бы — совпадение подписей было бы косметическим, и §3 vision пришлось бы
-/// переписывать.
+/// Собралась бы цепочка при косметическом совпадении подписей — не было бы: `Step` требует
+/// `B::From = A::To`, и здесь это ровно `Act`, а не слитая пара. Показание же (`Option<Noted>`)
+/// достаётся ТОЛЬКО вызывающему цепочку целиком — позиция в типе (`Advancing` первым) называет
+/// автора без единого слова прозы.
 #[test]
 fn engine_composes_with_a_foreign_link() {
-    let chain = Advancing::new(Cursor::Fresh).then(CountingSightings(0));
+    let chain = Advancing::new(Cursor::Fresh).then(CountingSteps(0));
     let bytes = [1u8, 2, 3];
 
-    let (chain, first) = chain.step((plan(), opening(&bytes), Tick(1)));
-    let (_chain, second) = chain.step((plan(), opening(&bytes), Tick(2)));
+    let (chain, first, (first_notes, ())) = chain.step((plan(), opening(&bytes), Tick(1)));
+    let (_chain, second, (second_notes, ())) = chain.step((plan(), opening(&bytes), Tick(2)));
 
-    assert_eq!(first, Seen(1), "открытие дало одно наблюдение");
+    assert_eq!(first, Seen(1), "слово дошло до соседа — цепочка собралась");
     assert_eq!(
         second,
-        Seen(1),
-        "продолжение того же разговора не несёт нового наблюдения — счётчик СОХРАНИЛ единицу, а \
-         не пересобрался: состояние живёт у второго звена"
+        Seen(2),
+        "состояние живёт у второго звена, а не пересобирается на каждом входе"
+    );
+
+    assert!(
+        first_notes.is_some(),
+        "открытие разговора есть наблюдение, и оно видно вызывающему"
+    );
+    assert!(
+        second_notes.is_none(),
+        "продолжение того же разговора не несёт нового наблюдения — сосед этого не видел бы \
+         в любом случае, он его и не читает"
     );
 }

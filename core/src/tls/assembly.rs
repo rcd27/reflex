@@ -288,9 +288,11 @@ impl RecordAssembler {
 impl Step for RecordAssembler {
     type From = DetectorEvent<RecordChunk>;
     type To = SmallVec<[Assembly; 2]>;
+    /// Показаний этот оператор не заводит — задача 6, не эта.
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (assembler, signals) = match event {
             DetectorEvent::Packet { input, at } => match (&self.hold, input.payload.is_empty()) {
                 // Голый ACK/FIN без данных записи не двигает — и не должен закрывать удержание.
                 (_, true) => (self.with(self.hold.clone()), SmallVec::new()),
@@ -327,6 +329,7 @@ impl Step for RecordAssembler {
             // разбор смог сказать даже то, что это TCP-сегмент нашего разговора. Удержание не
             // трогается: молчаливое продолжение того, что уже держим.
             DetectorEvent::Opaque { .. } => (self.with(self.hold.clone()), SmallVec::new()),
-        }
+        };
+        (assembler, signals, ())
     }
 }

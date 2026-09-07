@@ -34,7 +34,7 @@ fn run(events: Vec<DetectorEvent<Beat>>) -> Vec<Beat> {
         .fold(
             (Debounce::over(WINDOW), Vec::new()),
             |(detector, mut seen), event| {
-                let (detector, signals) = detector.step(event);
+                let (detector, signals, ()) = detector.step(event);
                 seen.extend(signals);
                 (detector, seen)
             },

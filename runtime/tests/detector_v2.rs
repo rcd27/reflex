@@ -36,8 +36,9 @@ impl reflex_core::word::Word for RstSignal {
 impl Step for SimpleRstDetector {
     type From = DetectorEvent<TcpSegment>;
     type To = SmallVec<[RstSignal; 2]>;
+    type Notes = ();
 
-    fn step(mut self, event: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[RstSignal; 2]>) {
+    fn step(mut self, event: DetectorEvent<TcpSegment>) -> (Self, SmallVec<[RstSignal; 2]>, ()) {
         let mut signals = SmallVec::new();
 
         match event {
@@ -59,7 +60,7 @@ impl Step for SimpleRstDetector {
             DetectorEvent::Opaque { .. } => {}
         }
 
-        (self, signals)
+        (self, signals, ())
     }
 }
 

@@ -42,12 +42,13 @@ struct NodeLog;
 impl Step for NodeLog {
     type From = DetectorEvent<u8>;
     type To = SmallVec<[Node; 2]>;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         match event {
-            DetectorEvent::Tick { node, .. } => (self, SmallVec::from_slice(&[Node(node)])),
-            DetectorEvent::Packet { .. } => (self, SmallVec::new()),
-            DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
+            DetectorEvent::Tick { node, .. } => (self, SmallVec::from_slice(&[Node(node)]), ()),
+            DetectorEvent::Packet { .. } => (self, SmallVec::new(), ()),
+            DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
         }
     }
 }

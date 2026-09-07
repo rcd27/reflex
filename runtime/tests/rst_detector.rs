@@ -75,8 +75,9 @@ impl RstDetector {
 impl Step for RstDetector {
     type From = DetectorEvent<Packet>;
     type To = SmallVec<[RstSignal; 2]>;
+    type Notes = ();
 
-    fn step(mut self, event: DetectorEvent<Packet>) -> (Self, SmallVec<[RstSignal; 2]>) {
+    fn step(mut self, event: DetectorEvent<Packet>) -> (Self, SmallVec<[RstSignal; 2]>, ()) {
         let mut signals = SmallVec::new();
 
         match event {
@@ -109,7 +110,7 @@ impl Step for RstDetector {
             DetectorEvent::Opaque { .. } => {}
         }
 
-        (self, signals)
+        (self, signals, ())
     }
 }
 

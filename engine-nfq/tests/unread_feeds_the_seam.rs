@@ -166,8 +166,9 @@ impl reflex_core::word::Word for Tally {
 impl Step for Tally {
     type From = DetectorEvent<Letter>;
     type To = Tally;
+    type Notes = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
         let next = match event {
             DetectorEvent::Packet { .. } => Tally {
                 packets: self.packets + 1,
@@ -179,7 +180,7 @@ impl Step for Tally {
             },
             DetectorEvent::Tick { .. } => self,
         };
-        (next, next)
+        (next, next, ())
     }
 }
 
@@ -280,11 +281,12 @@ async fn a_feeder_exists_the_seam_carries_opaque_traffic_end_to_end() {
     );
 
     // === 3. Счётчик непонятого — звено цепочки, а не счётчик в краю до канала. ===
-    let tallies: Vec<Tally> = Tally::default()
+    // ПАРА НАРУЖУ: подъём отдаёт слово и показания — здесь показаний нет, `()` на каждом элементе.
+    let tallies: Vec<(Tally, ())> = Tally::default()
         .over(futures::stream::iter(events))
         .collect()
         .await;
-    let last = *tallies
+    let (last, ()) = *tallies
         .last()
         .expect("десять событий (пять узлов и пять наблюдений) обязаны дать десять показаний");
     assert_eq!(

@@ -45,9 +45,10 @@ struct Numbering(u32);
 impl Step for Numbering {
     type From = &'static str;
     type To = Numbered;
+    type Notes = ();
 
-    fn step(self, word: &'static str) -> (Self, Numbered) {
-        (Numbering(self.0 + 1), Numbered(self.0, word))
+    fn step(self, word: &'static str) -> (Self, Numbered, ()) {
+        (Numbering(self.0 + 1), Numbered(self.0, word), ())
     }
 }
 
@@ -58,13 +59,14 @@ struct Longest(usize);
 impl Step for Longest {
     type From = Numbered;
     type To = Record;
+    type Notes = ();
 
-    fn step(self, Numbered(number, word): Numbered) -> (Self, Record) {
+    fn step(self, Numbered(number, word): Numbered) -> (Self, Record, ()) {
         let seen = match word.len() > self.0 {
             true => word.len(),
             false => self.0,
         };
-        (Longest(seen), Record(number, seen))
+        (Longest(seen), Record(number, seen), ())
     }
 }
 
@@ -77,8 +79,8 @@ impl Step for Longest {
 fn composition_carries_the_state_of_both_links() {
     let chain = Numbering(0).then(Longest(0));
 
-    let (chain, first) = chain.step("aa");
-    let (_chain, second) = chain.step("bbbb");
+    let (chain, first, _) = chain.step("aa");
+    let (_chain, second, _) = chain.step("bbbb");
 
     assert_eq!(first, Record(0, 2), "первое слово: номер 0, рекорд 2");
     assert_eq!(
@@ -95,7 +97,8 @@ fn composition_carries_the_state_of_both_links() {
 /// отвечал бы нулём. Оба симптома видны только с третьего элемента, поэтому их здесь три.
 #[tokio::test]
 async fn lifting_carries_one_machine_through_the_whole_stream() {
-    let seen: Vec<Record> = Numbering(0)
+    // ПАРА НАРУЖУ: подъём отдаёт слово и показания — здесь показаний нет, () на каждом элементе.
+    let seen: Vec<(Record, ((), ()))> = Numbering(0)
         .then(Longest(0))
         .over(futures::stream::iter(["aa", "bbbb", "c"]))
         .collect()
@@ -103,7 +106,11 @@ async fn lifting_carries_one_machine_through_the_whole_stream() {
 
     assert_eq!(
         seen,
-        vec![Record(0, 2), Record(1, 4), Record(2, 4)],
+        vec![
+            (Record(0, 2), ((), ())),
+            (Record(1, 4), ((), ())),
+            (Record(2, 4), ((), ())),
+        ],
         "рекорд не падает на коротком слове, номера растут — машина в потоке одна"
     );
 }

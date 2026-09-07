@@ -55,6 +55,9 @@ impl reflex_core::step::Step for RstInstrument {
     /// а `Option` в сигнале сделал бы «всё в порядке» отдельным сообщением в ленте.
     type To = smallvec::SmallVec<[Distress; 2]>;
 
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
     /// # ПОДПИСЬ ТСПУ УЗНАЁТСЯ ДВУМЯ ПРИЗНАКАМИ РАЗОМ
     ///
     /// Сброс пришёл ОТ ЦЕЛИ и ДО того, как она отдала хоть байт: так отвечают на `ClientHello`, а
@@ -63,8 +66,8 @@ impl reflex_core::step::Step for RstInstrument {
     ///
     /// ЦЕНА НАЗВАНА: сброс посреди живой сессии пропускается — от штатного закрытия он неотличим
     /// ничем, что видно на проводе.
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 match (&input, self.fired, self.answered) {
                     (
@@ -112,7 +115,8 @@ impl reflex_core::step::Step for RstInstrument {
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
             // Прибор читает СЛОВАРЬ TCP-улик; непонятое им не является и молчит так же, как тик.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -239,8 +243,11 @@ impl reflex_core::step::Step for SilenceInstrument {
     /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ.
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // Тишина меряется по ответу ЦЕЛИ: сколько напросил человек, к делу не относится.
                 let bytes = match &input {
@@ -327,7 +334,8 @@ impl reflex_core::step::Step for SilenceInstrument {
             // состоялся раньше, чем стало известно даже направление. Часы заводит первый ТИК
             // (см. выше) — Opaque на это не влияет и состояние не трогает.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -461,8 +469,11 @@ impl reflex_core::step::Step for ThrottledInstrument {
     type From = reflex_core::DetectorEvent<SeenTcp>;
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let next = match input {
                     // Повтор — тот же спрос: человек по-прежнему хочет, просто просит заново.
@@ -545,7 +556,8 @@ impl reflex_core::step::Step for ThrottledInstrument {
             // ПРИБОР СЧИТАЕТ БАЙТЫ, А НЕПОНЯТОЕ ИХ НЕ НЕСЁТ — ни направления, ни длины. Учесть
             // его в `down`/`up` нечем, окно закрывает только тик.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -668,8 +680,11 @@ impl reflex_core::step::Step for ChokedInstrument {
     type From = reflex_core::DetectorEvent<Seen>;
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To) {
-        match event {
+    /// Показаний этот прибор не заводит — задача 6, не эта.
+    type Notes = ();
+
+    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+        let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // МОМЕНТ ПЕРВОЙ ПРОСЬБЫ — начало отсчёта терпения. Повторная просьба его не
                 // сдвигает: человек ждёт один раз, а не заново с каждым повтором.
@@ -740,7 +755,8 @@ impl reflex_core::step::Step for ChokedInstrument {
             // ПРИБОР СЧИТАЕТ ПРОСЬБЫ И ОТВЕТЫ В БАЙТАХ; непонятое не несёт ни того, ни другого —
             // ни просьбой, ни ответом оно не является.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-        }
+        };
+        (state, signals, ())
     }
 }
 
@@ -817,7 +833,7 @@ mod silence_tests {
                         Some(seen) => DetectorEvent::Packet { input: seen, at },
                         None => DetectorEvent::Tick { node: after_ms, at },
                     };
-                    let (stepped, signals) = state.step(event);
+                    let (stepped, signals, _) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())
                 },
             )
@@ -938,7 +954,7 @@ mod throttled_and_choked_tests {
                         Some(seen) => DetectorEvent::Packet { input: seen, at },
                         None => DetectorEvent::Tick { node: after_ms, at },
                     };
-                    let (stepped, signals) = state.step(event);
+                    let (stepped, signals, _) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())
                 },
             )
@@ -1047,7 +1063,7 @@ mod rst_tests {
     fn run(instrument: RstInstrument, seen: Vec<SeenTcp>) -> Vec<Distress> {
         seen.into_iter()
             .fold((instrument, Vec::new()), |(state, said), seen| {
-                let (stepped, signals) = state.step(saw(seen));
+                let (stepped, signals, _) = state.step(saw(seen));
                 (stepped, said.into_iter().chain(signals).collect())
             })
             .1

@@ -45,7 +45,7 @@ fn run(events: Vec<DetectorEvent<Watched>>) -> Vec<Deadline<Watched>> {
         .fold(
             (Timeout::new(IDLE, CEILING), Vec::new()),
             |(detector, mut seen), event| {
-                let (detector, signals) = detector.step(event);
+                let (detector, signals, ()) = detector.step(event);
                 seen.extend(signals);
                 (detector, seen)
             },
@@ -131,7 +131,7 @@ fn whichever_threshold_is_crossed_first_wins() {
     let (_detector, out) = [packet(t, 0), tick(t, 950)].into_iter().fold(
         (sooner_ceiling, Vec::new()),
         |(detector, mut seen), event| {
-            let (detector, signals) = detector.step(event);
+            let (detector, signals, ()) = detector.step(event);
             seen.extend(signals);
             (detector, seen)
         },
