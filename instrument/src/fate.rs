@@ -178,6 +178,8 @@ impl reflex_core::step::Step for ObservedInstrument {
                 (self, smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }

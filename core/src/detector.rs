@@ -21,6 +21,14 @@ pub enum DetectorEvent<T> {
     ///
     /// Несёт и номер, и момент. Номер тот же при переигровке; момент сравним с чужими часами.
     Tick { node: u64, at: Instant },
+    /// ПРИШЛО, НО РАЗОБРАТЬ НЕ СМОГЛИ.
+    ///
+    /// «Не знаю» на стороне входа. Без этой буквы наблюдение выразить нечем, и считать его
+    /// приходится до того, как родится событие, — то есть в краю, вторым разбором.
+    Opaque {
+        why: crate::parse::Unread,
+        at: Instant,
+    },
 }
 
 impl<T> DetectorEvent<T> {
@@ -32,6 +40,7 @@ impl<T> DetectorEvent<T> {
         match self {
             DetectorEvent::Packet { at, .. } => *at,
             DetectorEvent::Tick { at, .. } => *at,
+            DetectorEvent::Opaque { at, .. } => *at,
         }
     }
 
@@ -157,6 +166,19 @@ where
                     signals,
                 )
             }
+            // НЕПОНЯТОЕ НЕ НЕСЁТ `Wide` — сужать нечего, сужение фильтрует значение, а не факт
+            // о его отсутствии. Проходит к внутреннему звену как есть, тем же путём, что тик.
+            DetectorEvent::Opaque { why, at } => {
+                let (stepped, signals) = inner.step(DetectorEvent::Opaque { why, at });
+                (
+                    Self {
+                        inner: stepped,
+                        f,
+                        wide,
+                    },
+                    signals,
+                )
+            }
         }
     }
 }
@@ -214,7 +236,9 @@ where
         // ДО шага: сигнал этого наблюдения одевается в него, а не в предыдущее.
         let context = match &event {
             DetectorEvent::Packet { input, .. } => Some(pick(input)),
-            DetectorEvent::Tick { .. } => context,
+            // НЕПОНЯТОЕ НЕ НЕСЁТ `I` — контексту неоткуда взяться, а прежний остаётся в силе,
+            // как и на тике.
+            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => context,
         };
         let (stepped, signals) = inner.step(event);
         let dressed = signals

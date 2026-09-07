@@ -110,6 +110,8 @@ impl reflex_core::step::Step for RstInstrument {
             }
             // Сброс сам есть момент: часы прибору не нужны.
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            // Прибор читает СЛОВАРЬ TCP-улик; непонятое им не является и молчит так же, как тик.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }
@@ -321,6 +323,10 @@ impl reflex_core::step::Step for SilenceInstrument {
                 | (None, Watch::Fired)
                 | (None, Watch::Ended) => (self, smallvec::SmallVec::new()),
             },
+            // НЕПОНЯТОЕ НЕ ЕСТЬ ОТВЕТ ЦЕЛИ: прибор мерит байты, отданные ВНИЗ, а разбор не
+            // состоялся раньше, чем стало известно даже направление. Часы заводит первый ТИК
+            // (см. выше) — Opaque на это не влияет и состояние не трогает.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }
@@ -536,6 +542,9 @@ impl reflex_core::step::Step for ThrottledInstrument {
                     true => (emptied, smallvec::smallvec![Distress::Throttled { bps }]),
                 }
             }
+            // ПРИБОР СЧИТАЕТ БАЙТЫ, А НЕПОНЯТОЕ ИХ НЕ НЕСЁТ — ни направления, ни длины. Учесть
+            // его в `down`/`up` нечем, окно закрывает только тик.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }
@@ -728,6 +737,9 @@ impl reflex_core::step::Step for ChokedInstrument {
                     smallvec::smallvec![Distress::NoBytes],
                 ),
             },
+            // ПРИБОР СЧИТАЕТ ПРОСЬБЫ И ОТВЕТЫ В БАЙТАХ; непонятое не несёт ни того, ни другого —
+            // ни просьбой, ни ответом оно не является.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }

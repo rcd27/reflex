@@ -121,6 +121,9 @@ impl reflex_core::step::Step for RetransmitInstrument {
             },
             // ЧАСОВ НЕТ ВОВСЕ: порог этому прибору даёт RTO клиентского ядра, а не наш тик.
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            // Прибор мерит РАЗОБРАННЫЙ `Seen`; непонятое им не является — не сдвигает отсчёт
+            // просьбы и не снимает подозрения, как и голый ACK/FIN.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }

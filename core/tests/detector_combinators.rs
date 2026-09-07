@@ -68,6 +68,7 @@ impl Step for Rst {
                 input: Kind::Byte, ..
             } => (self, smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }
@@ -160,6 +161,7 @@ impl Step for Clock {
         match event {
             DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst]),
             DetectorEvent::Packet { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }
@@ -244,6 +246,7 @@ impl Step for Level {
         match event {
             DetectorEvent::Packet { input, .. } => (self, smallvec![input]),
             DetectorEvent::Tick { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }

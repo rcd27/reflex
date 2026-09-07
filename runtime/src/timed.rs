@@ -128,6 +128,9 @@ mod tests {
                 match event {
                     DetectorEvent::Packet { .. } => ('p', millis),
                     DetectorEvent::Tick { .. } => ('t', millis),
+                    // Шов не рождает `Opaque` — он вообще не знает о разборе; ветка нужна ради
+                    // полноты алфавита, а не потому, что до неё дойдёт прогон.
+                    DetectorEvent::Opaque { .. } => ('o', millis),
                 }
             })
             .collect()

@@ -25,6 +25,8 @@ impl Step for Counting {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![self.0]),
             DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+            // Счётчик считает разобранные пакеты; непонятое ему не пакет и не тик — молчит так же.
+            DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
         }
     }
 }

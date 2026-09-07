@@ -341,6 +341,10 @@ fn moment<T>(event: &crate::detector::DetectorEvent<T>) -> Option<Instant> {
     match event {
         crate::detector::DetectorEvent::Packet { at, .. } => Some(*at),
         crate::detector::DetectorEvent::Tick { at, .. } => Some(*at),
+        // ПРОВОД ВИДЕН ЦЕЛИКОМ: непонятый кадр всё равно занял место в записи и обязан
+        // раздвигать сетку тиков так же, как понятый, — иначе плотный поток из одних
+        // Opaque читался бы как тишина, которой не было.
+        crate::detector::DetectorEvent::Opaque { at, .. } => Some(*at),
     }
 }
 
@@ -461,6 +465,32 @@ mod tick_tests {
             1,
             "после последнего кадра дописано лишнее: {got:?}"
         );
+    }
+
+    /// НОМЕР УЗЛА — ТОТ ЖЕ, ЧТО НАЗЫВАЕТ [`crate::grid::due`], А НЕ ПОРЯДКОВЫЙ СЧЁТ ТИКОВ.
+    ///
+    /// Прежние проверки видели только СКОЛЬКО тиков вышло и в каком ПОРЯДКЕ — не то, какой номер
+    /// узла каждый из них называет. Пауза здесь ровно та же, что и в `a_gap_becomes_ticks`: три
+    /// узла сетки со 100-мс шагом между t0 и t0+350мс — 100, 200 и 300 мс от начала, то есть узлы
+    /// 1, 2 и 3.
+    #[test]
+    fn tick_node_numbers_match_the_one_law_of_the_grid() {
+        let t0 = Instant::now();
+        let window = Duration::from_millis(100);
+        let got = with_ticks(
+            &[packet(t0), packet(t0 + Duration::from_millis(350))],
+            window,
+        );
+
+        let nodes: Vec<u64> = got
+            .iter()
+            .filter_map(|e| match e {
+                DetectorEvent::Tick { node, .. } => Some(*node),
+                DetectorEvent::Packet { .. } | DetectorEvent::Opaque { .. } => None,
+            })
+            .collect();
+
+        assert_eq!(nodes, vec![1, 2, 3]);
     }
 
     /// ПОРЯДОК СОХРАНЯЕТСЯ: тик стоит ЗА событием, после которого возник.

@@ -24,6 +24,7 @@ impl Step for Counting {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![self.0]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }

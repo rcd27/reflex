@@ -370,6 +370,8 @@ impl reflex_core::step::Step for BlindnessInstrument {
                 (self, smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            // Прибор мерит наше право говорить о цели; непонятое им не является и молчит.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }

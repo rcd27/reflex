@@ -661,6 +661,8 @@ impl reflex_core::step::Step for SightingInstrument {
                 (self, smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
+            // Прибор докладывает уже снятое наблюдение; непонятое им не является и молчит.
+            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         }
     }
 }

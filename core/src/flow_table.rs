@@ -140,6 +140,9 @@ mod tests {
                         (Counter(next), SmallVec::from_slice(&[next]))
                     }
                     DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+                    // Таблица кормит детектор только `Packet` и `Tick` (см. `process`/`tick`
+                    // ниже) — витнес честен об этом, а не молчит веткой-приёмником.
+                    DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
                 }
             }
         }

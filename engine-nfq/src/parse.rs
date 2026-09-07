@@ -103,6 +103,83 @@ pub enum Framed<'a> {
     Truncated,
 }
 
+impl Framed<'_> {
+    /// ИСХОД РАЗБОРА КАК ПРИЧИНА, ЕСЛИ РАЗБОР НЕ СОСТОЯЛСЯ.
+    ///
+    /// `None` значит «разобралось» — успешные варианты причины не имеют.
+    pub fn unread(&self) -> Option<reflex_core::parse::Unread> {
+        match self {
+            Framed::Tcp(_) | Framed::Udp(_) => None,
+            Framed::NotIpv4 => Some(reflex_core::parse::Unread::NotIpv4),
+            Framed::NotOurProtocol => Some(reflex_core::parse::Unread::NotOurProtocol),
+            Framed::Truncated => Some(reflex_core::parse::Unread::Truncated),
+        }
+    }
+}
+
+#[cfg(test)]
+mod unread_tests {
+    //! ПЕРЕВОД ИСХОДА РАЗБОРА В ПРИЧИНУ ФУНДАМЕНТА — по варианту, не по догадке.
+    use super::*;
+
+    fn ends() -> Ends {
+        Ends {
+            src_ip: 0,
+            dst_ip: 0,
+            src_port: 0,
+            dst_port: 0,
+        }
+    }
+
+    #[test]
+    fn success_variants_carry_no_reason() {
+        let tcp = Framed::Tcp(Segment {
+            header: Header {
+                ends: ends(),
+                seq: 0,
+                ack: 0,
+                window: 0,
+            },
+            opens: false,
+            handshakes: false,
+            closes: false,
+            resets: false,
+            payload: &[],
+        });
+        assert_eq!(
+            tcp.unread(),
+            None,
+            "разобранный TCP не несёт причины отказа"
+        );
+
+        let udp = Framed::Udp(Payload {
+            ends: ends(),
+            payload: &[],
+        });
+        assert_eq!(
+            udp.unread(),
+            None,
+            "разобранный UDP не несёт причины отказа"
+        );
+    }
+
+    #[test]
+    fn each_refusal_names_its_own_reason() {
+        assert_eq!(
+            Framed::NotIpv4.unread(),
+            Some(reflex_core::parse::Unread::NotIpv4)
+        );
+        assert_eq!(
+            Framed::NotOurProtocol.unread(),
+            Some(reflex_core::parse::Unread::NotOurProtocol)
+        );
+        assert_eq!(
+            Framed::Truncated.unread(),
+            Some(reflex_core::parse::Unread::Truncated)
+        );
+    }
+}
+
 /// СЕГМЕНТ ДО ПРАВИЛА СТОРОН: флаги и номера прочитаны, направление ещё не названо.
 ///
 /// Здесь нет ни `dst`, ни `dir`, ни `flow`, ни `head` — все четыре суть функции СТОРОНЫ, а не

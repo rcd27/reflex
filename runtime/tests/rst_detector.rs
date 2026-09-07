@@ -94,6 +94,7 @@ impl Step for RstDetector {
                 }
             }
             DetectorEvent::Tick { .. } => {}
+            DetectorEvent::Opaque { .. } => {}
         }
 
         (self, signals)

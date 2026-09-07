@@ -311,6 +311,10 @@ impl Step for RecordAssembler {
                     (self.with(self.hold.clone()), SmallVec::new())
                 }
             },
+            // СБОРЩИК ЖДЁТ БАЙТЫ ЗАПИСИ TLS, а непонятое их не несёт — оно родилось раньше, чем
+            // разбор смог сказать даже то, что это TCP-сегмент нашего разговора. Удержание не
+            // трогается: молчаливое продолжение того, что уже держим.
+            DetectorEvent::Opaque { .. } => (self.with(self.hold.clone()), SmallVec::new()),
         }
     }
 }

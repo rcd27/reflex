@@ -50,6 +50,7 @@ impl Step for Rst {
             } => (self, smallvec![Signal::SawRst]),
             DetectorEvent::Packet { .. } => (self, smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }
@@ -98,6 +99,9 @@ impl Step for Quiet {
                 ),
                 _ => (self, smallvec![]),
             },
+            // ТИШИНА МЕРИТСЯ МЕЖДУ РАЗОБРАННЫМИ СОБЫТИЯМИ: непонятое не гарантирует, что это
+            // вообще наш разговор, и не вправе отодвигать порог, — состояние не трогается.
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }
@@ -120,6 +124,7 @@ impl Step for Bytes {
             } => (self, smallvec![Signal::SawByte]),
             DetectorEvent::Packet { .. } => (self, smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![]),
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }
@@ -243,6 +248,8 @@ async fn composition_lets_both_observe() {
             match event {
                 DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawByte]),
                 DetectorEvent::Tick { .. } => (self, smallvec![]),
+                // Витнес «видит всё» из разобранного потока; непонятое в это «всё» не входит.
+                DetectorEvent::Opaque { .. } => (self, smallvec![]),
             }
         }
     }
@@ -305,6 +312,8 @@ async fn signals_survive_source_completion() {
             match event {
                 DetectorEvent::Packet { .. } => (self, smallvec![Signal::SawRst, Signal::SawByte]),
                 DetectorEvent::Tick { .. } => (self, smallvec![]),
+                // Витнес видит только разобранные события; непонятое молчит так же, как тик.
+                DetectorEvent::Opaque { .. } => (self, smallvec![]),
             }
         }
     }
@@ -337,6 +346,8 @@ impl Step for Counting {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
             DetectorEvent::Tick { .. } => (self, smallvec![Counted(self.0)]),
+            // Считающий детектор мерит разобранные события; непонятое ни пакет, ни тик — молчит.
+            DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
 }

@@ -22,6 +22,9 @@ fn shape<T>(events: &[DetectorEvent<T>], start: Instant) -> Vec<(char, u64)> {
             match event {
                 DetectorEvent::Packet { .. } => ('p', millis),
                 DetectorEvent::Tick { .. } => ('t', millis),
+                // Шов ([`Interleave`]) не рождает `Opaque` — он вообще не знает о разборе;
+                // ветка нужна ради полноты алфавита, а не потому, что до неё дойдёт прогон.
+                DetectorEvent::Opaque { .. } => ('o', millis),
             }
         })
         .collect()
@@ -123,7 +126,7 @@ fn tick_carries_node_and_moment() {
         .iter()
         .filter_map(|event| match event {
             DetectorEvent::Tick { node, .. } => Some(*node),
-            DetectorEvent::Packet { .. } => None,
+            DetectorEvent::Packet { .. } | DetectorEvent::Opaque { .. } => None,
         })
         .collect();
 
@@ -133,7 +136,7 @@ fn tick_carries_node_and_moment() {
         .iter()
         .filter_map(|event| match event {
             DetectorEvent::Tick { at, .. } => Some(*at),
-            DetectorEvent::Packet { .. } => None,
+            DetectorEvent::Packet { .. } | DetectorEvent::Opaque { .. } => None,
         })
         .collect();
 

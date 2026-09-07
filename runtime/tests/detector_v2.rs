@@ -44,6 +44,7 @@ impl Step for SimpleRstDetector {
                 }
             }
             DetectorEvent::Tick { .. } => {}
+            DetectorEvent::Opaque { .. } => {}
         }
 
         (self, signals)

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -19,8 +19,11 @@ pin_project! {
         buffer: VecDeque<Sig>,
         #[pin]
         tick: Interval,
-        // Номер СЛЕДУЮЩЕГО тика: своя сетка, без общего start с timed::on_grid.
-        next_tick: u64,
+        // НАЧАЛО СЕТКИ И ЕЁ ШАГ — номер узла берётся [`reflex_core::grid::due`], ЕДИНЫМ законом
+        // сетки, а не собственным счётчиком: второй способ считать «какой это узел» лгал бы под
+        // дрейфом `tokio::time::interval`, молча съедая пропуски вместо того, чтобы их назвать.
+        began: Instant,
+        every: Duration,
     }
 }
 
@@ -31,7 +34,8 @@ impl<S, D, Sig> DetectStream<S, D, Sig> {
             detector: Some(detector),
             buffer: VecDeque::new(),
             tick: time::interval(tick_interval),
-            next_tick: 0,
+            began: Instant::now(),
+            every: tick_interval,
         }
     }
 }
@@ -54,9 +58,8 @@ where
         // 2. Try tick
         if let Some(detector) = this.detector.take() {
             if this.tick.as_mut().poll_tick(cx).is_ready() {
-                let at = std::time::Instant::now();
-                *this.next_tick += 1;
-                let node = *this.next_tick;
+                let at = Instant::now();
+                let node = reflex_core::grid::due(*this.began, at, *this.every);
                 let (new_detector, signals) = detector.step(DetectorEvent::Tick { node, at });
                 *this.detector = Some(new_detector);
                 for signal in signals {
@@ -74,7 +77,7 @@ where
         match this.source.as_mut().poll_next(cx) {
             Poll::Ready(Some(input)) => {
                 if let Some(detector) = this.detector.take() {
-                    let at = std::time::Instant::now();
+                    let at = Instant::now();
                     let (new_detector, signals) =
                         detector.step(DetectorEvent::Packet { input, at });
                     *this.detector = Some(new_detector);
