@@ -768,3 +768,35 @@ fn a_closed_talk_keeps_what_the_letter_told_us() {
         other => panic!("знание разжаловано таймером: {other:?}"),
     }
 }
+
+/// УДЕРЖАНИЕ — ВЕЛИЧИНА, А НЕ ПОБОЧНЫЙ ЭФФЕКТ ОБХОДА.
+///
+/// Закрытый разговор помнится ровно затем, чтобы хвостовой пакет (последний `ACK`,
+/// ретрансмиссия) не получил ответ «не видели» про то, по чему выносился вердикт. Сколько
+/// именно — величина со своим доводом, а не то, что вышло из двух проходов уборки.
+#[test]
+fn retention_is_a_named_span_not_a_side_effect() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let port = 44_100u16;
+    feed(&mut plane, &syn(port), 0);
+    feed(&mut plane, &fin(port), 1_000_000);
+
+    let flow = flow_of(port);
+    let horizon = reflex_engine::meter::horizon().0;
+    let retention = reflex_engine_nfq::plane::RETENTION_HORIZONS * horizon;
+
+    // На середине удержания разговор ещё помнится.
+    plane.tick(Tick(1_000_000 + retention / 2));
+    assert!(
+        !matches!(plane.cursor_of(flow), Cursor::Fresh),
+        "внутри удержания закрытый разговор обязан помниться"
+    );
+
+    // За удержанием — забыт.
+    plane.tick(Tick(1_000_000 + retention + horizon));
+    plane.tick(Tick(1_000_000 + retention + 2 * horizon));
+    assert!(
+        matches!(plane.cursor_of(flow), Cursor::Fresh),
+        "за удержанием память о закрытом разговоре обязана уйти"
+    );
+}
