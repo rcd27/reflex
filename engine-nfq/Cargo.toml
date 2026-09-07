@@ -20,3 +20,13 @@ reflex-instrument = { path = "../instrument" }
 reflex-engine = { path = "../engine" }
 reflex-core = { path = "../core" }
 reflex-linux = { path = "../linux", features = ["nfqueue", "conntrack"] }
+
+# ОБРАТНАЯ ЗАВИСИМОСТЬ, НО НЕ ЦИКЛ (задача 4′, «у двери появляется кормящий»): `reflex-runtime`
+# знает только `reflex-core` и ни одной строкой не знает об этом крейте — обратного ребра нет, а
+# значит нет и цикла. Нужна она ровно тесту `tests/unread_feeds_the_seam.rs`: только здесь есть и
+# настоящий разбор провода (`parse::framed`), и живой шов (`reflex_runtime::timed::on_grid`), а
+# показывать способность фреймворка на выдуманных байтах значило бы не доказать её вовсе.
+[dev-dependencies]
+reflex-runtime = { path = "../runtime" }
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt"] }
