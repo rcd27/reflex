@@ -65,6 +65,79 @@ impl Region for Conversation {}
 impl Region for Target {}
 impl Region for Nobody {}
 
+/// ОХВАТ: узкая область лежит ВНУТРИ широкой.
+///
+/// Порядок объявляется, а не выводится: «пакет внутри разговора» — факт предметный, и вывести его
+/// из устройства типов нельзя. Транзитивность тоже пишется рукой (`Packet: Within<Target>`) —
+/// баунд на транзитивном замыкании в системе типов не выражается, а спуск, перескакивающий
+/// уровень, существует в бою: план по ЦЕЛИ решает судьбу ПАКЕТА, не спрашивая разговора.
+pub trait Within<Wider: Region>: Region {}
+
+impl Within<Conversation> for Packet {}
+impl Within<Target> for Conversation {}
+impl Within<Target> for Packet {}
+
+/// СПУСК: слово широкой области, сказанное в узкой.
+///
+/// # Почему это закон, а не свободная функция
+///
+/// Спуск в дереве уже был — `engine::step::acted` (`Programme` цели → `Act` пакета) и рядом с ним
+/// литерал `Ordered::Sever => Act::Sever` (разговор → пакет). Две записи одного действия, и обе
+/// безымянные: ни та, ни другая не могла быть проверена на НАПРАВЛЕНИЕ.
+///
+/// Направление и есть предмет. Баунд `Into::Of: Within<Self::Of>` разрешает спуск только вниз по
+/// охвату: слово пакета не может стать словом цели. Иначе узкое звено объявляло бы план по цели,
+/// которую видит одним своим разговором, — и объявляло бы законно.
+///
+/// # ЧЕГО ЭТОТ ЗАКОН НЕ ГОВОРИТ
+///
+/// Он не говорит, КАКОЕ из спущенных слов победит. Ноль произведения — прекращение, а не охват:
+/// приказ разговора (`Ordered::Sever`) старше плана цели (`Programme::Mark`), потому что «больше
+/// не ведут» старше «ведут так-то». Область тут ни при чём, и выбирать между спущенными словами
+/// обязан тот, кто их сводит.
+///
+/// ```
+/// use reflex_core::word::{Conversation, Descends, Packet, Word};
+/// struct Order;
+/// impl Word for Order {
+///     type Of = Conversation;
+/// }
+/// struct Verdict;
+/// impl Word for Verdict {
+///     type Of = Packet;
+/// }
+/// // Разговор говорит пакету — вниз по охвату.
+/// impl Descends<Verdict> for Order {
+///     fn descends(self) -> Verdict {
+///         Verdict
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use reflex_core::word::{Conversation, Descends, Packet, Word};
+/// struct Order;
+/// impl Word for Order {
+///     type Of = Conversation;
+/// }
+/// struct Verdict;
+/// impl Word for Verdict {
+///     type Of = Packet;
+/// }
+/// // Пакет НЕ говорит разговору: охвата в эту сторону нет.
+/// impl Descends<Order> for Verdict {
+///     fn descends(self) -> Order {
+///         Order
+///     }
+/// }
+/// ```
+pub trait Descends<Into: Word>: Word
+where
+    Into::Of: Within<Self::Of>,
+{
+    fn descends(self) -> Into;
+}
+
 impl CanDefer for Conversation {}
 impl CanDefer for Target {}
 /// Сказать нечего — значит некому и держать: ждать можно сколько угодно.

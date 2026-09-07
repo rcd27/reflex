@@ -173,6 +173,20 @@ impl reflex_core::word::Word for Ordered {
     type Of = reflex_core::word::Conversation;
 }
 
+/// ПРИКАЗ РАЗГОВОРА, СКАЗАННЫЙ ПАКЕТУ — и `None` там, где приказа не было.
+///
+/// `Option<Act>`, а не `Act`: спуск обязан уметь промолчать. Отдай `Ordered::Nothing` какой-нибудь
+/// `Act::Pass`, и обычная жизнь разговора стала бы РЕШЕНИЕМ, перебивающим план цели, — то есть
+/// молчание оделось бы в слово и выиграло произведение.
+impl reflex_core::word::Descends<Option<Act>> for Ordered {
+    fn descends(self) -> Option<Act> {
+        match self {
+            Ordered::Sever => Some(Act::Sever),
+            Ordered::Nothing => None,
+        }
+    }
+}
+
 /// ПЕРЕИМЕНОВАНО ИЗ `Told` (05.09.2026): ОДНО СЛОВО НАЗЫВАЛО ДВА РАЗНЫХ ТИПА В ОДНОМ КРЕЙТЕ.
 ///
 /// Здесь — «рассказывали ли МЫ и когда»; в `row` — `Told<T> { Nothing, Told, Blind }`, то есть
@@ -259,6 +273,20 @@ pub enum Programme {
 /// ЦЕЛЬ: слово живёт до смены плана.
 impl reflex_core::word::Word for Programme {
     type Of = reflex_core::word::Target;
+}
+
+/// ПЛАН ЦЕЛИ, СКАЗАННЫЙ ПАКЕТУ, — через уровень охвата.
+///
+/// ОБРЫВА ЗДЕСЬ НЕТ, и это не пробел: обрыв адресуется разговору, а не цели. Прежде на его месте
+/// стояла строка `Programme::Sever => Act::Pass` с пометкой «ЗАГЛУШКА» — она молча подменяла
+/// наибольшую силу вмешательства наименьшей. Приказ на живое приходит своим спуском, выше.
+impl reflex_core::word::Descends<Act> for Programme {
+    fn descends(self) -> Act {
+        match self {
+            Programme::Pass => Act::Pass,
+            Programme::Mark(mark) => Act::Marked(mark),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

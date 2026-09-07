@@ -1,3 +1,5 @@
+use reflex_core::word::Descends;
+
 use crate::row::Answered;
 use crate::row::Naming;
 use crate::{
@@ -13,18 +15,12 @@ pub fn budget(programme: Programme) -> Span {
     }
 }
 
-/// ЧТО ПЛАН ЦЕЛИ ЗНАЧИТ ДЛЯ ПАКЕТА.
+/// ЧТО ПЛАН ЦЕЛИ ЗНАЧИТ ДЛЯ ПАКЕТА — имя спуска, а не второе его описание.
 ///
-/// ОБРЫВА ЗДЕСЬ БОЛЬШЕ НЕТ (#326). Прежде стояла строка `Programme::Sever => Act::Pass` с
-/// пометкой «ЗАГЛУШКА», и она была не ленью, а следом неверной сигнатуры: обрыв адресуется
-/// разговору, а не цели, и честного образа у него в этой точке не существовало. Заглушка при
-/// этом молча подменяла наибольшую силу вмешательства наименьшей — единственная такая строка во
-/// всей функции. Приказ на живое приходит другим путём: `Ordered::Sever` в состоянии разговора.
+/// Тело уехало в `impl Descends<Act> for Programme`: спуск обязан быть один и обязан быть проверен
+/// на направление. Имя остаётся ради потребителей, знающих движок этой функцией.
 pub fn acted(programme: Programme) -> Act {
-    match programme {
-        Programme::Pass => Act::Pass,
-        Programme::Mark(mark) => Act::Marked(mark),
-    }
+    reflex_core::word::Descends::descends(programme)
 }
 
 /// `look_up` зовётся ДВАЖДЫ за разговор, и это его смысл (#317): на открытии — с тем, что есть
@@ -46,7 +42,7 @@ where
         // мимо userspace под чужим именем.
         Cursor::Ended(_) if packet.opens => opened(look_up(packet), packet, now),
         Cursor::Ended(closed) => Stepped {
-            act: acted(look_up(packet).programme),
+            act: look_up(packet).programme.descends(),
             // ХВОСТ РАЗГОВОРА ТОЖЕ СЧИТАЕТСЯ, и это не мелочь. Ядро считает последний `ACK` и
             // ретрансмиссии наравне с прочим; перестань считать их мы — счета разойдутся ровно на
             // хвост, и `sighted` объявит это НАШЕЙ СЛЕПОТОЙ. Мы эти пакеты видели.
@@ -113,7 +109,7 @@ fn opened(plan: Plan, packet: &Packet, now: Tick) -> Stepped {
     Stepped {
         // На ОТКРЫТИИ приказа быть не может: разговор только что заведён, и адресовать ему ещё
         // никто ничего не успел.
-        act: acted(plan.programme),
+        act: plan.programme.descends(),
         cursor: Cursor::Running(run),
         sighting: Some(noted(
             &run,
@@ -207,12 +203,14 @@ where
     };
 
     Stepped {
-        // ПРИКАЗ СТАРШЕ ПЛАНА: план говорит, КАК вести разговор, приказ — что его больше не
-        // ведут. Оттого он проверяется первым.
-        act: match run.ordered {
-            Ordered::Sever => Act::Sever,
-            Ordered::Nothing => acted(plan.programme),
-        },
+        // ПРОИЗВЕДЕНИЕ С НУЛЁМ, И НОЛЬ — ПРЕКРАЩЕНИЕ, А НЕ ОХВАТ. План говорит, КАК вести
+        // разговор, приказ — что его больше не ведут; второе старше первого, хотя сказано в
+        // области УЖЕ. Оба слова спускаются к пакету одним законом, и промолчать умеет только
+        // приказ — оттого он и стоит слева.
+        act: run
+            .ordered
+            .descends()
+            .unwrap_or_else(|| plan.programme.descends()),
         cursor: match (run.ordered, over) {
             // ОБРЫВ КОНЧАЕТ РАЗГОВОР ТЕМ ЖЕ ШАГОМ, что и исполняется: иначе приказ висел бы
             // применённым и неисполненным, а следующий пакет оборвал бы заново.
