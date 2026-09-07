@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use reflex_core::step::{Step, StepExt};
 use reflex_core::DetectorEvent;
 use reflex_instrument::agreement::{Agreement, AgreementInstrument};
-use reflex_instrument::detect::SilenceInstrument;
+use reflex_instrument::detect::{Measured, SilenceInstrument, Watch};
+use reflex_instrument::distress::Distress;
 use reflex_instrument::drift::{HistoryInstrument, Shift};
 use reflex_instrument::wire::Seen;
 use smallvec::SmallVec;
@@ -124,4 +125,76 @@ fn an_instrument_without_a_region_speaks_sideways() {
 
     speaks_sideways::<AgreementInstrument, Agreement>();
     speaks_sideways::<HistoryInstrument, Shift>();
+}
+
+/// ПУСТОЕ СЛОВО ПРИ ИСТЁКШЕМ ПОРОГЕ РАЗБИРАЕТСЯ ЧЕТВЁРТОЙ ОСЬЮ, А НЕ ДОГАДКОЙ.
+///
+/// Прибор молчит на тике, отстоящем от последнего события дальше терпения, ровно по трём разным
+/// причинам: повода нет (байты пришли и никто не ждёт), уже пожаловались, разговор кончился.
+/// Лечение у каждой своё, а первые три оси показания у двух последних СОВПАДАЮТ БУКВА В БУКВУ —
+/// различает их одна четвёртая.
+#[test]
+fn the_watch_axis_tells_the_three_silences_apart() {
+    let start = Instant::now();
+    let at = |after_ms: u64| start + Duration::from_millis(after_ms);
+    let tick = |machine: SilenceInstrument,
+                after_ms: u64|
+     -> (SilenceInstrument, SmallVec<[Distress; 2]>, Option<Measured>) {
+        let (next, word, noted) = machine.step(DetectorEvent::Tick {
+            node: after_ms,
+            at: at(after_ms),
+        });
+        (next, word, noted)
+    };
+    let packet = |machine: SilenceInstrument, seen: Seen, after_ms: u64| -> SilenceInstrument {
+        let (next, _word, _noted) = machine.step(DetectorEvent::Packet {
+            input: seen,
+            at: at(after_ms),
+        });
+        next
+    };
+    // Часы заводит ПЕРВЫЙ ТИК, и только потом приходит наблюдение.
+    let wound = |seen: Seen| packet(tick(SilenceInstrument::after(PATIENCE), 0).0, seen, 10);
+
+    // ПОВОДА НЕТ: цель отдала байты, и никто не ждёт продолжения.
+    let (_, calm, no_reason) = tick(wound(Seen::Received { count: 4_096 }), 4_000);
+    let no_reason = no_reason.expect("часы заведены — мерить есть от чего");
+    assert!(calm.is_empty(), "молчащей беды здесь нет");
+    assert_eq!(
+        no_reason.watch,
+        Watch::Open,
+        "смотрим и готовы пожаловаться"
+    );
+
+    // УЖЕ ПОЖАЛОВАЛИСЬ: тик за порогом дал беду, следующий молчит по другой причине.
+    let (fired, complaint, _) = tick(wound(Seen::Sent { count: 100 }), 2_000);
+    assert!(
+        !complaint.is_empty(),
+        "порог истёк — беда обязана прозвучать"
+    );
+    let (_, silent, after_the_complaint) = tick(fired, 4_000);
+    assert!(silent.is_empty(), "второй раз о том же не жалуемся");
+    let after_the_complaint = after_the_complaint.expect("часы идут и после жалобы");
+
+    // РАЗГОВОР КОНЧЕН: молчание попрощавшегося уликой не является.
+    let closed = packet(
+        wound(Seen::Sent { count: 100 }),
+        Seen::Closed { by_client: false },
+        10,
+    );
+    let (_, mute, after_the_farewell) = tick(closed, 4_000);
+    assert!(mute.is_empty(), "цель попрощалась — молчание её не улика");
+    let after_the_farewell = after_the_farewell.expect("часы идут и после прощания");
+
+    // ТРИ ПОКАЗАНИЯ, И ДВА ИЗ НИХ РАСХОДЯТСЯ РОВНО ОДНОЙ ОСЬЮ.
+    assert_eq!(
+        after_the_complaint,
+        Measured {
+            watch: Watch::Fired,
+            ..after_the_farewell
+        },
+        "«уже сказали» и «разговор кончился» различает одна четвёртая ось"
+    );
+    assert_eq!(after_the_farewell.watch, Watch::Ended);
+    assert_ne!(no_reason.watch, after_the_complaint.watch);
 }
