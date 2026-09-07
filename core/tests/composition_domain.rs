@@ -82,7 +82,7 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     .group_by(
         |(k, _): &(u8, (SmallVec<[Count; 2]>, ()))| *k,
         || 0u32,
-        |_seen: &mut u32, (k, (said, ()))| Some((k, said)),
+        |_seen: &mut u32, (k, (said, _notes))| Some((k, said)),
         Keys::AtMost(10),
     )
     .collect()
@@ -160,7 +160,7 @@ async fn within_both_domains_nothing_is_forgotten() {
     .group_by(
         |(k, _): &(u8, (SmallVec<[Count; 2]>, ()))| *k,
         || 0u32,
-        |_seen: &mut u32, (k, (said, ()))| Some((k, said)),
+        |_seen: &mut u32, (k, (said, _notes))| Some((k, said)),
         Keys::AtMost(10),
     )
     .collect()

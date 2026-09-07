@@ -77,7 +77,7 @@ fn new_table() -> FlowTable<RstCounter> {
 fn process_creates_detector_on_first_packet() {
     let mut table = new_table();
     let seg = make_segment(12345, 443, TcpFlags::SYN);
-    let (said, ()) = table.process(&seg, Instant::now());
+    let (said, _notes) = table.process(&seg, Instant::now());
     assert!(said.is_empty());
     assert_eq!(table.flow_count(), 1);
 }
@@ -113,7 +113,7 @@ fn process_normalizes_server_response_to_same_flow() {
         ttl: 53,
         payload: vec![],
     };
-    let (said, ()) = table.process(&rst, Instant::now());
+    let (said, _notes) = table.process(&rst, Instant::now());
     assert_eq!(said.as_slice(), &[Count(1)]);
     assert_eq!(table.flow_count(), 1);
 }
@@ -142,7 +142,7 @@ fn tick_visits_all_flows() {
     let spoken = table.tick(Instant::now());
     assert_eq!(spoken.len(), 2, "тик обязан дойти до обоих потоков");
     assert!(
-        spoken.iter().all(|(_, (said, ()))| said.is_empty()),
+        spoken.iter().all(|(_, (said, _notes))| said.is_empty()),
         "счётчик сбросов на тике не говорит: {spoken:?}"
     );
     // Flows should still be present after tick
@@ -212,7 +212,7 @@ fn normalize_reverses_high_port_source() {
         payload: vec![],
     };
 
-    let (said, ()) = table.process(&seg_reverse, Instant::now());
+    let (said, _notes) = table.process(&seg_reverse, Instant::now());
     assert_eq!(said.as_slice(), &[Count(1)]);
     // Both directions should be in the same flow entry
     assert_eq!(table.flow_count(), 1);

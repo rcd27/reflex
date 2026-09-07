@@ -70,7 +70,7 @@ async fn the_grid_advances_on_managed_time() {
     let mut nodes: Vec<Node> = Vec::new();
     while nodes.len() < 3 {
         match tokio::time::timeout(Duration::from_secs(3600), stream.next()).await {
-            Ok(Some((said, ()))) => nodes.extend(said),
+            Ok(Some((said, _notes))) => nodes.extend(said),
             other => panic!(
                 "под управляемым временем сетка обязана идти, а поток дал {other:?} \
                  (набрано узлов: {nodes:?})"

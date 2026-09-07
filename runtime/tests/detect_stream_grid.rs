@@ -99,7 +99,7 @@ async fn late_ticks_come_out_as_a_sequence_not_a_repeated_number() {
     let mut nodes: Vec<Node> = Vec::new();
     while nodes.len() < 3 {
         match tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
-            Ok(Some((said, ()))) => nodes.extend(said),
+            Ok(Some((said, _notes))) => nodes.extend(said),
             other => panic!("поток обязан отдать накопленные узлы, а дал {other:?}"),
         }
     }
@@ -131,7 +131,7 @@ async fn a_silent_source_wakes_the_stream_by_itself() {
     let mut got = None;
     while got.is_none() {
         match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
-            Ok(Some((said, ()))) => got = said.first().copied(),
+            Ok(Some((said, _notes))) => got = said.first().copied(),
             other => panic!("поток обязан проснуться сам на третьем узле, а дал {other:?}"),
         }
     }

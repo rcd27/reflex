@@ -95,7 +95,7 @@ async fn detector_v2_rst_injection_detected() {
     let signals: Vec<RstSignal> = futures::stream::iter(packets)
         .detect(detector)
         // Уплощение — забота потребителя: подъём выпускает пару и слова не разбирает.
-        .flat_map(|(said, ())| futures::stream::iter(said))
+        .flat_map(|(said, _notes)| futures::stream::iter(said))
         .collect()
         .await;
 
@@ -117,7 +117,7 @@ async fn detector_v2_no_signal_for_normal_rst() {
     let signals: Vec<RstSignal> = futures::stream::iter(packets)
         .detect(detector)
         // Уплощение — забота потребителя: подъём выпускает пару и слова не разбирает.
-        .flat_map(|(said, ())| futures::stream::iter(said))
+        .flat_map(|(said, _notes)| futures::stream::iter(said))
         .collect()
         .await;
 
@@ -135,7 +135,7 @@ async fn detector_v2_rst_without_syn_ack_ignored() {
     let signals: Vec<RstSignal> = futures::stream::iter(packets)
         .detect(detector)
         // Уплощение — забота потребителя: подъём выпускает пару и слова не разбирает.
-        .flat_map(|(said, ())| futures::stream::iter(said))
+        .flat_map(|(said, _notes)| futures::stream::iter(said))
         .collect()
         .await;
 
