@@ -278,6 +278,11 @@ pub trait StepExt: Step + Sized {
     {
         crate::detector::Changes::new(self)
     }
+
+    /// Снять показания звена. См. [`crate::detector::Muted`].
+    fn mute(self) -> crate::detector::Muted<Self> {
+        crate::detector::Muted::new(self)
+    }
 }
 
 impl<S: Step> StepExt for S {}

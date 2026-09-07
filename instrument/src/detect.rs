@@ -233,6 +233,18 @@ impl SilenceInstrument {
     }
 }
 
+/// ЧЕМ МЕРИЛИ — величины, по которым принято решение.
+///
+/// Три оси, и все три несущие: сколько молчали, сколько байт отдала цель и ждёт ли человек прямо
+/// сейчас. Молчание есть беда, только если его КТО-ТО ЖДЁТ; без третьей оси показание не
+/// объясняет решения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Measured {
+    pub since_ms: u32,
+    pub bytes: u32,
+    pub awaiting: bool,
+}
+
 impl reflex_core::step::Step for SilenceInstrument {
     type From = reflex_core::DetectorEvent<Seen>;
 
@@ -243,10 +255,17 @@ impl reflex_core::step::Step for SilenceInstrument {
     /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ.
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    /// `None` — мерить не от чего: наблюдений ещё не было.
+    type Notes = Option<Measured>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::From) -> (Self, Self::To, Option<Measured>) {
+        // ТРИ ВЕЛИЧИНЫ, КОТОРЫМИ РЕШЕНИЕ УЖЕ ПРИНИМАЕТСЯ НИЖЕ, взятые ДО этого шага: тик,
+        // заводящий отсчёт впервые (`last: None`), решает по тому же `self`, что стоял тут ещё до
+        // события, — и показание обязано назвать те же значения, а не пересчитанные заново.
+        let before_last = self.last;
+        let before_bytes = self.bytes;
+        let before_awaiting = self.awaiting;
+        let at = event.at();
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // Тишина меряется по ответу ЦЕЛИ: сколько напросил человек, к делу не относится.
@@ -335,7 +354,12 @@ impl reflex_core::step::Step for SilenceInstrument {
             // (см. выше) — Opaque на это не влияет и состояние не трогает.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
         };
-        (state, signals, ())
+        let noted = before_last.map(|last| Measured {
+            since_ms: at.duration_since(last).as_millis() as u32,
+            bytes: before_bytes,
+            awaiting: before_awaiting,
+        });
+        (state, signals, noted)
     }
 }
 

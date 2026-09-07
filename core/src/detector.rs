@@ -518,3 +518,30 @@ impl<D> By<D> {
         Self { inner, by }
     }
 }
+
+/// ЗВЕНО, ЧЬИ ПОКАЗАНИЯ СНЯТЫ.
+///
+/// Забывание показаний есть ФУНКТОР: тождественный на объектах и на словах. Оттого он и выразим —
+/// показания не читаются никем, и снять их значит не изменить ни одного решения. Читаемое
+/// показание сделало бы этот комбинатор ложью, и потому его существование есть проверка закона, а
+/// не удобство.
+pub struct Muted<D> {
+    inner: D,
+}
+
+impl<D> Muted<D> {
+    pub(crate) fn new(inner: D) -> Self {
+        Self { inner }
+    }
+}
+
+impl<D: crate::step::Step> crate::step::Step for Muted<D> {
+    type From = D::From;
+    type To = D::To;
+    type Notes = ();
+
+    fn step(self, input: Self::From) -> (Self, Self::To, ()) {
+        let (stepped, said, _) = self.inner.step(input);
+        (Self { inner: stepped }, said, ())
+    }
+}
