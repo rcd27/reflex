@@ -22,4 +22,3 @@ pub use stream::{
     DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
 };
 pub use subject::Subject;
-pub use timed::timed;

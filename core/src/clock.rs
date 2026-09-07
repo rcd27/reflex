@@ -67,7 +67,15 @@ pub trait Ticks: Clock {
     /// Поток бесконечен: часы не кончаются оттого, что кончился трафик. Заканчивает его
     /// потребитель, роняя приёмник, — и это единственный способ остановить часы, потому что
     /// единственный, который выражает намерение «мне больше не надо».
-    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin;
+    ///
+    /// # Поток берёт у часов КОПИЮ, а не заимствование
+    ///
+    /// `use<Self>` объявляет точный список захваченного: только тип часов, без времени жизни
+    /// `&self`. Это правда о контракте, а не подгонка под компилятор — часы отдаются потребителю
+    /// ЗНАЧЕНИЕМ (см. докблок модуля), и поток из них строится тем же способом: снятием копии.
+    /// Реализация, которой понадобилось бы заимствование `&self` внутри потока, обязана сломаться
+    /// здесь же, у объявления, а не у потребителя двумя крейтами дальше.
+    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin + use<Self>;
 }
 
 /// ЧАСЫ, БУДЯЩИЕ ПОТОК ИСПОЛНЕНИЯ — для тех, у кого рантайма нет.
@@ -170,7 +178,7 @@ impl Beats for TestClock {
 }
 
 impl Ticks for TestClock {
-    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin {
+    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin + use<> {
         Box::pin(futures::stream::unfold(
             (self.clone(), 0u64),
             move |(clock, handed)| async move {

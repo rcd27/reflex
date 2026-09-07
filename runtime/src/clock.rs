@@ -58,7 +58,7 @@ impl Ticks for SystemClock {
     ///
     /// Цена обращения: после долгой заминки потребитель получит очередь наступивших узлов вместо
     /// одного. Взамен два способа ожидания перестают мерить разное, а сетка не уезжает.
-    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin {
+    fn ticks(&self, every: Duration) -> impl Stream<Item = Instant> + Unpin + use<> {
         let began = Instant::now();
         Box::pin(futures::stream::unfold(
             None::<u64>,
