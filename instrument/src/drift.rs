@@ -70,12 +70,6 @@ pub enum Shift {
     Shifted { deviation: i64, spread: f64 },
 }
 
-/// СРАВНЕНИЕ С РЯДОМ НИКОМУ НЕ СКАЗАНО: предмет его — прогоны, а не живой разговор, и ждёт его
-/// человек, читающий отчёт.
-impl reflex_core::word::Word for Shift {
-    type Of = reflex_core::word::Nobody;
-}
-
 /// Сравнить свежее покрытие с рядом ПО ТОЙ ЖЕ технике и профилю.
 ///
 /// Сравнивается доля, а не абсолют: знаменатель (живых целей) меняется от прогона к прогону, и
@@ -127,22 +121,23 @@ impl reflex_core::step::Step for HistoryInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<(Vec<Point>, Point)>;
 
+    /// СКАЗАТЬ СОСЕДУ НЕЧЕГО: предмет сравнения — прогоны, а не живой разговор, и области у него
+    /// нет. Ждёт его человек, читающий отчёт, — а он стоит за границей цепочки.
+    type To = ();
+
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[Shift; 2]>;
+    type Notes = smallvec::SmallVec<[Shift; 2]>;
 
-    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
-
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading], ())
+                (self, (), smallvec::smallvec![reading])
             }
-            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Tick { .. } => (self, (), smallvec::SmallVec::new()),
             // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Opaque { .. } => (self, (), smallvec::SmallVec::new()),
         }
     }
 }

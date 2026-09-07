@@ -11,8 +11,11 @@ use std::time::{Duration, Instant};
 
 use reflex_core::step::{Step, StepExt};
 use reflex_core::DetectorEvent;
+use reflex_instrument::agreement::{Agreement, AgreementInstrument};
 use reflex_instrument::detect::SilenceInstrument;
+use reflex_instrument::drift::{HistoryInstrument, Shift};
 use reflex_instrument::wire::Seen;
+use smallvec::SmallVec;
 
 const PATIENCE: Duration = Duration::from_millis(1_500);
 
@@ -101,4 +104,24 @@ fn forgetting_the_notes_changes_no_word() {
         with_notes, without,
         "показания не читаются никем — значит снятие их не меняет ни одного слова"
     );
+}
+
+/// НЕТ ОБЛАСТИ — ПОКАЗАНИЕ, И ЭТО СТОИТ В ПОДПИСИ, А НЕ В ПРОЗЕ.
+///
+/// Сверка приказа с исполнением и сравнение прогона с рядом не адресованы ни пакету, ни разговору,
+/// ни цели: их ждёт человек, читающий отчёт, — а он стоит ЗА границей цепочки, там же, куда
+/// уходят показания. Значит соседу по стрелке эти приборы говорят пустое слово, и вся их речь идёт
+/// вбок.
+///
+/// Проверяет компилятор: границы `To = ()` и `Notes = SmallVec<[S; 2]>` утверждают ровно это.
+#[test]
+fn an_instrument_without_a_region_speaks_sideways() {
+    fn speaks_sideways<M, S>()
+    where
+        M: Step<To = (), Notes = SmallVec<[S; 2]>>,
+    {
+    }
+
+    speaks_sideways::<AgreementInstrument, Agreement>();
+    speaks_sideways::<HistoryInstrument, Shift>();
 }

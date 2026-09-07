@@ -18,37 +18,34 @@ impl Word for Reroute {
     type Of = Tunnel;
 }
 
+/// РАВЕНСТВО АДРЕСОВ ПРОВЕРЯЕТ КОМПИЛЯТОР, А НЕ СТРОКА.
+///
+/// Имя типа, полученное [`std::any::type_name`], формата не гарантирует: оно годится для показа
+/// человеку и не годится для утверждения о равенстве. Граница `Of = A::Of` утверждает то же самое
+/// и проверяется до запуска.
+fn same_address<A: Word, B: Word<Of = A::Of>>() {}
+
 #[test]
 fn nothing_to_say_is_a_word_addressed_to_nobody() {
-    // «Сказать нечего» видно на подписи, а не после запуска: терминальный объект категории.
-    fn addressed<W: Word>() -> &'static str {
-        core::any::type_name::<W::Of>()
-    }
-    assert_eq!(
-        addressed::<()>(),
-        "reflex_core::word::Nobody",
-        "пустое слово обязано быть адресовано никому"
-    );
+    // «Сказать нечего» видно на подписи, а не после запуска: терминальный объект категории. Само
+    // «никому» снаружи неназываемо — и это проверяется `compile_fail`-доктестом фундамента, а не
+    // здесь: провал сборки тестом не выражается. Выразимо тут другое — что адрес у всех пустых
+    // слов один.
+    same_address::<(), ((), ())>();
+    same_address::<(), Option<()>>();
+    same_address::<(), SmallVec<[(); 2]>>();
 }
 
 #[test]
 fn a_collection_of_words_keeps_their_address() {
     // Пачка слов адресована туда же, куда каждое: сложение не меняет адресата.
-    fn same_address<A: Word, B: Word<Of = A::Of>>() {}
     same_address::<Reroute, SmallVec<[Reroute; 2]>>();
 }
 
 #[test]
 fn a_pair_of_words_is_a_word_of_the_same_region() {
     // Пара слов есть слово той же области — и это инстанцируется, а не описывается.
-    fn addressed<W: Word>() -> &'static str {
-        core::any::type_name::<W::Of>()
-    }
-    assert_eq!(
-        addressed::<(Reroute, Reroute)>(),
-        addressed::<Reroute>(),
-        "пара адресована туда же, куда её половины"
-    );
+    same_address::<Reroute, (Reroute, Reroute)>();
 }
 
 #[test]

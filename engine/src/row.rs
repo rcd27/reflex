@@ -359,22 +359,24 @@ impl reflex_core::step::Step for BlindnessInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<Sight>;
 
+    /// СКАЗАТЬ СОСЕДУ НЕЧЕГО, И ЭТО РЕШЕНИЕ, А НЕ НАСЛЕДСТВО ПУСТОЙ НАЧИНКИ. Прибор говорит о
+    /// НАС в момент наблюдения — имеем ли мы право судить о цели, — и у такого суждения области
+    /// нет: ни пакет, ни разговор, ни цель его не ждут.
+    type To = ();
+
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является — прибор высказывается, когда есть
     /// что сказать.
-    type To = smallvec::SmallVec<[Told<()>; 2]>;
+    type Notes = smallvec::SmallVec<[Told<()>; 2]>;
 
-    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
-
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading], ())
+                (self, (), smallvec::smallvec![reading])
             }
-            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Tick { .. } => (self, (), smallvec::SmallVec::new()),
             // Прибор мерит наше право говорить о цели; непонятое им не является и молчит.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Opaque { .. } => (self, (), smallvec::SmallVec::new()),
         }
     }
 }

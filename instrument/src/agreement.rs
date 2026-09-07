@@ -20,11 +20,6 @@ pub enum Agreement {
     NoWitness { ours: u64 },
 }
 
-/// СВЕРКА НИКОМУ НЕ СКАЗАНА: она копится в отчёт, и ни пакет, ни разговор, ни цель её не ждут.
-impl reflex_core::word::Word for Agreement {
-    type Of = reflex_core::word::Nobody;
-}
-
 /// ПАСПОРТ СВИДЕТЕЛЬСТВА ПРИМЕНЕНИЯ — проекция `model/law/Instrument.tla`.
 ///
 /// Прибор о НАС: он отвечает на вопрос «наш приказ исполнился?» — и отвечает ЯДРОМ, а не
@@ -50,22 +45,23 @@ impl reflex_core::step::Step for AgreementInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<(u64, Option<u64>)>;
 
+    /// СКАЗАТЬ СОСЕДУ НЕЧЕГО: у сверки нет области. Ни пакет, ни разговор, ни цель её не ждут —
+    /// ждёт её человек, читающий отчёт, а он стоит за границей цепочки, куда уходят показания.
+    type To = ();
+
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[Agreement; 2]>;
+    type Notes = smallvec::SmallVec<[Agreement; 2]>;
 
-    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
-
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading], ())
+                (self, (), smallvec::smallvec![reading])
             }
-            reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Tick { .. } => (self, (), smallvec::SmallVec::new()),
             // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
+            reflex_core::DetectorEvent::Opaque { .. } => (self, (), smallvec::SmallVec::new()),
         }
     }
 }
