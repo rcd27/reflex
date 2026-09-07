@@ -122,10 +122,10 @@ where
     type Notes = (A::Notes, B::Notes);
 
     fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
-        let (first, mut signals, said) = self.0.step(event.clone());
-        let (second, more, also) = self.1.step(event);
+        let (first, mut signals, noted) = self.0.step(event.clone());
+        let (second, more, also_noted) = self.1.step(event);
         signals.extend(more);
-        (Both(first, second), signals, (said, also))
+        (Both(first, second), signals, (noted, also_noted))
     }
 }
 
@@ -172,14 +172,14 @@ where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     F: Fn(&Wide) -> Option<I>,
     S: crate::word::Word,
-    // ЗАФИЛЬТРОВАННЫЙ ВХОД НЕ ЗОВЁТ ВНУТРЕННЕЕ ЗВЕНО — показанию неоткуда взяться, и `Default`
-    // называет то самое «нечего сказать», каким уже для всякого звена этого дерева стоит `()`.
-    D::Notes: Default,
 {
     type From = DetectorEvent<Wide>;
     type To = SmallVec<[S; 2]>;
-    /// Сужение меняет слово, не показания: показания идут сквозь без изменений.
-    type Notes = D::Notes;
+    /// `Option`, А НЕ ГОЛОЕ `D::Notes`: зафильтрованный вход не зовёт внутреннее звено, и
+    /// `None` записывает ровно это — звено не шагало, показания не существует. Значение по
+    /// умолчанию сказало бы другое: звено шагало и намерило пустоту, — а это разные факты,
+    /// неотличимые для типа с единицей, но различные для мира, который эта пара описывает.
+    type Notes = Option<D::Notes>;
 
     fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, f, wide } = self;
@@ -197,14 +197,10 @@ where
                             wide,
                         },
                         signals,
-                        notes,
+                        Some(notes),
                     )
                 }
-                None => (
-                    Self { inner, f, wide },
-                    SmallVec::new(),
-                    D::Notes::default(),
-                ),
+                None => (Self { inner, f, wide }, SmallVec::new(), None),
             },
             DetectorEvent::Tick { node, at } => {
                 let (stepped, signals, notes) = inner.step(DetectorEvent::Tick { node, at });
@@ -215,7 +211,7 @@ where
                         wide,
                     },
                     signals,
-                    notes,
+                    Some(notes),
                 )
             }
             // НЕПОНЯТОЕ НЕ НЕСЁТ `Wide` — сужать нечего, сужение фильтрует значение, а не факт
@@ -229,7 +225,7 @@ where
                         wide,
                     },
                     signals,
-                    notes,
+                    Some(notes),
                 )
             }
         }

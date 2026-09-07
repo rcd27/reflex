@@ -55,7 +55,7 @@ impl reflex_core::step::Step for RstInstrument {
     /// а `Option` в сигнале сделал бы «всё в порядке» отдельным сообщением в ленте.
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    /// Показаний этот прибор не заводит — задача 6, не эта.
+    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     /// # ПОДПИСЬ ТСПУ УЗНАЁТСЯ ДВУМЯ ПРИЗНАКАМИ РАЗОМ
@@ -243,7 +243,7 @@ impl reflex_core::step::Step for SilenceInstrument {
     /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ.
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    /// Показаний этот прибор не заводит — задача 6, не эта.
+    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {
@@ -469,7 +469,7 @@ impl reflex_core::step::Step for ThrottledInstrument {
     type From = reflex_core::DetectorEvent<SeenTcp>;
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    /// Показаний этот прибор не заводит — задача 6, не эта.
+    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {
@@ -680,7 +680,7 @@ impl reflex_core::step::Step for ChokedInstrument {
     type From = reflex_core::DetectorEvent<Seen>;
     type To = smallvec::SmallVec<[Distress; 2]>;
 
-    /// Показаний этот прибор не заводит — задача 6, не эта.
+    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {

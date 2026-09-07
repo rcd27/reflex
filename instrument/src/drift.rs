@@ -131,7 +131,7 @@ impl reflex_core::step::Step for HistoryInstrument {
     /// сказать, и «ничего не случилось» не занимает места в ленте.
     type To = smallvec::SmallVec<[Shift; 2]>;
 
-    /// Показаний этот прибор не заводит — задача 6, не эта.
+    /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {

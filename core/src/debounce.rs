@@ -44,7 +44,7 @@ impl<T> Debounce<T> {
 impl<T: crate::word::Word> Step for Debounce<T> {
     type From = DetectorEvent<T>;
     type To = SmallVec<[T; 2]>;
-    /// Показаний этот оператор не заводит — задача 6, не эта.
+    /// Показаний этот оператор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {

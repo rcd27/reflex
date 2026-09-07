@@ -288,7 +288,7 @@ impl RecordAssembler {
 impl Step for RecordAssembler {
     type From = DetectorEvent<RecordChunk>;
     type To = SmallVec<[Assembly; 2]>;
-    /// Показаний этот оператор не заводит — задача 6, не эта.
+    /// Показаний этот оператор не заводит: он говорит, что увидел, и не говорит, чем мерил.
     type Notes = ();
 
     fn step(self, event: Self::From) -> (Self, Self::To, ()) {

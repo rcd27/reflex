@@ -97,9 +97,9 @@ where
     /// состояние второго звена — оно обнулялось бы на каждом входе, и цепочка выглядела бы
     /// исправной ровно до второго вызова.
     fn step(self, input: A::From) -> (Self, B::To, (A::Notes, B::Notes)) {
-        let (first, middle, said) = self.0.step(input);
-        let (second, out, also) = self.1.step(middle);
-        (Then(first, second), out, (said, also))
+        let (first, middle, noted) = self.0.step(input);
+        let (second, out, also_noted) = self.1.step(middle);
+        (Then(first, second), out, (noted, also_noted))
     }
 }
 
