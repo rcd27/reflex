@@ -169,3 +169,57 @@ fn identity_is_neutral_on_both_sides() {
     needs_the_lot(Id::<Beat>::new().then(Adding(0)));
     needs_the_lot(Adding(0).then(Id::<Beat>::new()));
 }
+
+/// МОЛЧАЩИЙ НАБЛЮДАТЕЛЬ: слушает ту же букву, слова не говорит, копит показание.
+///
+/// `To = ()` — не заглушка, а подпись: `()` адресовано `Nobody`, и звену с таким словом сказать
+/// некому по построению. Счёт при этом уходит показанием, а не словом, — соседям он не адресован.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Watching(u32);
+
+impl Step for Watching {
+    type From = Beat;
+    type To = ();
+    type Notes = u32;
+
+    fn step(self, _input: Beat) -> (Self, (), u32) {
+        let seen = self.0 + 1;
+        (Watching(seen), (), seen)
+    }
+}
+
+/// СОСЕДСТВО НЕЙТРАЛЬНО В СЛОВАХ: приставленный наблюдатель не меняет НИ ОДНОГО выхода.
+///
+/// Это и есть закон, ради которого `Alongside` отделён от [`reflex_core::detector::Both`]: у
+/// `Both` слова обоих звеньев сливаются произведением и потому видны соседу, здесь же слово одно
+/// — левого. Наблюдение, способное изменить сказанное, наблюдением не является.
+#[test]
+fn watching_alongside_changes_no_word() {
+    for input in world() {
+        let bare = run(Adding(0), &input);
+        let watched = run(Adding(0).alongside(Watching(0)), &input);
+
+        assert_eq!(
+            bare, watched,
+            "приставленный наблюдатель изменил слово на входе {input:?}"
+        );
+    }
+}
+
+/// ПОКАЗАНИЯ ИДУТ ПРОИЗВЕДЕНИЕМ, И СОСТОЯНИЕ НАБЛЮДАТЕЛЯ ЖИВЁТ.
+///
+/// Второе проверяется тремя буквами не случайно: наблюдатель, пересобираемый из начального на
+/// каждом входе, отдавал бы единицу всякий раз и выглядел бы исправным ровно до второй буквы.
+#[test]
+fn watching_alongside_keeps_its_own_count() {
+    let mut chain = Adding(0).alongside(Watching(0));
+    let mut counts = Vec::new();
+
+    for byte in [1u8, 2, 3] {
+        let (next, _word, ((), seen)) = chain.step(Beat(byte));
+        chain = next;
+        counts.push(seen);
+    }
+
+    assert_eq!(counts, vec![1, 2, 3], "счёт наблюдателя обязан расти");
+}
