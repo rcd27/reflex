@@ -151,6 +151,18 @@ struct Tally {
     opaque: u32,
 }
 
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl reflex_core::word::Region for Bench {}
+
+/// Счёт стенда адресован стенду: ни пакету, ни разговору, ни цели он ничего не говорит.
+impl reflex_core::word::Word for Tally {
+    type Of = Bench;
+}
+
 impl Step for Tally {
     type From = DetectorEvent<Letter>;
     type To = Tally;

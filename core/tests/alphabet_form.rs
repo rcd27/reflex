@@ -8,19 +8,51 @@
 //! ВЫРАЗИМА и ВЫВОДИМА: `E0207` не кусается, вложение собирается без аннотаций.
 use reflex_core::detector::DetectorEvent;
 use reflex_core::step::{Step, StepExt};
+use reflex_core::word::{Region, Word};
 use smallvec::SmallVec;
 use std::time::Instant;
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// ПОКАЗАНИЕ СТЕНДА — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Sig(u8);
+
+impl Word for Sig {
+    type Of = Bench;
+}
+
+/// ПЕРЕИМЕНОВАННОЕ ПОКАЗАНИЕ. Переименование адресата не меняет — область та же.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Loud(u32);
+
+impl Word for Loud {
+    type Of = Bench;
+}
+
+/// СЛОВО СТЕНДА НА ВХОДЕ: буква алфавита несёт наблюдение, и оно тоже адресное.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Beat(u8);
+
+impl Word for Beat {
+    type Of = Bench;
+}
 
 #[derive(Clone, Copy)]
 struct Rst;
 
 impl Step for Rst {
-    type From = DetectorEvent<u8>;
-    type To = SmallVec<[u8; 2]>;
+    type From = DetectorEvent<Beat>;
+    type To = SmallVec<[Sig; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
-            DetectorEvent::Packet { input: 1, .. } => (self, SmallVec::from_slice(&[7])),
+            DetectorEvent::Packet { input: Beat(1), .. } => (self, SmallVec::from_slice(&[Sig(7)])),
             DetectorEvent::Packet { .. } => (self, SmallVec::new()),
             DetectorEvent::Tick { .. } => (self, SmallVec::new()),
             DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
@@ -28,9 +60,9 @@ impl Step for Rst {
     }
 }
 
-fn packet(input: u8) -> DetectorEvent<u8> {
+fn packet(input: u8) -> DetectorEvent<Beat> {
     DetectorEvent::Packet {
-        input,
+        input: Beat(input),
         at: Instant::now(),
     }
 }
@@ -38,17 +70,20 @@ fn packet(input: u8) -> DetectorEvent<u8> {
 #[test]
 fn оба_слушателя_говорят_в_один_словарь() {
     let (_, told) = Rst.and(Rst).step(packet(1));
-    assert_eq!(&told[..], &[7, 7], "событие дошло до обоих");
+    assert_eq!(&told[..], &[Sig(7), Sig(7)], "событие дошло до обоих");
 }
 
 #[test]
 fn вложение_комбинаторов_выводится_без_единой_аннотации() {
     // САМОЕ ХРУПКОЕ ДЛЯ ВЫВОДА: комбинатор над комбинатором. Если форма выражена неверно,
     // падает именно здесь, а не на одиночном звене.
-    let (_, told) = Rst.and(Rst).rmap(|s: u8| s as u32 * 10).step(packet(1));
+    let (_, told) = Rst
+        .and(Rst)
+        .rmap(|Sig(s)| Loud(s as u32 * 10))
+        .step(packet(1));
     assert_eq!(
         &told[..],
-        &[70u32, 70],
+        &[Loud(70), Loud(70)],
         "переименование прошло сквозь сложение"
     );
 }
@@ -58,6 +93,6 @@ fn тождество_нейтрально_и_в_этой_форме() {
     // Второй закон категории на алфавите детектора: `f ∘ id` даёт то же, что `f`.
     use reflex_core::step::Id;
     let (_, прямо) = Rst.step(packet(1));
-    let (_, через_тождество) = Id::<DetectorEvent<u8>>::new().then(Rst).step(packet(1));
+    let (_, через_тождество) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
     assert_eq!(прямо, через_тождество, "тождество ничего не изменило");
 }

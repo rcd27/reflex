@@ -148,6 +148,18 @@ pub const fn observe(connected: bool, delivery: Delivery) -> Observed {
     }
 }
 
+/// КРУГ ДОПУСКАЕМЫХ СУДЕБ — с именем, а не голой ссылкой на срез.
+///
+/// Имя заведено затем, что адрес объявляет ЗНАЧЕНИЕ, а ссылка на статический срез значением
+/// прибора не является: она кусок общей памяти, и сказать за неё «кому это сказано» нельзя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admits(pub &'static [Fate]);
+
+/// СКАЗАНО РАЗГОВОРУ: круг сужается концом ПЛЕЧА — того самого соединения, которое кончилось.
+impl reflex_core::word::Word for Admits {
+    type Of = reflex_core::word::Conversation;
+}
+
 /// ПАСПОРТ ПАССИВНОГО НАБЛЮДЕНИЯ СУДЬБЫ — проекция `model/law/Instrument.tla`.
 ///
 /// САМОЕ СИЛЬНОЕ РАЗЛИЧЕНИЕ ПАРКА И САМОЕ НЕПОДКЛЮЧЁННОЕ. Показание не называет судьбу, оно
@@ -169,13 +181,13 @@ impl reflex_core::step::Step for ObservedInstrument {
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[&'static [Fate]; 2]>;
+    type To = smallvec::SmallVec<[Admits; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);
-                (self, smallvec::smallvec![reading])
+                (self, smallvec::smallvec![Admits(reading)])
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
             // Прибор мерит РАЗОБРАННЫЙ домен; непонятое им не является и молчит так же, как тик.
@@ -185,7 +197,7 @@ impl reflex_core::step::Step for ObservedInstrument {
 }
 
 impl crate::Instrument for ObservedInstrument {
-    type Signal = &'static [Fate];
+    type Signal = Admits;
 
     const INSTRUMENT: &'static str = "observed";
 

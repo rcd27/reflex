@@ -9,8 +9,16 @@ use std::time::{Duration, Instant};
 
 use futures::{stream, StreamExt};
 use reflex_core::step::{Step, StepExt};
+use reflex_core::word::{Region, Word};
 use reflex_core::{DetectorEvent, ReflexExt};
 use smallvec::{smallvec, SmallVec};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
 
 /// Вход: адрес плюс что случилось. Свой тип, чтобы тест не зависел от словаря `TcpSegment`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +38,10 @@ enum Signal {
     SawRst,
     WentQuiet,
     SawByte,
+}
+
+impl Word for Signal {
+    type Of = Bench;
 }
 
 /// Детектор сброса: сигналит на каждый RST, времени не знает.
@@ -337,6 +349,10 @@ struct Counting(u8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Counted(u8);
+
+impl Word for Counted {
+    type Of = Bench;
+}
 
 impl Step for Counting {
     type From = DetectorEvent<Event>;

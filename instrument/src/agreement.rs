@@ -20,6 +20,11 @@ pub enum Agreement {
     NoWitness { ours: u64 },
 }
 
+/// СВЕРКА НИКОМУ НЕ СКАЗАНА: она копится в отчёт, и ни пакет, ни разговор, ни цель её не ждут.
+impl reflex_core::word::Word for Agreement {
+    type Of = reflex_core::word::Nobody;
+}
+
 /// ПАСПОРТ СВИДЕТЕЛЬСТВА ПРИМЕНЕНИЯ — проекция `model/law/Instrument.tla`.
 ///
 /// Прибор о НАС: он отвечает на вопрос «наш приказ исполнился?» — и отвечает ЯДРОМ, а не

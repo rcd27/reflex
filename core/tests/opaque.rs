@@ -10,7 +10,24 @@ use std::time::Instant;
 use reflex_core::detector::DetectorEvent;
 use reflex_core::parse::Unread;
 use reflex_core::step::Step;
+use reflex_core::word::{Region, Word};
 use smallvec::SmallVec;
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЧЁТ СТЕНДА: разобранное и непонятое. С именем, а не голой парой чисел — адрес объявляет
+/// значение, а числа молчат.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Tally(u32, u32);
+
+impl Word for Tally {
+    type Of = Bench;
+}
 
 /// Звено, считающее непонятое. Ровно то, ради чего буква заводится.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -21,7 +38,7 @@ struct Counting {
 
 impl Step for Counting {
     type From = DetectorEvent<u8>;
-    type To = SmallVec<[(u32, u32); 2]>;
+    type To = SmallVec<[Tally; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         let next = match event {
@@ -35,7 +52,7 @@ impl Step for Counting {
             },
             DetectorEvent::Tick { .. } => self,
         };
-        (next, SmallVec::from_slice(&[(next.seen, next.unread)]))
+        (next, SmallVec::from_slice(&[Tally(next.seen, next.unread)]))
     }
 }
 
@@ -71,7 +88,7 @@ fn the_reason_is_a_value_whose_completeness_the_compiler_guards() {
     // ПРИЧИНА — ЗНАЧЕНИЕ, А НЕ ФЛАГ. «Не наш протокол» и «обрезан» лечатся по-разному:
     // первое законно и вечно, второе означает потерю и может чиниться.
     let (_, told) = Counting::default().step(opaque(Unread::Truncated));
-    assert_eq!(&told[..], &[(0, 1)]);
+    assert_eq!(&told[..], &[Tally(0, 1)]);
 
     // ПОЛНОТУ СТОРОЖИТ КОМПИЛЯТОР — не длина литерала (она равна трём всегда и не упадёт
     // ни от какой четвёртой причины), а исчерпывающий `match` БЕЗ `_`: заведи кто-нибудь

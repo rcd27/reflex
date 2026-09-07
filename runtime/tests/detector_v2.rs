@@ -21,6 +21,18 @@ struct RstSignal {
     ttl_delta: i16,
 }
 
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl reflex_core::word::Region for Bench {}
+
+/// Показание стенда адресовано стенду: своей области у него в домене нет.
+impl reflex_core::word::Word for RstSignal {
+    type Of = Bench;
+}
+
 impl Step for SimpleRstDetector {
     type From = DetectorEvent<TcpSegment>;
     type To = SmallVec<[RstSignal; 2]>;

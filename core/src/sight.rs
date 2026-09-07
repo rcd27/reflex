@@ -65,6 +65,12 @@ pub enum Told<T> {
     Blind,
 }
 
+/// «НЕ ЗНАЮ» АДРЕСОВАНО ТУДА ЖЕ, КУДА БЫЛА БЫ САМА ВЕЛИЧИНА: третье состояние говорит о ней, а не
+/// заводит себе нового адресата.
+impl<T: crate::word::Word> crate::word::Word for Told<T> {
+    type Of = T::Of;
+}
+
 /// Пустой счёт — нейтраль для [`added`].
 pub fn no_counts() -> Counted {
     Counted {

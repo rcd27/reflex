@@ -114,6 +114,18 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
+    /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА: у счёта свидетеля адресата в домене нет, и стенд объявляет свой.
+    struct Bench;
+    impl crate::word::Region for Bench {}
+
+    /// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Count(usize);
+
+    impl crate::word::Word for Count {
+        type Of = Bench;
+    }
+
     const WINDOW: Duration = Duration::from_secs(3);
     const IDLE: Duration = Duration::from_secs(6); // 2 окна простоя → поток мёртв
 
@@ -131,13 +143,13 @@ mod tests {
 
         impl Step for Counter {
             type From = DetectorEvent<UdpDatagram>;
-            type To = SmallVec<[usize; 2]>;
+            type To = SmallVec<[Count; 2]>;
 
             fn step(self, ev: Self::From) -> (Self, Self::To) {
                 match ev {
                     DetectorEvent::Packet { .. } => {
                         let next = self.0 + 1;
-                        (Counter(next), SmallVec::from_slice(&[next]))
+                        (Counter(next), SmallVec::from_slice(&[Count(next)]))
                     }
                     DetectorEvent::Tick { .. } => (self, SmallVec::new()),
                     // Таблица кормит детектор только `Packet` и `Tick` (см. `process`/`tick`
@@ -161,9 +173,9 @@ mod tests {
         let mut table = FlowTable::new(IDLE, |_flow| Counter(0));
 
         // ДВА РАЗНЫХ ФЛОУ СЧИТАЮТСЯ ПОРОЗНЬ: состояние принадлежит соединению, а не таблице.
-        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[1]);
-        assert_eq!(table.process(&datagram(2222), now).as_slice(), &[1]);
-        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[2]);
+        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[Count(1)]);
+        assert_eq!(table.process(&datagram(2222), now).as_slice(), &[Count(1)]);
+        assert_eq!(table.process(&datagram(1111), now).as_slice(), &[Count(2)]);
         assert_eq!(table.flow_count(), 2);
     }
 

@@ -22,13 +22,25 @@
 
 use reflex_core::detector::DetectorEvent;
 use reflex_core::step::{Step, StepExt};
+use reflex_core::word::{Region, Word};
 use smallvec::{smallvec, SmallVec};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
 
 /// Вход: что случилось на проводе. Роль «мирового» словаря в этих тестах.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Rst,
     Byte,
+}
+
+impl Word for Kind {
+    type Of = Bench;
 }
 
 /// Вход домена: то же событие, но с доменными полями вокруг.
@@ -44,11 +56,27 @@ enum Distress {
     Rst,
 }
 
+impl Word for Distress {
+    type Of = Bench;
+}
+
 /// Сигнал домена — с полем, которого прибор знать не может.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Trouble {
     flow: u8,
     distress: Distress,
+}
+
+impl Word for Trouble {
+    type Of = Bench;
+}
+
+/// НОМЕР ФЛОУ КАК СЛОВО — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Flow(u8);
+
+impl Word for Flow {
+    type Of = Bench;
 }
 
 /// Прибор: сигналит на каждый сброс. Знает только мировой словарь.
@@ -138,11 +166,11 @@ fn rmap_composes() {
 
     let twice = run(
         Rst.rmap(|distress| Trouble { flow: 7, distress })
-            .rmap(|trouble| trouble.flow),
+            .rmap(|trouble| Flow(trouble.flow)),
         events(),
     );
 
-    let once = run(Rst.rmap(|_| 7u8), events());
+    let once = run(Rst.rmap(|_| Flow(7)), events());
 
     assert_eq!(twice, once);
 }
@@ -525,9 +553,9 @@ fn attribution_changes_nothing_but_the_name() {
 /// Без него `rmap id = id` держался бы даром на детекторе, который всегда молчит.
 #[test]
 fn the_chain_actually_signals() {
-    let with_rst = run(Rst.rmap(|_| 1u8), vec![packet(Kind::Rst)]);
-    let without = run(Rst.rmap(|_| 1u8), vec![packet(Kind::Byte)]);
+    let with_rst = run(Rst.rmap(|_| Flow(1)), vec![packet(Kind::Rst)]);
+    let without = run(Rst.rmap(|_| Flow(1)), vec![packet(Kind::Byte)]);
 
-    assert_eq!(with_rst, vec![1]);
-    assert_eq!(without, Vec::<u8>::new());
+    assert_eq!(with_rst, vec![Flow(1)]);
+    assert_eq!(without, Vec::<Flow>::new());
 }

@@ -64,6 +64,15 @@ impl<T> DetectorEvent<T> {
     }
 }
 
+/// БУКВА ВХОДА АДРЕСОВАНА ТУДА ЖЕ, КУДА НАБЛЮДЕНИЕ, КОТОРОЕ ОНА НЕСЁТ.
+///
+/// Нужно затем, что тождество на стадии есть морфизм этой категории: выключенное настройкой звено
+/// обязано выражаться в той же алгебре, а его выход — та же буква, что и вход. Адресата тождество
+/// не меняет, и потому берётся адресат наблюдения.
+impl<T: crate::word::Word> crate::word::Word for DetectorEvent<T> {
+    type Of = T::Of;
+}
+
 /// ЧТО КРАЙ СНЯЛ С ПРОВОДА, ДО ШВА: разобранное наблюдение либо причина, по которой его нет.
 ///
 /// # Почему не `Result<T, Unread>`
@@ -101,6 +110,7 @@ where
     A: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     B: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     I: Clone,
+    S: crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[S; 2]>;
@@ -123,6 +133,8 @@ impl<D, F, I, S, Renamed> crate::step::Step for RMap<D, F>
 where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     F: Fn(S) -> Renamed,
+    // ПЕРЕИМЕНОВАНИЕ НЕ ОСВОБОЖДАЕТ ОТ АДРЕСА: новое имя обязано сказать, кому оно сказано.
+    Renamed: crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Renamed; 2]>;
@@ -150,6 +162,7 @@ impl<D, F, Wide, I, S> crate::step::Step for LMap<D, F, Wide>
 where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
     F: Fn(&Wide) -> Option<I>,
+    S: crate::word::Word,
 {
     type From = DetectorEvent<Wide>;
     type To = SmallVec<[S; 2]>;
@@ -241,6 +254,8 @@ where
     I: Clone,
     Pick: Fn(&I) -> Ctx,
     Dress: Fn(Option<&Ctx>, S) -> Option<Dressed>,
+    // ОДЕТОЕ СЛОВО — тоже слово: контекст меняет наряд, а не адресата.
+    Dressed: crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Dressed; 2]>;
@@ -279,7 +294,7 @@ where
 impl<D, I, S> crate::step::Step for Changes<D, S>
 where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
-    S: PartialEq + Clone,
+    S: PartialEq + Clone + crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[S; 2]>;
@@ -322,6 +337,7 @@ pub struct Timed<D> {
 impl<D, I, S> crate::step::Step for Timed<D>
 where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    S: crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[(Instant, S); 2]>;
@@ -393,6 +409,11 @@ pub struct Told<S> {
     pub signal: S,
 }
 
+/// ИМЯ АВТОРА АДРЕСАТА НЕ МЕНЯЕТ: подпись говорит, КТО сказал, а не КОМУ.
+impl<S: crate::word::Word> crate::word::Word for Told<S> {
+    type Of = S::Of;
+}
+
 /// Приписать показаниям автора. См. [`Told`].
 pub struct By<D> {
     inner: D,
@@ -402,6 +423,7 @@ pub struct By<D> {
 impl<D, I, S> crate::step::Step for By<D>
 where
     D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    S: crate::word::Word,
 {
     type From = DetectorEvent<I>;
     type To = SmallVec<[Told<S>; 2]>;

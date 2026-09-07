@@ -7,12 +7,28 @@
 use reflex_core::debounce::Debounce;
 use reflex_core::detector::DetectorEvent;
 use reflex_core::step::Step;
+use reflex_core::word::{Region, Word};
 use std::time::{Duration, Instant};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СОБЫТИЕ СТЕНДА — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Beat(i32);
+
+impl Word for Beat {
+    type Of = Bench;
+}
 
 const WINDOW: Duration = Duration::from_millis(300);
 
 /// Прогнать последовательность событий и собрать всё, что вышло.
-fn run(events: Vec<DetectorEvent<i32>>) -> Vec<i32> {
+fn run(events: Vec<DetectorEvent<Beat>>) -> Vec<Beat> {
     events
         .into_iter()
         .fold(
@@ -26,14 +42,14 @@ fn run(events: Vec<DetectorEvent<i32>>) -> Vec<i32> {
         .1
 }
 
-fn packet(start: Instant, millis: u64, what: i32) -> DetectorEvent<i32> {
+fn packet(start: Instant, millis: u64, what: i32) -> DetectorEvent<Beat> {
     DetectorEvent::Packet {
-        input: what,
+        input: Beat(what),
         at: start + Duration::from_millis(millis),
     }
 }
 
-fn tick(start: Instant, millis: u64) -> DetectorEvent<i32> {
+fn tick(start: Instant, millis: u64) -> DetectorEvent<Beat> {
     DetectorEvent::Tick {
         node: millis,
         at: start + Duration::from_millis(millis),
@@ -53,7 +69,7 @@ fn rapid_repeats_collapse_into_the_last_one() {
             tick(t, 200),
             tick(t, 400),
         ]),
-        vec![3],
+        vec![Beat(3)],
         "выпускается последнее, и только когда поток затих"
     );
 }
@@ -70,7 +86,7 @@ fn spaced_events_both_pass() {
             packet(t, 500, 2),
             tick(t, 900),
         ]),
-        vec![1, 2]
+        vec![Beat(1), Beat(2)]
     );
 }
 
@@ -90,7 +106,7 @@ fn the_window_is_measured_from_the_last_event_not_the_first() {
             tick(t, 400),
             tick(t, 600),
         ]),
-        vec![2],
+        vec![Beat(2)],
         "второе событие отодвинуло окно: до 550 мс выпускать нечего"
     );
 }
@@ -100,7 +116,7 @@ fn the_window_is_measured_from_the_last_event_not_the_first() {
 fn a_tick_with_nothing_held_says_nothing() {
     let t = Instant::now();
 
-    assert_eq!(run(vec![tick(t, 100), tick(t, 900)]), Vec::<i32>::new());
+    assert_eq!(run(vec![tick(t, 100), tick(t, 900)]), Vec::<Beat>::new());
 }
 
 /// ВЫПУЩЕННОЕ НЕ ВЫПУСКАЕТСЯ ДВАЖДЫ — сколько бы тиков ни пришло следом.
@@ -115,7 +131,7 @@ fn what_was_released_is_not_released_again() {
             tick(t, 700),
             tick(t, 1_000),
         ]),
-        vec![1]
+        vec![Beat(1)]
     );
 }
 
@@ -130,12 +146,12 @@ fn release_happens_at_the_first_node_after_the_window_not_exactly_at_its_end() {
 
     assert_eq!(
         run(vec![packet(t, 0, 1), tick(t, 250)]),
-        Vec::<i32>::new(),
+        Vec::<Beat>::new(),
         "узел до конца окна ещё ничего не выпускает"
     );
     assert_eq!(
         run(vec![packet(t, 0, 1), tick(t, 250), tick(t, 350)]),
-        vec![1],
+        vec![Beat(1)],
         "выпуск на первом узле ПОСЛЕ конца окна"
     );
 }

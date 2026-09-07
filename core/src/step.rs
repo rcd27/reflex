@@ -23,8 +23,43 @@
 pub trait Step: Sized {
     /// Стадия-источник.
     type From;
-    /// Стадия-приёмник.
-    type To;
+    /// СЛОВО: адресовано области и потребляется соседом.
+    ///
+    /// Баунд несущий: значение без объявленного адреса в позицию слова не встаёт. Без него закон
+    /// остаётся уговором, а нарушают уговор первыми тесты — им адресат кажется неважным.
+    ///
+    /// ```
+    /// use reflex_core::step::Step;
+    /// use reflex_core::word::{Region, Word};
+    /// struct Bench;
+    /// impl Region for Bench {}
+    /// struct Beat(u8);
+    /// impl Word for Beat {
+    ///     type Of = Bench;
+    /// }
+    /// struct Echo;
+    /// impl Step for Echo {
+    ///     type From = Beat;
+    ///     type To = Beat;
+    ///     fn step(self, input: Beat) -> (Self, Beat) {
+    ///         (self, input)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use reflex_core::step::Step;
+    /// struct Naked;
+    /// // Число ничего никому не говорит: адреса у него нет, и словом оно быть не может.
+    /// impl Step for Naked {
+    ///     type From = u8;
+    ///     type To = u8;
+    ///     fn step(self, input: u8) -> (Self, u8) {
+    ///         (self, input)
+    ///     }
+    /// }
+    /// ```
+    type To: crate::word::Word;
 
     /// Один шаг: вход → выход, и НОВОЕ состояние машины.
     fn step(self, input: Self::From) -> (Self, Self::To);
@@ -81,7 +116,9 @@ impl<T> Default for Id<T> {
     }
 }
 
-impl<T> Step for Id<T> {
+// БАУНД НА РЕАЛИЗАЦИИ, А НЕ НА СТРУКТУРЕ: `PhantomData` адреса не требует, и требовать его там
+// значило бы навесить ограничение, ложное по построению.
+impl<T: crate::word::Word> Step for Id<T> {
     type From = T;
     type To = T;
 

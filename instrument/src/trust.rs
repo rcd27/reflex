@@ -36,6 +36,12 @@ pub enum Trust {
     Established,
 }
 
+/// СКАЗАНО РАЗГОВОРУ: доверие устанавливается ровно раз за рукопожатие, и второй раз о том же
+/// разговоре говорить нечего.
+impl reflex_core::word::Word for Trust {
+    type Of = reflex_core::word::Conversation;
+}
+
 /// ПАСПОРТ ПРИБОРА ДОВЕРИЯ.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TrustInstrument {

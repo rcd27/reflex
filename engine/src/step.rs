@@ -459,9 +459,29 @@ impl<'a> Advancing<'a> {
     }
 }
 
+/// ОТВЕТ ПАКЕТУ: что с ним сделать и что при этом увидено.
+///
+/// # Почему у пары есть имя
+///
+/// Адрес объявляет ЗНАЧЕНИЕ, а у голого кортежа объявить его можно только через обе половины
+/// сразу — и тогда пришлось бы сказать, кому адресовано наблюдение. Оно не адресовано никому: его
+/// читает лента, а не сосед по стрелке. Ответ же адресован пакету целиком, и это утверждение
+/// верно без оговорок: ядро держит пакет, пока ответ не дан, и обе половины уезжают на нём.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Answer {
+    pub act: Act,
+    /// ЧТО УВИДЕНО ПО ДОРОГЕ. `Option`, а не пустой вектор: «отмечать нечего» — одно слово.
+    pub noted: Option<Noted>,
+}
+
+/// ПАКЕТ В РУКАХ ЯДРА: ответ обязан быть дан на этом же шаге, и ждать здесь нельзя физически.
+impl reflex_core::word::Word for Answer {
+    type Of = reflex_core::word::Packet;
+}
+
 impl<'a> reflex_core::step::Step for Advancing<'a> {
     type From = (Plan, Packet<'a>, Tick);
-    type To = (Act, Option<Noted>);
+    type To = Answer;
 
     fn step(self, (plan, packet, now): Self::From) -> (Self, Self::To) {
         let stepped = step(
@@ -474,7 +494,10 @@ impl<'a> reflex_core::step::Step for Advancing<'a> {
         );
         (
             Advancing::new(stepped.cursor),
-            (stepped.act, stepped.sighting),
+            Answer {
+                act: stepped.act,
+                noted: stepped.sighting,
+            },
         )
     }
 }

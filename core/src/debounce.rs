@@ -40,7 +40,8 @@ impl<T> Debounce<T> {
     }
 }
 
-impl<T> Step for Debounce<T> {
+/// ЗАДЕРЖКА АДРЕСА НЕ МЕНЯЕТ: наружу выходит то же событие, тому же адресату, только позже.
+impl<T: crate::word::Word> Step for Debounce<T> {
     type From = DetectorEvent<T>;
     type To = SmallVec<[T; 2]>;
 

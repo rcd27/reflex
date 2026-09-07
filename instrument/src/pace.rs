@@ -4,6 +4,19 @@
 
 use std::time::Duration;
 
+/// СКОЛЬКО ЧЕЛОВЕК ЖДАЛ ЗАПРОШЕННОГО — с именем, а не голой длительностью.
+///
+/// Имя заведено затем, что адрес объявляет ЗНАЧЕНИЕ, а длительность сама по себе не говорит ни о
+/// ком: «шесть секунд» есть число, пока не сказано, чего именно шесть секунд ждали.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Waited(pub Duration);
+
+/// СКАЗАНО РАЗГОВОРУ: ожидание меряется внутри него — прибор не видит промежутков между
+/// соединениями и прямо говорит об этом в паспорте.
+impl reflex_core::word::Word for Waited {
+    type Of = reflex_core::word::Conversation;
+}
+
 /// ПАСПОРТ ТЕМПА СЕРВИРОВКИ — проекция `model/law/Instrument.tla`.
 ///
 /// Прибор о ЧЕЛОВЕКЕ: он меряет не «сколько байт», а «сколько человек ждал ЗАПРОШЕННОГО». Разница
@@ -12,10 +25,10 @@ use std::time::Duration;
 pub struct PaceInstrument;
 
 impl PaceInstrument {
-    fn read(&self, waited: &Duration, _now_ms: u64) -> Option<Duration> {
+    fn read(&self, waited: &Duration, _now_ms: u64) -> Option<Waited> {
         match waited.is_zero() {
             true => None,
-            false => Some(*waited),
+            false => Some(Waited(*waited)),
         }
     }
 }
@@ -26,7 +39,7 @@ impl reflex_core::step::Step for PaceInstrument {
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[Duration; 2]>;
+    type To = smallvec::SmallVec<[Waited; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
@@ -42,7 +55,7 @@ impl reflex_core::step::Step for PaceInstrument {
 }
 
 impl crate::Instrument for PaceInstrument {
-    type Signal = Duration;
+    type Signal = Waited;
 
     const INSTRUMENT: &'static str = "pace";
 

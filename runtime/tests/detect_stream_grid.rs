@@ -19,9 +19,25 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use reflex_core::step::Step;
+use reflex_core::word::{Region, Word};
 use reflex_core::DetectorEvent;
 use reflex_runtime::ReflexRuntimeExt;
 use smallvec::SmallVec;
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// НОМЕР УЗЛА КАК СЛОВО — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Node(u64);
+
+impl Word for Node {
+    type Of = Bench;
+}
 
 /// Прибор, не читающий пакетов вовсе: единственное, что ему интересно, — номер узла тика.
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,11 +45,11 @@ struct NodeLog;
 
 impl Step for NodeLog {
     type From = DetectorEvent<u8>;
-    type To = SmallVec<[u64; 2]>;
+    type To = SmallVec<[Node; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
-            DetectorEvent::Tick { node, .. } => (self, SmallVec::from_slice(&[node])),
+            DetectorEvent::Tick { node, .. } => (self, SmallVec::from_slice(&[Node(node)])),
             DetectorEvent::Packet { .. } => (self, SmallVec::new()),
             DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
         }
@@ -47,11 +63,13 @@ struct SpeaksOnThirdNode;
 
 impl Step for SpeaksOnThirdNode {
     type From = DetectorEvent<u8>;
-    type To = SmallVec<[u64; 2]>;
+    type To = SmallVec<[Node; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
-            DetectorEvent::Tick { node, .. } if node == 3 => (self, SmallVec::from_slice(&[node])),
+            DetectorEvent::Tick { node, .. } if node == 3 => {
+                (self, SmallVec::from_slice(&[Node(node)]))
+            }
             DetectorEvent::Tick { .. } => (self, SmallVec::new()),
             DetectorEvent::Packet { .. } => (self, SmallVec::new()),
             DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
@@ -84,7 +102,7 @@ async fn late_ticks_come_out_as_a_sequence_not_a_repeated_number() {
 
     assert_eq!(
         nodes,
-        vec![1, 2, 3],
+        vec![Node(1), Node(2), Node(3)],
         "просроченные узлы обязаны идти подряд от 1, а не повторять один номер"
     );
 }
@@ -108,7 +126,11 @@ async fn a_silent_source_wakes_the_stream_by_itself() {
         .expect("поток обязан проснуться сам на третьем узле, а не по внешнему таймауту");
     let elapsed = began.elapsed();
 
-    assert_eq!(got, Some(3), "показание обязано прийти именно с узла 3");
+    assert_eq!(
+        got,
+        Some(Node(3)),
+        "показание обязано прийти именно с узла 3"
+    );
     assert!(
         elapsed < Duration::from_millis(500),
         "узел 3 при шаге {step:?} пришёл через {elapsed:?} — поток спал и был разбужен чужим \

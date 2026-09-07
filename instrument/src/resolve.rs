@@ -42,6 +42,12 @@ pub enum Resolved {
     Erased { name: String },
 }
 
+/// СКАЗАНО ЦЕЛИ: чем разрешилось её имя. Разговора здесь ещё нет — по этому адресу его только
+/// собираются заводить.
+impl reflex_core::word::Word for Resolved {
+    type Of = reflex_core::word::Target;
+}
+
 /// ПАСПОРТ ПРИБОРА РАЗРЕШЕНИЯ ИМЕНИ.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolutionInstrument;

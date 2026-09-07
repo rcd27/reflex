@@ -2,7 +2,23 @@ use reflex_core::detector::DetectorEvent;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::step::Step;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
+use reflex_core::word::{Region, Word};
 use smallvec::SmallVec;
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЧЁТ СБРОСОВ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Count(u32);
+
+impl Word for Count {
+    type Of = Bench;
+}
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -14,14 +30,14 @@ struct RstCounter {
 
 impl Step for RstCounter {
     type From = DetectorEvent<TcpSegment>;
-    type To = SmallVec<[u32; 2]>;
+    type To = SmallVec<[Count; 2]>;
 
     fn step(mut self, event: Self::From) -> (Self, Self::To) {
         let mut signals = SmallVec::new();
         if let DetectorEvent::Packet { input: ref seg, .. } = event {
             if seg.flags.is_rst() {
                 self.count += 1;
-                signals.push(self.count);
+                signals.push(Count(self.count));
             }
         }
         (self, signals)
@@ -70,9 +86,9 @@ fn process_reuses_detector_for_same_flow() {
     let mut table = new_table();
     let rst = make_segment(12345, 443, TcpFlags::RST);
     let signals1 = table.process(&rst, Instant::now());
-    assert_eq!(signals1.as_slice(), &[1]);
+    assert_eq!(signals1.as_slice(), &[Count(1)]);
     let signals2 = table.process(&rst, Instant::now());
-    assert_eq!(signals2.as_slice(), &[2]);
+    assert_eq!(signals2.as_slice(), &[Count(2)]);
     assert_eq!(table.flow_count(), 1);
 }
 
@@ -97,7 +113,7 @@ fn process_normalizes_server_response_to_same_flow() {
         payload: vec![],
     };
     let signals = table.process(&rst, Instant::now());
-    assert_eq!(signals.as_slice(), &[1]);
+    assert_eq!(signals.as_slice(), &[Count(1)]);
     assert_eq!(table.flow_count(), 1);
 }
 
@@ -191,7 +207,7 @@ fn normalize_reverses_high_port_source() {
     };
 
     let signals = table.process(&seg_reverse, Instant::now());
-    assert_eq!(signals.as_slice(), &[1]);
+    assert_eq!(signals.as_slice(), &[Count(1)]);
     // Both directions should be in the same flow entry
     assert_eq!(table.flow_count(), 1);
 }

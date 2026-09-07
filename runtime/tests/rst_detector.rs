@@ -24,6 +24,18 @@ struct RstSignal {
     rst_count: u8,
 }
 
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl reflex_core::word::Region for Bench {}
+
+/// Показание стенда адресовано стенду: своей области у него в домене нет.
+impl reflex_core::word::Word for RstSignal {
+    type Of = Bench;
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Assessment {
     Disruption { domain: String, confidence: f32 },

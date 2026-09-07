@@ -25,6 +25,23 @@
 //! `composition_carries_the_state_of_both_links` в тестах шага.
 
 use reflex_core::step::{Id, Step, StepExt};
+use reflex_core::word::{Region, Word};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — первый такой заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЛОВО СТЕНДА. Голое число словом быть не может: адрес объявляет ЗНАЧЕНИЕ, а число ничего никому
+/// не говорит — и объявить за него область стенд не вправе, потому что число принадлежит не ему.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Beat(u8);
+
+impl Word for Beat {
+    type Of = Bench;
+}
 
 /// МИР КОНЕЧЕН: все непустые последовательности длины ≤ 3 из трёх значений — 39 входов.
 ///
@@ -51,11 +68,11 @@ fn world() -> Vec<Vec<u8>> {
 }
 
 /// ПРОГНАТЬ ЦЕПОЧКУ ПО ВХОДАМ И СОБРАТЬ ВЫХОДЫ. Наблюдательное равенство меряется этим.
-fn run<M: Step<From = u8, To = u8>>(machine: M, input: &[u8]) -> Vec<u8> {
+fn run<M: Step<From = Beat, To = Beat>>(machine: M, input: &[u8]) -> Vec<Beat> {
     let mut machine = machine;
     let mut told = Vec::with_capacity(input.len());
     for byte in input {
-        let (next, out) = machine.step(*byte);
+        let (next, out) = machine.step(Beat(*byte));
         machine = next;
         told.push(out);
     }
@@ -67,12 +84,12 @@ fn run<M: Step<From = u8, To = u8>>(machine: M, input: &[u8]) -> Vec<u8> {
 struct Adding(u8);
 
 impl Step for Adding {
-    type From = u8;
-    type To = u8;
+    type From = Beat;
+    type To = Beat;
 
-    fn step(self, input: u8) -> (Self, u8) {
-        let sum = self.0.wrapping_add(input);
-        (Adding(sum), sum)
+    fn step(self, input: Beat) -> (Self, Beat) {
+        let sum = self.0.wrapping_add(input.0);
+        (Adding(sum), Beat(sum))
     }
 }
 
@@ -84,12 +101,12 @@ impl Step for Adding {
 struct Doubling(u8);
 
 impl Step for Doubling {
-    type From = u8;
-    type To = u8;
+    type From = Beat;
+    type To = Beat;
 
-    fn step(self, input: u8) -> (Self, u8) {
-        let out = input.wrapping_mul(2).wrapping_add(self.0);
-        (Doubling(input), out)
+    fn step(self, input: Beat) -> (Self, Beat) {
+        let out = input.0.wrapping_mul(2).wrapping_add(self.0);
+        (Doubling(input.0), Beat(out))
     }
 }
 
@@ -98,12 +115,12 @@ impl Step for Doubling {
 struct Maxing(u8);
 
 impl Step for Maxing {
-    type From = u8;
-    type To = u8;
+    type From = Beat;
+    type To = Beat;
 
-    fn step(self, input: u8) -> (Self, u8) {
-        let top = self.0.max(input);
-        (Maxing(top), top)
+    fn step(self, input: Beat) -> (Self, Beat) {
+        let top = self.0.max(input.0);
+        (Maxing(top), Beat(top))
     }
 }
 
@@ -144,6 +161,6 @@ fn identity_is_neutral_on_both_sides() {
     // обедняет соседа. Проверяется употреблением: не соберись эти строки — тест красный.
     fn needs_the_lot<M: Step + Copy + Clone + core::fmt::Debug + PartialEq + Eq>(_: M) {}
     needs_the_lot(Adding(0));
-    needs_the_lot(Id::<u8>::new().then(Adding(0)));
-    needs_the_lot(Adding(0).then(Id::<u8>::new()));
+    needs_the_lot(Id::<Beat>::new().then(Adding(0)));
+    needs_the_lot(Adding(0).then(Id::<Beat>::new()));
 }

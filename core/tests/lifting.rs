@@ -7,8 +7,24 @@
 
 use reflex_core::detector::DetectorEvent;
 use reflex_core::step::{Step, StepExt};
+use reflex_core::word::{Region, Word};
 use smallvec::{smallvec, SmallVec};
 use std::time::Instant;
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Count(u32);
+
+impl Word for Count {
+    type Of = Bench;
+}
 
 /// СЧЁТЧИК ПАКЕТОВ: отдаёт порядковый номер и молчит на тике.
 ///
@@ -19,11 +35,11 @@ struct Counting(u32);
 
 impl Step for Counting {
     type From = DetectorEvent<u8>;
-    type To = SmallVec<[u32; 2]>;
+    type To = SmallVec<[Count; 2]>;
 
-    fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[u32; 2]>) {
+    fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[Count; 2]>) {
         match event {
-            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![self.0]),
+            DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![Count(self.0)]),
             DetectorEvent::Tick { .. } => (self, SmallVec::new()),
             // Счётчик считает разобранные пакеты; непонятое ему не пакет и не тик — молчит так же.
             DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
@@ -36,12 +52,12 @@ impl Step for Counting {
 struct Summing(u32);
 
 impl Step for Summing {
-    type From = SmallVec<[u32; 2]>;
-    type To = u32;
+    type From = SmallVec<[Count; 2]>;
+    type To = Count;
 
-    fn step(self, input: SmallVec<[u32; 2]>) -> (Self, u32) {
-        let total = self.0 + input.iter().sum::<u32>();
-        (Summing(total), total)
+    fn step(self, input: SmallVec<[Count; 2]>) -> (Self, Count) {
+        let total = self.0 + input.iter().map(|Count(n)| n).sum::<u32>();
+        (Summing(total), Count(total))
     }
 }
 
@@ -67,7 +83,11 @@ fn detector_enters_the_step_category() {
         at: Instant::now(),
     });
 
-    assert_eq!(first, 0, "первый пакет: номер 0, сумма 0");
-    assert_eq!(second, 1, "второй: номер 1, сумма 0+1");
-    assert_eq!(on_tick, 1, "тик сигнала не дал — сумма не сдвинулась");
+    assert_eq!(first, Count(0), "первый пакет: номер 0, сумма 0");
+    assert_eq!(second, Count(1), "второй: номер 1, сумма 0+1");
+    assert_eq!(
+        on_tick,
+        Count(1),
+        "тик сигнала не дал — сумма не сдвинулась"
+    );
 }

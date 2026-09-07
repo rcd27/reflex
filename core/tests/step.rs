@@ -10,6 +10,30 @@
 
 use futures::StreamExt;
 use reflex_core::step::{Step, StepExt};
+use reflex_core::word::{Region, Word};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЛОВО НУМЕРАТОРА: номер и само слово.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Numbered(u32, &'static str);
+
+impl Word for Numbered {
+    type Of = Bench;
+}
+
+/// СЛОВО РЕКОРДСМЕНА: номер и рекорд длины.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Record(u32, usize);
+
+impl Word for Record {
+    type Of = Bench;
+}
 
 /// НУМЕРАТОР: каждому входу даёт его порядковый номер.
 ///
@@ -20,10 +44,10 @@ struct Numbering(u32);
 
 impl Step for Numbering {
     type From = &'static str;
-    type To = (u32, &'static str);
+    type To = Numbered;
 
-    fn step(self, word: &'static str) -> (Self, (u32, &'static str)) {
-        (Numbering(self.0 + 1), (self.0, word))
+    fn step(self, word: &'static str) -> (Self, Numbered) {
+        (Numbering(self.0 + 1), Numbered(self.0, word))
     }
 }
 
@@ -32,15 +56,15 @@ impl Step for Numbering {
 struct Longest(usize);
 
 impl Step for Longest {
-    type From = (u32, &'static str);
-    type To = (u32, usize);
+    type From = Numbered;
+    type To = Record;
 
-    fn step(self, (number, word): (u32, &'static str)) -> (Self, (u32, usize)) {
+    fn step(self, Numbered(number, word): Numbered) -> (Self, Record) {
         let seen = match word.len() > self.0 {
             true => word.len(),
             false => self.0,
         };
-        (Longest(seen), (number, seen))
+        (Longest(seen), Record(number, seen))
     }
 }
 
@@ -56,10 +80,10 @@ fn composition_carries_the_state_of_both_links() {
     let (chain, first) = chain.step("aa");
     let (_chain, second) = chain.step("bbbb");
 
-    assert_eq!(first, (0, 2), "первое слово: номер 0, рекорд 2");
+    assert_eq!(first, Record(0, 2), "первое слово: номер 0, рекорд 2");
     assert_eq!(
         second,
-        (1, 4),
+        Record(1, 4),
         "второе слово: номер 1 (нумератор помнит), рекорд 4"
     );
 }
@@ -71,7 +95,7 @@ fn composition_carries_the_state_of_both_links() {
 /// отвечал бы нулём. Оба симптома видны только с третьего элемента, поэтому их здесь три.
 #[tokio::test]
 async fn lifting_carries_one_machine_through_the_whole_stream() {
-    let seen: Vec<(u32, usize)> = Numbering(0)
+    let seen: Vec<Record> = Numbering(0)
         .then(Longest(0))
         .over(futures::stream::iter(["aa", "bbbb", "c"]))
         .collect()
@@ -79,7 +103,7 @@ async fn lifting_carries_one_machine_through_the_whole_stream() {
 
     assert_eq!(
         seen,
-        vec![(0, 2), (1, 4), (2, 4)],
+        vec![Record(0, 2), Record(1, 4), Record(2, 4)],
         "рекорд не падает на коротком слове, номера растут — машина в потоке одна"
     );
 }

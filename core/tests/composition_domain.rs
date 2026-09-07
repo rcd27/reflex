@@ -9,8 +9,24 @@
 use futures::{stream, StreamExt};
 use reflex_core::step::Step;
 use reflex_core::stream::{Keys, Lifetime};
+use reflex_core::word::{Region, Word};
 use reflex_core::{DetectorEvent, ReflexExt};
 use smallvec::{smallvec, SmallVec};
+
+/// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
+///
+/// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
+/// область снаружи, и стенд — законный заводящий.
+struct Bench;
+impl Region for Bench {}
+
+/// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Count(u8);
+
+impl Word for Count {
+    type Of = Bench;
+}
 
 /// Детектор с памятью: считает, сколько раз видел свой ключ, и говорит это на тике.
 #[derive(Debug, Clone, Copy, Default)]
@@ -18,12 +34,12 @@ struct Counting(u8);
 
 impl Step for Counting {
     type From = DetectorEvent<u8>;
-    type To = SmallVec<[u8; 2]>;
+    type To = SmallVec<[Count; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![]),
-            DetectorEvent::Tick { .. } => (self, smallvec![self.0]),
+            DetectorEvent::Tick { .. } => (self, smallvec![Count(self.0)]),
             DetectorEvent::Opaque { .. } => (self, smallvec![]),
         }
     }
@@ -45,7 +61,7 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     let limit = std::time::Duration::from_secs(10);
     let packet = |key: u8, at: std::time::Instant| DetectorEvent::Packet { input: key, at };
 
-    let counted: Vec<(u8, u8)> = stream::iter([
+    let counted: Vec<(u8, Count)> = stream::iter([
         packet(1, t0),
         packet(1, t0),
         DetectorEvent::Tick { node: 1, at: t0 },
@@ -63,7 +79,7 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     // Потолок ЗАВЕДОМО НЕ ДОСТИГАЕТСЯ: ключ один, групп хватает на десять.
     .group_by(
-        |(k, _): &(u8, u8)| *k,
+        |(k, _): &(u8, Count)| *k,
         || 0u32,
         |_seen: &mut u32, (k, count)| Some((k, count)),
         Keys::AtMost(10),
@@ -73,7 +89,7 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
 
     assert_eq!(
         counted.last().map(|(_, c)| *c),
-        Some(1),
+        Some(Count(1)),
         "звено по времени забыло, а композиция помнит: {counted:?}"
     );
 }
@@ -97,7 +113,7 @@ async fn the_composition_forgets_when_the_count_bound_is_crossed() {
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
-        |(k, _): &(u8, u8)| *k,
+        |(k, _): &(u8, Count)| *k,
         || 0u32,
         |seen: &mut u32, (k, _count)| {
             *seen += 1;
@@ -126,7 +142,7 @@ async fn within_both_domains_nothing_is_forgotten() {
     let limit = std::time::Duration::from_secs(10);
     let packet = |key: u8, at: std::time::Instant| DetectorEvent::Packet { input: key, at };
 
-    let counted: Vec<(u8, u8)> = stream::iter([
+    let counted: Vec<(u8, Count)> = stream::iter([
         packet(1, t0),
         packet(1, t0),
         packet(1, t0),
@@ -134,7 +150,7 @@ async fn within_both_domains_nothing_is_forgotten() {
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
-        |(k, _): &(u8, u8)| *k,
+        |(k, _): &(u8, Count)| *k,
         || 0u32,
         |_seen: &mut u32, (k, count)| Some((k, count)),
         Keys::AtMost(10),
@@ -144,7 +160,7 @@ async fn within_both_domains_nothing_is_forgotten() {
 
     assert_eq!(
         counted.last().map(|(_, c)| *c),
-        Some(3),
+        Some(Count(3)),
         "внутри обоих доменов состояние потеряно: {counted:?}"
     );
 }

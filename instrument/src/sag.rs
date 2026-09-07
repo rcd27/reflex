@@ -48,6 +48,12 @@ pub struct Sag {
     pub after_bps: u64,
 }
 
+/// СКАЗАНО РАЗГОВОРУ: просадка есть его собственное свойство — у неё момент ВНУТРИ него, до
+/// которого было хорошо.
+impl reflex_core::word::Word for Sag {
+    type Of = reflex_core::word::Conversation;
+}
+
 impl SagInstrument {
     fn read(&self, observation: &Vec<u64>, _now_ms: u64) -> Option<Sag> {
         // ХВОСТ И МАХОВИК ОТБРАСЫВАЮТСЯ ДО ВСЯКОГО СЧЁТА. Оба неполны по построению, и участие

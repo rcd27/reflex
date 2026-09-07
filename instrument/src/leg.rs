@@ -2,6 +2,32 @@
 //!
 //! Переехал из другого крейта при сведении детекции в один дом.
 
+/// КАНАЛ (НОГА) — своя область, объявленная снаружи фундамента.
+///
+/// Ни пакет, ни разговор, ни цель: канал переживает всякий разговор, идущий по нему, и говорить о
+/// нём можно, когда ни одного разговора нет. Заводится здесь, а не в фундаменте: маршрут —
+/// предмет прибора о мире, и фундаменту знать о нём нечего.
+pub struct Link;
+impl reflex_core::word::Region for Link {}
+
+/// Канал живёт дольше решения о нём: сказать «в заторе» можно и следующим окном.
+impl reflex_core::word::CanDefer for Link {}
+
+/// ЗАХЛЕБНУЛАСЬ ЛИ НОГА. Не `bool`: у булева адресата нет — «истина» не говорит, о чём она, и в
+/// позицию слова такое значение не встаёт.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// Половина разговоров и больше стоит: канал в заторе.
+    Stalled,
+    /// Затора нет.
+    Healthy,
+}
+
+/// СКАЗАНО КАНАЛУ: доля застрявших разговоров есть свойство ноги, а не любого из них.
+impl reflex_core::word::Word for Leg {
+    type Of = Link;
+}
+
 /// ПАСПОРТ НАБЛЮДАТЕЛЯ КАНАЛА — проекция `model/law/Instrument.tla`.
 ///
 /// Прибор о МИРЕ, и единственный, отвечающий на вопрос «а не мы ли виноваты в просадке»: при
@@ -22,12 +48,15 @@ impl<L> LegInstrument<L> {
 }
 
 impl<L: crate::ask::Carrying + crate::ask::Stalled> LegInstrument<L> {
-    fn read(&self, link: &L, _now_ms: u64) -> Option<bool> {
+    fn read(&self, link: &L, _now_ms: u64) -> Option<Leg> {
         match link.carrying() {
             // ПУСТОЕ ОКНО НЕ СУДИТСЯ: доли без знаменателя не существует, и «ноль из нуля» есть
             // отсутствие наблюдения, а не здоровая нога.
             0 => None,
-            carrying => Some(link.stalled() * 2 >= carrying),
+            carrying => Some(match link.stalled() * 2 >= carrying {
+                true => Leg::Stalled,
+                false => Leg::Healthy,
+            }),
         }
     }
 }
@@ -38,7 +67,7 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for 
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[bool; 2]>;
+    type To = smallvec::SmallVec<[Leg; 2]>;
 
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
@@ -54,7 +83,7 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for 
 }
 
 impl<L: crate::ask::Carrying + crate::ask::Stalled> crate::Instrument for LegInstrument<L> {
-    type Signal = bool;
+    type Signal = Leg;
 
     const INSTRUMENT: &'static str = "leg";
 
@@ -100,15 +129,15 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> crate::Instrument for LegIns
 
     fn name(signal: &Self::Signal) -> &'static str {
         match signal {
-            true => "leg_stalled",
-            false => "leg_healthy",
+            Leg::Stalled => "leg_stalled",
+            Leg::Healthy => "leg_healthy",
         }
     }
 
     fn alarming(signal: &Self::Signal) -> bool {
         match signal {
-            true => true,
-            false => false,
+            Leg::Stalled => true,
+            Leg::Healthy => false,
         }
     }
 }
