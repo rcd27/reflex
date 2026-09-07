@@ -214,7 +214,8 @@ impl crate::Instrument for ObservedInstrument {
 
     const SUBJECT: crate::Subject = crate::Subject::World;
 
-    /// УРОВЕНЬ: судьба цели решается тем, отозвалась ли она; TLS закрыт, и выше этого уровня он пассивно не видит.
+    /// УРОВЕНЬ: судьба цели решается тем, отозвалась ли она; TLS закрыт, и выше этого уровня
+    /// прибор пассивно не видит.
     const LAYER: crate::Layer = crate::Layer::Transport;
     /// ТРАНСПОРТЫ: судьба решается тем, отозвалась ли цель, и «отозвалась» видно у обоих.
     const PROTOCOLS: &'static [crate::Protocol] = &[crate::Protocol::Tcp, crate::Protocol::Udp];
