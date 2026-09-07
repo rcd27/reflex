@@ -725,3 +725,46 @@ fn an_order_about_a_silent_target_severs_nothing() {
 
     assert_eq!(plane.sever_named("example.com"), 0);
 }
+
+/// ЗНАНИЕ, ПРИШЕДШЕЕ БУКВОЙ, НЕ СТИРАЕТСЯ ТАЙМЕРОМ.
+///
+/// `Ended` и `Lost` — не оттенки одного. Первое значит «закрылся штатно, ответ цели известен, план
+/// в силе»; второе — «состояния нет, и мы не знаем, что применяли». Разжаловать первое во второе по
+/// сроку значит выбросить то, что нам сказали, и отвечать на хвостовой пакет незнанием там, где
+/// знание было.
+#[test]
+fn a_closed_talk_keeps_what_the_letter_told_us() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let port = 44_000u16;
+
+    feed(&mut plane, &syn(port), 0);
+    feed(
+        &mut plane,
+        &asks(port, b"GET / HTTP/1.1\r\n\r\n"),
+        1_000_000,
+    );
+    feed(
+        &mut plane,
+        &answers(port, b"HTTP/1.1 200 OK\r\n\r\n"),
+        2_000_000,
+    );
+    feed(&mut plane, &fin(port), 3_000_000);
+
+    let flow = flow_of(port);
+    assert!(
+        matches!(plane.cursor_of(flow), Cursor::Ended(_)),
+        "закрытие названо буквой — курсор обязан быть Ended сразу"
+    );
+
+    // Три горизонта тиков: заведомо дольше того, за что прежде наступало разжалование.
+    let horizon = reflex_engine::meter::horizon().0;
+    for step in 1..=6 {
+        plane.tick(Tick(3_000_000 + step * horizon / 2));
+    }
+
+    match plane.cursor_of(flow) {
+        Cursor::Ended(_) => (),
+        Cursor::Fresh => (), // удаление законно; разжалование — нет
+        other => panic!("знание разжаловано таймером: {other:?}"),
+    }
+}
