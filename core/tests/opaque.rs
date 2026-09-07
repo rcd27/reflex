@@ -67,16 +67,33 @@ fn unread_is_counted_by_the_chain_not_by_the_edge() {
 }
 
 #[test]
-fn the_reason_survives_the_seam() {
+fn the_reason_is_a_value_whose_completeness_the_compiler_guards() {
     // ПРИЧИНА — ЗНАЧЕНИЕ, А НЕ ФЛАГ. «Не наш протокол» и «обрезан» лечатся по-разному:
     // первое законно и вечно, второе означает потерю и может чиниться.
     let (_, told) = Counting::default().step(opaque(Unread::Truncated));
     assert_eq!(&told[..], &[(0, 1)]);
 
-    let reasons = [Unread::NotIpv4, Unread::NotOurProtocol, Unread::Truncated];
+    // ПОЛНОТУ СТОРОЖИТ КОМПИЛЯТОР — не длина литерала (она равна трём всегда и не упадёт
+    // ни от какой четвёртой причины), а исчерпывающий `match` БЕЗ `_`: заведи кто-нибудь
+    // четвёртый вариант `Unread`, эта функция перестанет собираться, а не промолчит.
+    fn describe(reason: Unread) -> &'static str {
+        match reason {
+            Unread::NotIpv4 => "не IPv4 — адреса и протокола выше взять неоткуда",
+            Unread::NotOurProtocol => "не TCP и не UDP — разбирать нечем",
+            Unread::Truncated => "обрезан — заголовок не поместился целиком",
+        }
+    }
+
     assert_eq!(
-        reasons.len(),
-        3,
-        "причин ровно три: перечисление закрыто и его полноту сторожит компилятор"
+        describe(Unread::NotIpv4),
+        "не IPv4 — адреса и протокола выше взять неоткуда"
+    );
+    assert_eq!(
+        describe(Unread::NotOurProtocol),
+        "не TCP и не UDP — разбирать нечем"
+    );
+    assert_eq!(
+        describe(Unread::Truncated),
+        "обрезан — заголовок не поместился целиком"
     );
 }

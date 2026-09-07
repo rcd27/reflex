@@ -11,28 +11,35 @@
 //!
 //! # Момент приклеивает ИСТОЧНИК
 //!
-//! Пакеты приходят парой `(значение, момент)`. Это дословно то, чего требовал
+//! Наблюдения приходят парой `(Sensed<T>, момент)`: [`Sensed::Seen`] — разбор состоялся,
+//! [`Sensed::Unread`] — нет, но провод был. Это дословно то, чего требовал
 //! [`reflex_core::clock`]: «часы добавляет тот, кто читает провод, и делать это обязан ИСТОЧНИК,
 //! иначе всякий потребитель напишет своё, по-разному». Ниже по течению часов не спрашивает никто:
-//! там уже `Packet | Tick`.
+//! там уже `Packet | Tick | Opaque`.
+//!
+//! # У шва по двери на букву
+//!
+//! [`Interleave::saw`] — разобралось, [`Interleave::unread`] — нет. Не будь второй двери, поток из
+//! одних неразобранных наблюдений не продвигал бы сетку вовсе, и молчание под таким трафиком было
+//! бы неотличимо от «наблюдений не было».
 //!
 //! # Будильник срабатывает только в тишине
 //!
-//! Пока трафик идёт, узлы сетки между пакетами ВЫЧИСЛЯЮТСЯ из момента пакета
-//! ([`Interleave::saw`]), и тик от часов оказывается пустым — узлы уже выданы. Стоимость сетки
-//! при живом трафике нулевая; часы нужны ровно там, где событий нет и приборы простоя слепы.
+//! Пока трафик идёт, узлы сетки между наблюдениями ВЫЧИСЛЯЮТСЯ из их момента (`saw`/`unread`), и
+//! тик от часов оказывается пустым — узлы уже выданы. Стоимость сетки при живом трафике нулевая;
+//! часы нужны ровно там, где событий нет и приборы простоя слепы.
 
 use core::time::Duration;
 use std::time::Instant;
 
 use futures::{Stream, StreamExt};
 use reflex_core::clock::Ticks;
-use reflex_core::detector::DetectorEvent;
+use reflex_core::detector::{DetectorEvent, Sensed};
 use reflex_core::interleave::Interleave;
 
-/// ЧТО ПРИШЛО В ШОВ: наблюдение от источника или узел от часов.
+/// ЧТО ПРИШЛО В ШОВ: наблюдение от источника (разобранное или нет) или узел от часов.
 enum Arrival<T> {
-    Seen(T, Instant),
+    Sensed(Sensed<T>, Instant),
     Alarm(Instant),
 }
 
@@ -45,22 +52,23 @@ enum Arrival<T> {
 /// имени, и единственный публичный путь к ней — [`on_grid`], который передаёт сюда не любой
 /// поток моментов, а поток от часов, обязанных идти по сетке.
 pub(crate) fn timed<S, T, K>(
-    packets: S,
+    observations: S,
     ticks: K,
     began: Instant,
     every: Duration,
 ) -> impl Stream<Item = DetectorEvent<T>>
 where
-    S: Stream<Item = (T, Instant)>,
+    S: Stream<Item = (Sensed<T>, Instant)>,
     K: Stream<Item = Instant>,
 {
     futures::stream::select(
-        packets.map(|(input, at)| Arrival::Seen(input, at)),
+        observations.map(|(sensed, at)| Arrival::Sensed(sensed, at)),
         ticks.map(Arrival::Alarm),
     )
     .scan(Interleave::started(began, every), |seam, arrival| {
         let (moved, events) = match arrival {
-            Arrival::Seen(input, at) => seam.saw(input, at),
+            Arrival::Sensed(Sensed::Seen(input), at) => seam.saw(input, at),
+            Arrival::Sensed(Sensed::Unread(why), at) => seam.unread(why, at),
             Arrival::Alarm(at) => seam.idle(at),
         };
         *seam = moved;
@@ -97,7 +105,7 @@ pub fn on_grid<S, T, C>(
     every: Duration,
 ) -> impl Stream<Item = DetectorEvent<T>>
 where
-    S: Stream<Item = (T, Instant)>,
+    S: Stream<Item = (Sensed<T>, Instant)>,
     C: Ticks,
 {
     timed(source, clock.ticks(every), began, every)
@@ -112,7 +120,8 @@ mod tests {
 
     use futures::StreamExt;
     use reflex_core::clock::{TestClock, Ticks};
-    use reflex_core::detector::DetectorEvent;
+    use reflex_core::detector::{DetectorEvent, Sensed};
+    use reflex_core::parse::Unread;
     use std::time::{Duration, Instant};
 
     use super::timed;
@@ -128,8 +137,6 @@ mod tests {
                 match event {
                     DetectorEvent::Packet { .. } => ('p', millis),
                     DetectorEvent::Tick { .. } => ('t', millis),
-                    // Шов не рождает `Opaque` — он вообще не знает о разборе; ветка нужна ради
-                    // полноты алфавита, а не потому, что до неё дойдёт прогон.
                     DetectorEvent::Opaque { .. } => ('o', millis),
                 }
             })
@@ -140,6 +147,10 @@ mod tests {
         began + Duration::from_millis(millis)
     }
 
+    fn seen(input: i32, at: Instant) -> (Sensed<i32>, Instant) {
+        (Sensed::Seen(input), at)
+    }
+
     /// УЗЛЫ, КОТОРЫЕ ПЕРЕШАГНУЛ ПАКЕТ, ПРИХОДЯТ ПЕРЕД НИМ — И БЕЗ ЕДИНОГО БУДИЛЬНИКА.
     ///
     /// Часов в этой проверке нет вовсе: поток тиков пуст. Тики всё равно есть, потому что при живом
@@ -148,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn a_flowing_source_gets_its_grid_without_any_alarm() {
         let began = Instant::now();
-        let packets = futures::stream::iter([(1, at(began, 250)), (2, at(began, 500))]);
+        let packets = futures::stream::iter([seen(1, at(began, 250)), seen(2, at(began, 500))]);
 
         let out: Vec<_> = timed(packets, futures::stream::empty(), began, STEP)
             .collect()
@@ -168,6 +179,37 @@ mod tests {
         );
     }
 
+    /// НЕПОНЯТОЕ ДВИГАЕТ СЕТКУ ТЕМ ЖЕ СПОСОБОМ, ЧТО И ПАКЕТ.
+    ///
+    /// Без двери для второй буквы поток из одних неразобранных наблюдений не продвигал бы сетку
+    /// вовсе, и молчание под таким трафиком было бы неотличимо от «наблюдений не было».
+    #[tokio::test]
+    async fn an_unread_observation_gets_its_grid_too() {
+        let began = Instant::now();
+        let observations = futures::stream::iter([
+            (Sensed::<i32>::Unread(Unread::Truncated), at(began, 250)),
+            (Sensed::<i32>::Unread(Unread::NotIpv4), at(began, 500)),
+        ]);
+
+        let out: Vec<_> = timed(observations, futures::stream::empty(), began, STEP)
+            .collect()
+            .await;
+
+        assert_eq!(
+            shape(&out, began),
+            vec![
+                ('t', 100),
+                ('t', 200),
+                ('o', 250),
+                ('t', 300),
+                ('t', 400),
+                ('t', 500),
+                ('o', 500)
+            ],
+            "непонятое проходит через шов той же дверью-законом, что и пакет"
+        );
+    }
+
     /// ТИШИНА ТОЖЕ ДАЁТ СОБЫТИЯ — ради этого будильник в шве и нужен, и только ради этого.
     #[tokio::test]
     async fn silence_still_yields_the_nodes_it_covered() {
@@ -176,7 +218,7 @@ mod tests {
         clock.advance(Duration::from_millis(320));
 
         let out: Vec<_> = timed(
-            futures::stream::empty::<(i32, Instant)>(),
+            futures::stream::empty::<(Sensed<i32>, Instant)>(),
             clock.ticks(STEP),
             began,
             STEP,
@@ -201,7 +243,7 @@ mod tests {
         let began = clock.began();
         clock.advance(Duration::from_millis(250));
 
-        let packets = futures::stream::iter([(1, at(began, 250))]);
+        let packets = futures::stream::iter([seen(1, at(began, 250))]);
 
         let out: Vec<_> = timed(packets, clock.ticks(STEP), began, STEP)
             .collect()

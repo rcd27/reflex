@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use reflex_core::clock::TestClock;
-use reflex_core::detector::DetectorEvent;
+use reflex_core::detector::{DetectorEvent, Sensed};
 use reflex_runtime::clock::SystemClock;
 
 const STEP: Duration = Duration::from_millis(10);
@@ -36,10 +36,10 @@ async fn nodes_do_not_depend_on_load() {
     // ПАКЕТЫ ИДУТ ГУСТО И НЕРОВНО: три подряд, потом пусто. Ровно та неровность, на которой
     // цепочка задержек и разъезжается.
     let packets = futures::stream::iter(vec![
-        (Seen(1), began + Duration::from_millis(1)),
-        (Seen(2), began + Duration::from_millis(2)),
-        (Seen(3), began + Duration::from_millis(3)),
-        (Seen(4), began + Duration::from_millis(45)),
+        (Sensed::Seen(Seen(1)), began + Duration::from_millis(1)),
+        (Sensed::Seen(Seen(2)), began + Duration::from_millis(2)),
+        (Sensed::Seen(Seen(3)), began + Duration::from_millis(3)),
+        (Sensed::Seen(Seen(4)), began + Duration::from_millis(45)),
     ]);
 
     // Время продвинуто ровно настолько, сколько заняла эта картина: 45 мс. Поток тиков `TestClock`
@@ -66,13 +66,55 @@ async fn nodes_do_not_depend_on_load() {
     assert_eq!(seen, 4, "ни один пакет не потерян и не задвоен");
 }
 
+/// НЕПОНЯТОЕ НА ЖИВОМ ШВЕ ДВИГАЕТ СЕТКУ ТАК ЖЕ, КАК РАЗОБРАННОЕ.
+///
+/// `reflex_core::pcap::on_grid` (запись) это уже умел; здесь тот же закон проверяется на живом
+/// пути — через `reflex_runtime::timed::on_grid`, единственный публичный вход к нему.
+#[tokio::test]
+async fn unread_observations_do_not_depend_on_load_either() {
+    use reflex_core::parse::Unread;
+
+    let clock = TestClock::new();
+    let began = clock.began();
+
+    let observations = futures::stream::iter(vec![
+        (
+            Sensed::<Seen>::Unread(Unread::Truncated),
+            began + Duration::from_millis(1),
+        ),
+        (
+            Sensed::<Seen>::Unread(Unread::NotIpv4),
+            began + Duration::from_millis(45),
+        ),
+    ]);
+
+    clock.advance(Duration::from_millis(45));
+
+    let mixed: Vec<DetectorEvent<Seen>> =
+        reflex_runtime::timed::on_grid(observations, clock, began, STEP)
+            .collect()
+            .await;
+
+    let ticks = mixed
+        .iter()
+        .filter(|event| matches!(event, DetectorEvent::Tick { .. }))
+        .count();
+    assert_eq!(ticks, 4, "непонятое раздвигает сетку так же, как пакет");
+
+    let unread = mixed
+        .iter()
+        .filter(|event| matches!(event, DetectorEvent::Opaque { .. }))
+        .count();
+    assert_eq!(unread, 2, "ни одно неразобранное наблюдение не потеряно");
+}
+
 #[tokio::test]
 async fn silence_still_produces_nodes() {
     // МОЛЧАНИЕ — ЗАКОННЫЙ ВХОД. Без пакетов узлы обязаны идти всё равно, иначе «замолчал»
     // неотличимо от «мы не смотрели».
     let clock = TestClock::new();
     let began = clock.began();
-    let empty = futures::stream::iter(Vec::<(Seen, Instant)>::new());
+    let empty = futures::stream::iter(Vec::<(Sensed<Seen>, Instant)>::new());
 
     clock.advance(Duration::from_millis(35));
 
@@ -95,7 +137,7 @@ async fn silence_still_produces_nodes() {
 #[tokio::test]
 async fn real_clock_actually_produces_nodes() {
     let began = Instant::now();
-    let empty = futures::stream::iter(Vec::<(Seen, Instant)>::new());
+    let empty = futures::stream::iter(Vec::<(Sensed<Seen>, Instant)>::new());
     let boundary = began + STEP * 3 + STEP / 2;
 
     let mixed: Vec<DetectorEvent<Seen>> =

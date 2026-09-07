@@ -1,10 +1,12 @@
-//! СЛИЯНИЕ ПАКЕТОВ И СЕТКИ В ОДИН ПОТОК — законы шва.
+//! СЛИЯНИЕ НАБЛЮДЕНИЙ И СЕТКИ В ОДИН ПОТОК — законы шва.
 //!
 //! Здесь время перестаёт быть сервисом и становится буквой входного алфавита: потребитель ниже по
-//! течению не спрашивает часов вовсе, он читает `Packet | Tick` и всё.
+//! течению не спрашивает часов вовсе, он читает `Packet | Tick | Opaque` и всё. У разобранного
+//! (`saw`) и непонятого (`unread`) — по своей двери, и обе продвигают сетку одинаково.
 
 use reflex_core::detector::DetectorEvent;
 use reflex_core::interleave::Interleave;
+use reflex_core::parse::Unread;
 use std::time::{Duration, Instant};
 
 const STEP: Duration = Duration::from_millis(100);
@@ -22,8 +24,6 @@ fn shape<T>(events: &[DetectorEvent<T>], start: Instant) -> Vec<(char, u64)> {
             match event {
                 DetectorEvent::Packet { .. } => ('p', millis),
                 DetectorEvent::Tick { .. } => ('t', millis),
-                // Шов ([`Interleave`]) не рождает `Opaque` — он вообще не знает о разборе;
-                // ветка нужна ради полноты алфавита, а не потому, что до неё дойдёт прогон.
                 DetectorEvent::Opaque { .. } => ('o', millis),
             }
         })
@@ -72,6 +72,38 @@ fn a_node_is_handed_out_exactly_once() {
         "узел 100 уже выдан"
     );
     assert_eq!(shape(&third, start), vec![('t', 200), ('p', 210)]);
+}
+
+/// НЕПОНЯТОЕ ДВИГАЕТ СЕТКУ ТЕМ ЖЕ СПОСОБОМ, ЧТО И ПАКЕТ — своя дверь, тот же закон.
+///
+/// Без этой двери поток из одних неразобранных наблюдений не продвигал бы сетку вовсе, и
+/// молчание под таким трафиком было бы неотличимо от «наблюдений не было».
+#[test]
+fn an_unread_observation_steps_over_nodes_the_same_way_a_packet_does() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (_seam, out) = seam.unread::<u8>(Unread::Truncated, at(start, 250));
+
+    assert_eq!(shape(&out, start), vec![('t', 100), ('t', 200), ('o', 250)]);
+}
+
+/// УЗЕЛ, ПЕРЕШАГНУТЫЙ НЕПОНЯТЫМ, ВЫДАЁТСЯ РОВНО ОДИН РАЗ — как и у пакета, независимо от буквы,
+/// которая пришла следом.
+#[test]
+fn a_node_is_not_handed_out_twice_across_different_letters() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (seam, first) = seam.unread::<u8>(Unread::NotIpv4, at(start, 150));
+    let (_seam, second) = seam.saw(1u8, at(start, 160));
+
+    assert_eq!(shape(&first, start), vec![('t', 100), ('o', 150)]);
+    assert_eq!(
+        shape(&second, start),
+        vec![('p', 160)],
+        "узел 100 уже выдан непонятым — пакет его не повторяет"
+    );
 }
 
 /// ТИШИНА ТОЖЕ НАБЛЮДЕНИЕ: будильник приносит наступившие узлы без единого пакета.

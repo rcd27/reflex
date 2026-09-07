@@ -19,22 +19,32 @@ pin_project! {
         buffer: VecDeque<Sig>,
         #[pin]
         tick: Interval,
-        // НАЧАЛО СЕТКИ И ЕЁ ШАГ — номер узла берётся [`reflex_core::grid::due`], ЕДИНЫМ законом
-        // сетки, а не собственным счётчиком: второй способ считать «какой это узел» лгал бы под
-        // дрейфом `tokio::time::interval`, молча съедая пропуски вместо того, чтобы их назвать.
+        // НАЧАЛО СЕТКИ, ЕЁ ШАГ И ПОСЛЕДНИЙ УЖЕ УЧТЁННЫЙ МОМЕНТ.
+        //
+        // Пробуждение `tick` говорит ровно одно: «пора посмотреть». Какие узлы сетки НАСТУПИЛИ с
+        // прошлого взгляда и как они пронумерованы, называет [`reflex_core::grid::nodes_between`]
+        // на моменте КАЖДОГО узла — тем же способом, каким это уже делают [`crate::interleave`] и
+        // `reflex_core::pcap::on_grid`. Считать номер от момента пробуждения (`grid::due(began,
+        // now, every)`) значило бы под каждым отдельным пробуждением получать номер ПОСЛЕДНЕГО
+        // наступившего узла, а пропущенные между двумя пробуждениями — терять молча: три
+        // пробуждения подряд почти в одну точку дали бы три одинаковых номера там, где сетка
+        // называет три РАЗНЫХ подряд идущих узла.
         began: Instant,
+        last: Instant,
         every: Duration,
     }
 }
 
 impl<S, D, Sig> DetectStream<S, D, Sig> {
     pub fn new(source: S, detector: D, tick_interval: Duration) -> Self {
+        let began = Instant::now();
         Self {
             source,
             detector: Some(detector),
             buffer: VecDeque::new(),
             tick: time::interval(tick_interval),
-            began: Instant::now(),
+            began,
+            last: began,
             every: tick_interval,
         }
     }
@@ -56,15 +66,25 @@ where
         }
 
         // 2. Try tick
-        if let Some(detector) = this.detector.take() {
+        if let Some(mut detector) = this.detector.take() {
             if this.tick.as_mut().poll_tick(cx).is_ready() {
-                let at = Instant::now();
-                let node = reflex_core::grid::due(*this.began, at, *this.every);
-                let (new_detector, signals) = detector.step(DetectorEvent::Tick { node, at });
-                *this.detector = Some(new_detector);
-                for signal in signals {
-                    this.buffer.push_back(signal);
+                let now = Instant::now();
+                // УЗЛЫ БЕРУТСЯ ПО ЗАКОНУ СЕТКИ НА ИХ СОБСТВЕННОМ МОМЕНТЕ, а не на моменте
+                // пробуждения: пробуждение под дрейфом может опоздать на несколько шагов сразу, и
+                // тогда `nodes_between` отдаёт их ВСЕ по порядку, а не один слипшийся номер.
+                let nodes: Vec<Instant> =
+                    reflex_core::grid::nodes_between(*this.began, *this.last, now, *this.every)
+                        .collect();
+                for at in nodes {
+                    let node = reflex_core::grid::due(*this.began, at, *this.every);
+                    let (next_detector, signals) = detector.step(DetectorEvent::Tick { node, at });
+                    detector = next_detector;
+                    for signal in signals {
+                        this.buffer.push_back(signal);
+                    }
                 }
+                *this.last = now;
+                *this.detector = Some(detector);
                 if let Some(signal) = this.buffer.pop_front() {
                     return Poll::Ready(Some(signal));
                 }

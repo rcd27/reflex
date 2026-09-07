@@ -21,7 +21,9 @@ impl Step for Rst {
     fn step(self, event: Self::From) -> (Self, Self::To) {
         match event {
             DetectorEvent::Packet { input: 1, .. } => (self, SmallVec::from_slice(&[7])),
-            _ => (self, SmallVec::new()),
+            DetectorEvent::Packet { .. } => (self, SmallVec::new()),
+            DetectorEvent::Tick { .. } => (self, SmallVec::new()),
+            DetectorEvent::Opaque { .. } => (self, SmallVec::new()),
         }
     }
 }

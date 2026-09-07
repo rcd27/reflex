@@ -50,7 +50,7 @@ pub use capability::{
     Toward,
 };
 pub use command::{Command, InjectablePacket, ModifyPacket};
-pub use detector::{Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Timed, Told};
+pub use detector::{Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Sensed, Timed, Told};
 pub use ext::ReflexExt;
 #[cfg(feature = "tls")]
 pub use l7::L7;
