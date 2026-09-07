@@ -20,7 +20,7 @@
 //! НА КЛЮЧ — то есть переход считается по той цели, о которой высказывание. Две цели,
 //! чередуясь, прошли бы оператор потока насквозь.
 
-use reflex_core::detector::{Both, DetectorEvent};
+use reflex_core::detector::{Both, DetectorEvent, Stamped};
 use reflex_core::step::{Step, StepExt};
 use reflex_core::word::{Region, Word};
 use smallvec::{smallvec, SmallVec};
@@ -495,7 +495,13 @@ fn timed_carries_the_moment_the_instrument_spoke() {
         }],
     );
 
-    assert_eq!(said, vec![(at, Distress::Rst)]);
+    assert_eq!(
+        said,
+        vec![Stamped {
+            at,
+            said: Distress::Rst
+        }]
+    );
 }
 
 /// МОМЕНТ БЕРЁТСЯ У ТИКА ТОЖЕ — иначе прибор со своими часами метил бы беду временем последнего
@@ -513,7 +519,13 @@ fn timed_stamps_a_tick_signal_with_the_tick_moment() {
         }],
     );
 
-    assert_eq!(said, vec![(tick_at, Distress::Rst)]);
+    assert_eq!(
+        said,
+        vec![Stamped {
+            at: tick_at,
+            said: Distress::Rst
+        }]
+    );
 }
 
 /// ИМЯ ПЕРЕЖИВАЕТ СЛОЖЕНИЕ РЯДОМ С ПОЗИЦИЕЙ.
