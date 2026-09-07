@@ -454,7 +454,13 @@ fn timed_stamps_a_tick_signal_with_the_tick_moment() {
     let start = std::time::Instant::now();
     let tick_at = start + std::time::Duration::from_secs(2);
 
-    let said = run(Clock.timed(), vec![DetectorEvent::Tick { at: tick_at }]);
+    let said = run(
+        Clock.timed(),
+        vec![DetectorEvent::Tick {
+            node: 1,
+            at: tick_at,
+        }],
+    );
 
     assert_eq!(said, vec![(tick_at, Distress::Rst)]);
 }

@@ -56,7 +56,7 @@ impl<T> Step for Debounce<T> {
                 },
                 smallvec![],
             ),
-            DetectorEvent::Tick { at } => match self.held {
+            DetectorEvent::Tick { at, .. } => match self.held {
                 Some((held, since)) if at.saturating_duration_since(since) >= self.window => {
                     (Self { held: None, ..self }, smallvec![held])
                 }

@@ -60,7 +60,10 @@ fn detector_enters_the_step_category() {
         input: 2,
         at: Instant::now(),
     });
-    let (_chain, on_tick) = chain.step(DetectorEvent::Tick { at: Instant::now() });
+    let (_chain, on_tick) = chain.step(DetectorEvent::Tick {
+        node: 1,
+        at: Instant::now(),
+    });
 
     assert_eq!(first, 0, "первый пакет: номер 0, сумма 0");
     assert_eq!(second, 1, "второй: номер 1, сумма 0+1");

@@ -105,6 +105,45 @@ fn a_packet_from_the_past_does_not_turn_time_backwards() {
     );
 }
 
+/// НОМЕР УЗЛА И МОМЕНТ — ОБА, А НЕ ОДИН ИЗ ДВУХ.
+///
+/// Номер даёт воспроизводимость: при переигровке он тот же, тогда как момент зависит от того,
+/// когда прогон случился. Момент даёт сравнимость с чужими часами — с журналом ядра, с записью
+/// провода, с отчётом человека.
+///
+/// Выбирать между ними значило бы терять одно из двух, а стоят они одно машинное слово.
+#[test]
+fn tick_carries_node_and_moment() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (_, told) = seam.idle::<u8>(start + STEP * 3);
+
+    let nodes: Vec<u64> = told
+        .iter()
+        .filter_map(|event| match event {
+            DetectorEvent::Tick { node, .. } => Some(*node),
+            DetectorEvent::Packet { .. } => None,
+        })
+        .collect();
+
+    assert_eq!(nodes, vec![1, 2, 3], "номера идут подряд от начала отсчёта");
+
+    let moments: Vec<Instant> = told
+        .iter()
+        .filter_map(|event| match event {
+            DetectorEvent::Tick { at, .. } => Some(*at),
+            DetectorEvent::Packet { .. } => None,
+        })
+        .collect();
+
+    assert_eq!(
+        moments,
+        vec![start + STEP, start + STEP * 2, start + STEP * 3],
+        "момент есть момент УЗЛА, а не момент выдачи"
+    );
+}
+
 /// МОМЕНТЫ НЕУБЫВАЮТ ВО ВСЁМ ПОТОКЕ — сквозной закон, а не свойство одного вызова.
 #[test]
 fn moments_never_decrease_across_the_whole_stream() {

@@ -340,7 +340,7 @@ pub fn with_ticks<T: Clone>(
 fn moment<T>(event: &crate::detector::DetectorEvent<T>) -> Option<Instant> {
     match event {
         crate::detector::DetectorEvent::Packet { at, .. } => Some(*at),
-        crate::detector::DetectorEvent::Tick { at } => Some(*at),
+        crate::detector::DetectorEvent::Tick { at, .. } => Some(*at),
     }
 }
 
@@ -371,7 +371,10 @@ fn on_grid<T>(
     match start {
         None => Vec::new(),
         Some(start) => crate::grid::nodes_between(start, before, after, window)
-            .map(|at| crate::detector::DetectorEvent::Tick { at })
+            .map(|at| crate::detector::DetectorEvent::Tick {
+                node: crate::grid::due(start, at, window),
+                at,
+            })
             .collect(),
     }
 }

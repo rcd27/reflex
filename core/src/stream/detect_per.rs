@@ -135,7 +135,7 @@ where
                 }
 
                 // ТИК — во все живые состояния. Это и есть причина существования оператора.
-                Poll::Ready(Some(DetectorEvent::Tick { at })) => {
+                Poll::Ready(Some(DetectorEvent::Tick { node, at })) => {
                     let keys: Vec<K> = this.states.keys().cloned().collect();
                     keys.into_iter().for_each(|key| {
                         match this.states.remove(&key) {
@@ -144,7 +144,8 @@ where
                                 // ТИК ДОСТАВЛЯЕТСЯ ПРЕЖДЕ, ЧЕМ РЕШАЕТСЯ СУДЬБА КЛЮЧА: снять
                                 // состояние, не дав ему сказать последнее слово, значит потерять
                                 // беду, о которой детектор уже знал.
-                                let (next, signals) = detector.step(DetectorEvent::Tick { at });
+                                let (next, signals) =
+                                    detector.step(DetectorEvent::Tick { node, at });
                                 let idle = at.saturating_duration_since(seen_at);
                                 match this.lifetime {
                                     Lifetime::UntilIdle(limit) if idle >= limit => (),

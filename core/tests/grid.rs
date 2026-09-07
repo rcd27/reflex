@@ -83,6 +83,20 @@ fn a_long_silence_reports_every_node_it_covered() {
     );
 }
 
+/// `due` ОБРАТНА `node` ПРИ НЕНУЛЕВОМ ШАГЕ: momент n-го узла отдаёт обратно n.
+///
+/// Вырожденный шаг из закона исключён намеренно: `node` при нулевом шаге отдаёт `start` для
+/// любого `n`, отображение перестаёт быть обратимым — восстановить `n` неоткуда, а `due` на
+/// нулевом шаге отвечает нулём для сетки, которой не существует.
+#[test]
+fn due_undoes_node_for_a_nonzero_step() {
+    let start = Instant::now();
+
+    for n in [0u64, 1, 2, 3, 10, 1_000] {
+        assert_eq!(due(start, node(start, STEP, n), STEP), n);
+    }
+}
+
 #[test]
 fn the_nth_node_is_the_start_plus_n_steps() {
     let start = Instant::now();

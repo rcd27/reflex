@@ -17,8 +17,10 @@ use std::time::Instant;
 pub enum DetectorEvent<T> {
     /// Входящий пакет, наблюдаемый в момент `at`.
     Packet { input: T, at: Instant },
-    /// Периодический tick от scheduler'а.
-    Tick { at: Instant },
+    /// УЗЕЛ СЕТКИ — единственная буква, говорящая, что ничего не произошло.
+    ///
+    /// Несёт и номер, и момент. Номер тот же при переигровке; момент сравним с чужими часами.
+    Tick { node: u64, at: Instant },
 }
 
 impl<T> DetectorEvent<T> {
@@ -29,7 +31,7 @@ impl<T> DetectorEvent<T> {
     pub fn at(&self) -> Instant {
         match self {
             DetectorEvent::Packet { at, .. } => *at,
-            DetectorEvent::Tick { at } => *at,
+            DetectorEvent::Tick { at, .. } => *at,
         }
     }
 
@@ -45,8 +47,14 @@ impl<T> DetectorEvent<T> {
 
     /// Construct a `Tick` event stamped with `Instant::now()`.
     /// Same caveat as `packet_now` — edge-only convenience.
+    ///
+    /// `node: 0` — вне сетки: у этого тика нет `start`, от которого считать номер, а нулевой шаг
+    /// сетки в [`crate::grid`] по той же причине отвечает нулём.
     pub fn tick_now() -> Self {
-        Self::Tick { at: Instant::now() }
+        Self::Tick {
+            node: 0,
+            at: Instant::now(),
+        }
     }
 }
 
@@ -138,8 +146,8 @@ where
                 }
                 None => (Self { inner, f, wide }, SmallVec::new()),
             },
-            DetectorEvent::Tick { at } => {
-                let (stepped, signals) = inner.step(DetectorEvent::Tick { at });
+            DetectorEvent::Tick { node, at } => {
+                let (stepped, signals) = inner.step(DetectorEvent::Tick { node, at });
                 (
                     Self {
                         inner: stepped,

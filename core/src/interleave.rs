@@ -81,8 +81,16 @@ impl Interleave {
     }
 
     /// Узлы сетки, наступившие с последнего выданного момента и по `at` включительно.
+    ///
+    /// Номер узла — [`crate::grid::due`] на его же момент: момент узла попадает на сетку ровно,
+    /// так что «сколько узлов наступило к этому моменту» и есть номер этого узла — обратность
+    /// [`crate::grid::node`] и [`crate::grid::due`] на ненулевом шаге.
     fn nodes_up_to<T>(&self, at: Instant) -> impl Iterator<Item = DetectorEvent<T>> {
-        crate::grid::nodes_between(self.start, self.last, at, self.every)
-            .map(|at| DetectorEvent::Tick { at })
+        let start = self.start;
+        let every = self.every;
+        crate::grid::nodes_between(start, self.last, at, every).map(move |at| DetectorEvent::Tick {
+            node: crate::grid::due(start, at, every),
+            at,
+        })
     }
 }

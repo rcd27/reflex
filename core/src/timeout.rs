@@ -125,7 +125,7 @@ impl<T> Step for Timeout<T> {
                 },
                 smallvec![],
             ),
-            (DetectorEvent::Tick { at }, Waiting::Since { opened, last }) => {
+            (DetectorEvent::Tick { at, .. }, Waiting::Since { opened, last }) => {
                 match self.crossed(opened, last, at) {
                     None => (self, smallvec![]),
                     Some(expiry) => (

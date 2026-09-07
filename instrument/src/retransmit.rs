@@ -284,7 +284,10 @@ mod tests {
         let instrument = RetransmitInstrument::new();
         let (instrument, _) = instrument.step(packet(hello(), 0));
 
-        let (_instrument, said) = instrument.step(DetectorEvent::Tick { at: at(9_000) });
+        let (_instrument, said) = instrument.step(DetectorEvent::Tick {
+            node: 9_000,
+            at: at(9_000),
+        });
 
         assert!(said.is_empty(), "прибор с чужим темпом в тишине нем");
     }

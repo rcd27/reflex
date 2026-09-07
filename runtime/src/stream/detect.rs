@@ -19,6 +19,8 @@ pin_project! {
         buffer: VecDeque<Sig>,
         #[pin]
         tick: Interval,
+        // Номер СЛЕДУЮЩЕГО тика: своя сетка, без общего start с timed::on_grid.
+        next_tick: u64,
     }
 }
 
@@ -29,6 +31,7 @@ impl<S, D, Sig> DetectStream<S, D, Sig> {
             detector: Some(detector),
             buffer: VecDeque::new(),
             tick: time::interval(tick_interval),
+            next_tick: 0,
         }
     }
 }
@@ -52,7 +55,9 @@ where
         if let Some(detector) = this.detector.take() {
             if this.tick.as_mut().poll_tick(cx).is_ready() {
                 let at = std::time::Instant::now();
-                let (new_detector, signals) = detector.step(DetectorEvent::Tick { at });
+                *this.next_tick += 1;
+                let node = *this.next_tick;
+                let (new_detector, signals) = detector.step(DetectorEvent::Tick { node, at });
                 *this.detector = Some(new_detector);
                 for signal in signals {
                     this.buffer.push_back(signal);

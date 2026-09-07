@@ -103,6 +103,7 @@ fn удержанное_отдаётся_по_сроку_когда_хвоста
 
     let (assembler, _) = RecordAssembler::new(DEADLINE).step(chunk_at(4242, head.clone(), started));
     let (_, signals) = assembler.step(DetectorEvent::Tick {
+        node: 1,
         at: started + DEADLINE,
     });
 
@@ -126,6 +127,7 @@ fn до_срока_удержание_не_размыкается() {
     let (assembler, _) =
         RecordAssembler::new(DEADLINE).step(chunk_at(1, whole[..1400].to_vec(), started));
     let (assembler, signals) = assembler.step(DetectorEvent::Tick {
+        node: 1,
         at: started + DEADLINE / 2,
     });
 

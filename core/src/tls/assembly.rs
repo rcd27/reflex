@@ -298,7 +298,7 @@ impl Step for RecordAssembler {
             },
             // ТИК — единственный способ разомкнуть удержание, когда остаток не придёт НИКОГДА.
             // Без него `Delivered` держится лишь на надежде, что поток ещё чем-нибудь дышит.
-            DetectorEvent::Tick { at } => match &self.hold {
+            DetectorEvent::Tick { at, .. } => match &self.hold {
                 Hold::Holding { seq, bytes, since }
                     if at.duration_since(*since) >= self.hold_deadline =>
                 {

@@ -276,7 +276,7 @@ impl reflex_core::step::Step for SilenceInstrument {
                     smallvec::SmallVec::new(),
                 )
             }
-            reflex_core::DetectorEvent::Tick { at } => match (self.last, self.watch) {
+            reflex_core::DetectorEvent::Tick { at, .. } => match (self.last, self.watch) {
                 // ЦЕЛЬ, НЕ ОТВЕТИВШАЯ ВОВСЕ, уличается и без просьбы: соединение открыто, байтов
                 // нет — ждать тут нечего и некому, это уже отказ.
                 (Some(last), Watch::Open)
@@ -703,7 +703,7 @@ impl reflex_core::step::Step for ChokedInstrument {
             }
             // ТЕРПЕНИЕ ВХОДИТ В УСЛОВИЕ: «просили и не ответили» становится уликой не раньше, чем
             // истечёт срок. Иначе обвиняется всякий, кто отвечает медленнее одного тика.
-            reflex_core::DetectorEvent::Tick { at } => match (
+            reflex_core::DetectorEvent::Tick { at, .. } => match (
                 self.fired,
                 self.sent > 0 && self.patience_over(at),
                 self.received > 0,
@@ -803,7 +803,7 @@ mod silence_tests {
                     let at = start + Duration::from_millis(after_ms);
                     let event = match seen {
                         Some(seen) => DetectorEvent::Packet { input: seen, at },
-                        None => DetectorEvent::Tick { at },
+                        None => DetectorEvent::Tick { node: after_ms, at },
                     };
                     let (stepped, signals) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())
@@ -924,7 +924,7 @@ mod throttled_and_choked_tests {
                     let at = start + Duration::from_millis(after_ms);
                     let event = match seen {
                         Some(seen) => DetectorEvent::Packet { input: seen, at },
-                        None => DetectorEvent::Tick { at },
+                        None => DetectorEvent::Tick { node: after_ms, at },
                     };
                     let (stepped, signals) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())

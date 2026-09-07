@@ -88,7 +88,7 @@ impl Step for Quiet {
                 },
                 smallvec![],
             ),
-            DetectorEvent::Tick { at } => match (self.last, self.fired) {
+            DetectorEvent::Tick { at, .. } => match (self.last, self.fired) {
                 (Some(last), false) if at.duration_since(last) >= self.after => (
                     Self {
                         fired: true,
@@ -170,7 +170,7 @@ async fn tick_reaches_every_live_state() {
     let got: Vec<(u8, Signal)> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(2, Kind::Byte, t0),
-        DetectorEvent::Tick { at: later },
+        DetectorEvent::Tick { node: 1, at: later },
     ])
     .detect_per(
         |e: &Event| e.addr,
@@ -195,6 +195,7 @@ async fn tick_before_threshold_is_silent() {
     let got: Vec<(u8, Signal)> = stream::iter([
         packet(1, Kind::Byte, t0),
         DetectorEvent::Tick {
+            node: 1,
             at: t0 + Duration::from_millis(500),
         },
     ])
@@ -212,14 +213,17 @@ async fn tick_before_threshold_is_silent() {
 /// Тик до первого пакета не сигналит: состояний ещё нет, будить некого.
 #[tokio::test]
 async fn tick_without_any_state_is_silent() {
-    let got: Vec<(u8, Signal)> = stream::iter([DetectorEvent::Tick { at: Instant::now() }])
-        .detect_per(
-            |e: &Event| e.addr,
-            || Quiet::after(Duration::from_secs(1)),
-            reflex_core::stream::Lifetime::Bounded,
-        )
-        .collect()
-        .await;
+    let got: Vec<(u8, Signal)> = stream::iter([DetectorEvent::Tick {
+        node: 1,
+        at: Instant::now(),
+    }])
+    .detect_per(
+        |e: &Event| e.addr,
+        || Quiet::after(Duration::from_secs(1)),
+        reflex_core::stream::Lifetime::Bounded,
+    )
+    .collect()
+    .await;
 
     assert!(got.is_empty());
 }
@@ -266,7 +270,7 @@ async fn chain_grows_by_appending() {
     let got: Vec<(u8, Signal)> = stream::iter([
         packet(1, Kind::Rst, t0),
         packet(1, Kind::Byte, t0),
-        DetectorEvent::Tick { at: later },
+        DetectorEvent::Tick { node: 1, at: later },
     ])
     .detect_per(
         |e: &Event| e.addr,
@@ -351,10 +355,16 @@ async fn a_key_that_went_quiet_for_too_long_is_forgotten() {
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0),
         // Простой ДОЛЬШЕ предела: тик приходит, но по ключу 1 событий не было.
-        DetectorEvent::Tick { at: t0 + limit },
+        DetectorEvent::Tick {
+            node: 1,
+            at: t0 + limit,
+        },
         // Новый пакет того же ключа — состояние обязано быть НОВЫМ.
         packet(1, Kind::Byte, t0 + limit * 2),
-        DetectorEvent::Tick { at: t0 + limit * 2 },
+        DetectorEvent::Tick {
+            node: 2,
+            at: t0 + limit * 2,
+        },
     ])
     .detect_per(
         |e: &Event| e.addr,
@@ -385,7 +395,10 @@ async fn an_active_key_keeps_its_state() {
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0 + step),
         packet(1, Kind::Byte, t0 + step * 2),
-        DetectorEvent::Tick { at: t0 + step * 3 },
+        DetectorEvent::Tick {
+            node: 3,
+            at: t0 + step * 3,
+        },
     ])
     .detect_per(
         |e: &Event| e.addr,
@@ -414,9 +427,15 @@ async fn bounded_keys_keep_their_state_forever() {
     let counts: Vec<(u8, Counted)> = stream::iter([
         packet(1, Kind::Byte, t0),
         packet(1, Kind::Byte, t0),
-        DetectorEvent::Tick { at: t0 + long },
+        DetectorEvent::Tick {
+            node: 1,
+            at: t0 + long,
+        },
         packet(1, Kind::Byte, t0 + long * 2),
-        DetectorEvent::Tick { at: t0 + long * 2 },
+        DetectorEvent::Tick {
+            node: 2,
+            at: t0 + long * 2,
+        },
     ])
     .detect_per(
         |e: &Event| e.addr,

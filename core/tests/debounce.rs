@@ -35,6 +35,7 @@ fn packet(start: Instant, millis: u64, what: i32) -> DetectorEvent<i32> {
 
 fn tick(start: Instant, millis: u64) -> DetectorEvent<i32> {
     DetectorEvent::Tick {
+        node: millis,
         at: start + Duration::from_millis(millis),
     }
 }

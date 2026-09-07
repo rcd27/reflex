@@ -47,11 +47,17 @@ async fn the_composition_forgets_when_the_time_bound_is_crossed() {
     let counted: Vec<(u8, u8)> = stream::iter([
         packet(1, t0),
         packet(1, t0),
-        DetectorEvent::Tick { at: t0 },
+        DetectorEvent::Tick { node: 1, at: t0 },
         // Молчание дольше срока: звено по ВРЕМЕНИ обязано забыть.
-        DetectorEvent::Tick { at: t0 + limit },
+        DetectorEvent::Tick {
+            node: 2,
+            at: t0 + limit,
+        },
         packet(1, t0 + limit * 2),
-        DetectorEvent::Tick { at: t0 + limit * 2 },
+        DetectorEvent::Tick {
+            node: 3,
+            at: t0 + limit * 2,
+        },
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     // Потолок ЗАВЕДОМО НЕ ДОСТИГАЕТСЯ: ключ один, групп хватает на десять.
@@ -81,12 +87,12 @@ async fn the_composition_forgets_when_the_count_bound_is_crossed() {
     // Всё происходит в один момент: срок не истекает НИ РАЗУ.
     let counted: Vec<(u8, u32)> = stream::iter([
         packet(1, t0),
-        DetectorEvent::Tick { at: t0 },
+        DetectorEvent::Tick { node: 1, at: t0 },
         // Ключ 2 вытесняет группу ключа 1 — потолок в одну группу.
         packet(2, t0),
-        DetectorEvent::Tick { at: t0 },
+        DetectorEvent::Tick { node: 2, at: t0 },
         packet(1, t0),
-        DetectorEvent::Tick { at: t0 },
+        DetectorEvent::Tick { node: 3, at: t0 },
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
@@ -123,7 +129,7 @@ async fn within_both_domains_nothing_is_forgotten() {
         packet(1, t0),
         packet(1, t0),
         packet(1, t0),
-        DetectorEvent::Tick { at: t0 },
+        DetectorEvent::Tick { node: 1, at: t0 },
     ])
     .detect_per(|k: &u8| *k, Counting::default, Lifetime::UntilIdle(limit))
     .group_by(
