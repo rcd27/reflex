@@ -93,7 +93,7 @@ impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::step::Step for EpisodeIns
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<(W, Instant)>;
 
-    /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
+    /// СЛОВО. Отсутствие слова сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
     type To = smallvec::SmallVec<[Ending; 2]>;
 

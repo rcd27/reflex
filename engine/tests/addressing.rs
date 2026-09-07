@@ -5,50 +5,37 @@
 //!
 //! Здесь же проверяется, что двум адресатам не дали одного слова: область, взятая пошире «чтобы
 //! собралось», не выпадает ни на одной проверке — обе отложимы, — и потому называется вслух.
-use reflex_core::word::{may_wait, Word};
+use reflex_core::word::{may_wait, Conversation, Packet, Target, Word};
 use reflex_engine::{Act, Lost, Ordered, Programme, Sighting};
+
+/// АДРЕС ПРОВЕРЯЕТ КОМПИЛЯТОР, А НЕ ПОДСТРОКА.
+///
+/// Формат [`std::any::type_name`] стандартом не гарантирован: имя годится показать человеку и не
+/// годится утверждать равенство. Границы ниже утверждают то же самое и до запуска.
+fn to_packet<W: Word<Of = Packet>>() {}
+fn to_conversation<W: Word<Of = Conversation>>() {}
+fn to_target<W: Word<Of = Target>>() {}
 
 #[test]
 fn each_word_names_its_region() {
-    fn region_of<W: Word>() -> &'static str {
-        core::any::type_name::<W::Of>()
-    }
-    assert!(
-        region_of::<Act>().ends_with("Packet"),
-        "Act адресован пакету"
-    );
-    assert!(
-        region_of::<Ordered>().ends_with("Conversation"),
-        "Ordered адресован разговору"
-    );
-    assert!(
-        region_of::<Programme>().ends_with("Target"),
-        "Programme адресован цели"
-    );
+    to_packet::<Act>();
+    to_conversation::<Ordered>();
+    to_target::<Programme>();
 }
 
 /// ДВА НАБЛЮДЕНИЯ — ДВА АДРЕСАТА, И ЭТО ПРЕДЪЯВЛЕНО, А НЕ ОБЕЩАНО.
 ///
 /// Пока потеря цели лежала буквой среди наблюдений разговора, обе области были отложимы, и
-/// расхождение не выпадало ни на одной проверке. Здесь оно выпадает: адреса называются вслух.
+/// расхождение не выпадало ни на одной проверке. Здесь оно выпадает: адреса называются вслух, и
+/// назвать оба одинаково нельзя — область в границе стоит одна.
+///
+/// Что два адресата ОСТАЛИСЬ двумя, держит закон пары: `(Sighting, Lost)` словом не собирается,
+/// потому что разным областям слиться нельзя. Провал сборки тестом не выражается, и проверяется он
+/// `compile_fail`-доктестом фундамента.
 #[test]
 fn the_loss_of_a_target_is_not_addressed_to_a_conversation() {
-    fn region_of<W: Word>() -> &'static str {
-        core::any::type_name::<W::Of>()
-    }
-    assert!(
-        region_of::<Sighting>().ends_with("Conversation"),
-        "наблюдение плоскости адресовано разговору"
-    );
-    assert!(
-        region_of::<Lost>().ends_with("Target"),
-        "потеря цели адресована цели"
-    );
-    assert_ne!(
-        region_of::<Sighting>(),
-        region_of::<Lost>(),
-        "два адресата обязаны остаться двумя: одно слово на обоих не говорит, кому сказано"
-    );
+    to_conversation::<Sighting>();
+    to_target::<Lost>();
 }
 
 #[test]

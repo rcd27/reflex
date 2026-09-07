@@ -190,7 +190,7 @@ impl reflex_core::step::Step for ObservedInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<Observed>;
 
-    /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
+    /// СЛОВО. Отсутствие слова сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
     type To = smallvec::SmallVec<[Admits; 2]>;
 
@@ -406,20 +406,16 @@ mod observed_passport_tests {
     ///
     /// Конец плеча — момент, а не адресат. Сказанное разговору пропало бы вместе с ним: круг
     /// сужается ровно тогда, когда разговор уже кончился.
+    ///
+    /// Адрес проверяет компилятор: `type_name` формата не гарантирует, а граница `Of = Target`
+    /// утверждает то же и до запуска.
     #[test]
     fn the_circle_is_addressed_to_the_target() {
-        fn region_of<W: reflex_core::word::Word>() -> &'static str {
-            core::any::type_name::<W::Of>()
-        }
-        assert!(
-            region_of::<Admits>().ends_with("Target"),
-            "круг судеб говорит о цели"
-        );
-        assert_eq!(
-            region_of::<Admits>(),
-            region_of::<crate::resolve::Resolved>(),
-            "два показания об одном предмете обязаны быть адресованы одинаково"
-        );
+        fn to_target<W: reflex_core::word::Word<Of = reflex_core::word::Target>>() {}
+        // Круг судеб говорит о цели — и о ней же говорит разрешение имени. Два слова об одном
+        // предмете обязаны быть адресованы одинаково.
+        to_target::<Admits>();
+        to_target::<crate::resolve::Resolved>();
     }
 
     /// КЛЕТКА МОЛЧАНИЯ — `Blind`: `Inconsistent` есть факт О ПРИБОРЕ, а не о цели.

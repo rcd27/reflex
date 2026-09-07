@@ -258,10 +258,10 @@ pub trait StepExt: Step + Sized {
         crate::detector::Timed::new(self)
     }
 
-    /// Приписать показаниям автора. См. [`crate::detector::Told`].
+    /// Приписать СЛОВУ автора. См. [`crate::detector::Told`].
     ///
     /// `and` складывает наблюдателей в один поток, и без имени два прибора с общим словарём
-    /// (`Silence` и `Choked` оба говорят «байтов нет») дают неразличимые показания при разном
+    /// (`Silence` и `Choked` оба говорят «байтов нет») дают неразличимые слова при разном
     /// лечении. Имя берётся из паспорта прибора, а не пишется у места сборки.
     fn by<I, S>(self, by: &'static str) -> crate::detector::By<Self>
     where
@@ -270,7 +270,7 @@ pub trait StepExt: Step + Sized {
         crate::detector::By::new(self, by)
     }
 
-    /// Говорить только о смене показания. См. [`crate::detector::Changes`].
+    /// Говорить только о смене СЛОВА. См. [`crate::detector::Changes`].
     fn changes<I, S>(self) -> crate::detector::Changes<Self, S>
     where
         Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
