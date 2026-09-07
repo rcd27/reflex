@@ -651,36 +651,6 @@ pub struct Stepped {
     pub sighting: Option<Noted>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Advanced<T> {
-    pub act: Act,
-    pub cursor: Cursor,
-    pub tally: T,
-    pub sighting: Option<Noted>,
-}
-
-pub fn advance<S, M, T>(
-    step: S,
-    measure: M,
-    cursor: Cursor,
-    tally: T,
-    packet: Packet,
-    now: Tick,
-) -> Advanced<T>
-where
-    S: Fn(Cursor, &Packet, Tick) -> Stepped,
-    M: Fn(T, &Packet, Tick) -> T,
-{
-    let counted = measure(tally, &packet, now);
-    let stepped = step(cursor, &packet, now);
-    Advanced {
-        act: stepped.act,
-        cursor: stepped.cursor,
-        tally: counted,
-        sighting: stepped.sighting,
-    }
-}
-
 /// ПАСПОРТ НАБЛЮДЕНИЯ ПЛОСКОСТИ — проекция `model/law/Instrument.tla`.
 ///
 /// Прибор о НАС: он говорит, что плоскость увидела и сделала, а не какова цель.

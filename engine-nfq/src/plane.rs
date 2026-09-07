@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use reflex_core::step::{Alongside, Step, StepExt};
 use reflex_engine::meter::{
-    applied, charge, charged_target, empty_ring, expired, fresh_target, horizon, Pace, Pressure,
-    Ring, Tally, Target,
+    applied, charge, charged_target, empty_ring, expired, fresh_target, horizon, Counting, Pace,
+    Pressure, Ring, Tally, Target,
 };
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
-use reflex_engine::step::{sever, step};
+use reflex_engine::step::{sever, Advancing};
 use reflex_engine::watch::{watched, Watch};
 use reflex_engine::{
-    advance, About, Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Lost, Noted, Noticed,
-    Packet, Plan, Programme, Said, Sighting, Tick,
+    About, Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Lost, Noted, Noticed, Packet,
+    Plan, Programme, Said, Sighting, Tick,
 };
 
 /// КЛЮЧ ЦЕЛИ ТАК, КАК ЕГО ВИДИТ ПЛОСКОСТЬ: имя — сужённое `narrow`, безымянная ветвь — ТОЧНЫЙ
@@ -193,14 +194,7 @@ impl Plane {
             seen_at: BTreeMap::new(),
             targets: BTreeMap::new(),
             ring: empty_ring(),
-            tally: Tally {
-                up_bytes: 0,
-                down_bytes: 0,
-                packets: 0,
-                flows_opened: 0,
-                flows_lost: 0,
-                since: Tick(0),
-            },
+            tally: Counting::fresh().0,
             sightings: Vec::with_capacity(SIGHTINGS),
             dropped_sightings: 0,
             evicted_cursors: 0,
@@ -339,7 +333,6 @@ impl Plane {
         // УСТАРЕВАНИЕ СВЕРЯЕТСЯ С ТЕМ ПЛАНОМ, КОТОРЫЙ СЕЙЧАС В СИЛЕ ДЛЯ ЭТОГО РАЗГОВОРА, а не с
         // планом адреса: у именованного флоу знание живёт под именем, и сверка с адресом
         // объявляла бы устаревшим то, что никогда не менялось.
-        let epoch = plan.epoch;
         let cursor = match self.cursors.get(&wire.flow) {
             Some(held) => *held,
             None => Cursor::Fresh,
@@ -355,38 +348,34 @@ impl Plane {
             says,
         };
 
-        let advanced = advance(
-            |held, seen, at| step(|_asked: &Packet| plan, epoch, held, seen, at),
-            counted,
-            cursor,
-            self.tally,
-            packet,
-            now,
-        );
+        // ГОРЯЧИЙ ПУТЬ ИДЁТ ЧЕРЕЗ АЛГЕБРУ, А НЕ МИМО НЕЁ. Прежде здесь стоял `advance` —
+        // рукописная композиция «посчитать и шагнуть», собранная ровно потому, что морфизм не
+        // выражал заимствованный пакет. Заимствования больше нет, и композиция берётся у
+        // фундамента: `Advancing` говорит вердикт, `Counting` молчит и копит.
+        let (Alongside(advanced, _counting), act, (sighting, tally)) = Advancing::new(cursor)
+            .alongside(Counting(self.tally))
+            .step((plan, packet, now));
 
-        self.tally = advanced.tally;
-        self.note_marked(&advanced.act, wire.dst, wire.dir);
+        self.tally = tally;
+        self.note_marked(&act, wire.dst, wire.dir);
         self.remember(wire.flow, advanced.cursor, now);
         self.charge_channel(wire.dir, wire.payload.len() as u64, now);
         self.charge_target(&wire, now);
         let opened = matches!(
-            advanced.sighting.map(|noted| noted.what),
+            sighting.map(|noted| noted.what),
             Some(Noticed::Talk(Sighting::Opened { .. }))
         );
         // КЛЮЧ БОЛЬШЕ НЕ ПРИДЕЛЫВАЕТСЯ СНАРУЖИ. Прежде край брал голое наблюдение и приписывал
         // ему `wire.flow` сам — то есть связь «наблюдение ↔ разговор» существовала ровно в этом
         // крейте, и всякий второй потребитель двери изобретал бы её заново. Тот же класс, за
         // который уже заплачено ключом памяти, считавшимся на каждой стороне по-своему.
-        advanced
-            .sighting
-            .into_iter()
-            .for_each(|told| self.tell(told));
+        sighting.into_iter().for_each(|told| self.tell(told));
         self.sweep(now);
         Fed {
-            act: advanced.act,
+            act,
             opened,
             seen: reading,
-            watch: watched(self.naming_of_flow(wire.flow), advanced.act, plan),
+            watch: watched(self.naming_of_flow(wire.flow), act, plan),
         }
     }
 
@@ -1095,26 +1084,5 @@ impl Plane {
 
     pub fn horizon_span(&self) -> u64 {
         horizon().0
-    }
-}
-
-fn counted(tally: Tally, packet: &Packet, now: Tick) -> Tally {
-    let size = packet.payload_len as u64;
-    Tally {
-        up_bytes: match packet.dir {
-            Dir::Up => tally.up_bytes + size,
-            Dir::Down => tally.up_bytes,
-        },
-        down_bytes: match packet.dir {
-            Dir::Up => tally.down_bytes,
-            Dir::Down => tally.down_bytes + size,
-        },
-        packets: tally.packets + 1,
-        flows_opened: tally.flows_opened + u64::from(packet.opens),
-        flows_lost: tally.flows_lost,
-        since: match tally.packets == 0 {
-            true => now,
-            false => tally.since,
-        },
     }
 }

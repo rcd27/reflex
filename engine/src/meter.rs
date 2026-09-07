@@ -1,4 +1,4 @@
-use crate::{Dir, Packet, Run, Span, Tick};
+use crate::{Dir, Packet, Plan, Run, Span, Tick};
 
 /// КОЛЬЦО ВРЕМЕННЫ́Х КОРЗИН УЕХАЛО В ФУНДАМЕНТ (05.09.2026).
 ///
@@ -67,6 +67,70 @@ pub struct Tally {
     pub flows_opened: u64,
     pub flows_lost: u64,
     pub since: Tick,
+}
+
+/// СЧЁТ КОРОБКИ — МОЛЧАЩИЙ НАБЛЮДАТЕЛЬ ГОРЯЧЕГО ПУТИ.
+///
+/// # Почему слово `()`, а счёт уходит показанием
+///
+/// Счёт не адресован никому: ни ядру, ни соседнему звену, ни разговору. Объяви его словом — и
+/// сосед по цепочке обязан был бы его ЕСТЬ, то есть решать по числу, которое ведётся для отчёта.
+/// `()` живёт в области `Nobody`, и сказать таким словом некому по построению.
+///
+/// # Почему буква та же, что у решения
+///
+/// Байты считаются с ТОГО ЖЕ пакета, по которому выносится вердикт, и в тот же момент. Дай мы
+/// счётчику свою букву — счёт и решение разошлись бы ровно там, где расходиться нельзя: на
+/// пакете, которого одна из веток не увидела.
+///
+/// План в букве не читается: счёту байтов знание о цели безразлично. Он всё равно обязан стоять в
+/// подписи — соседство требует ОДНОЙ буквы на обоих ([`reflex_core::step::Alongside`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Counting(pub Tally);
+
+impl Counting {
+    /// ПУСТОЙ СЧЁТ. Прежде эта шестёрка нулей писалась у каждого потребителя своей рукой.
+    pub fn fresh() -> Counting {
+        Counting(Tally {
+            up_bytes: 0,
+            down_bytes: 0,
+            packets: 0,
+            flows_opened: 0,
+            flows_lost: 0,
+            since: Tick(0),
+        })
+    }
+}
+
+impl reflex_core::step::Step for Counting {
+    type From = (Plan, Packet, Tick);
+    type To = ();
+    type Notes = Tally;
+
+    fn step(self, (_plan, packet, now): Self::From) -> (Self, (), Tally) {
+        let tally = self.0;
+        let size = packet.payload_len as u64;
+        let counted = Tally {
+            up_bytes: match packet.dir {
+                Dir::Up => tally.up_bytes + size,
+                Dir::Down => tally.up_bytes,
+            },
+            down_bytes: match packet.dir {
+                Dir::Up => tally.down_bytes,
+                Dir::Down => tally.down_bytes + size,
+            },
+            packets: tally.packets + 1,
+            flows_opened: tally.flows_opened + u64::from(packet.opens),
+            // ПОТЕРИ СЧИТАЕТ НЕ ЭТА БУКВА: разговор теряется на тике уборки, а не на пакете.
+            flows_lost: tally.flows_lost,
+            // МОМЕНТ ПЕРВОГО ПАКЕТА — начало отсчёта. Дальше он не двигается.
+            since: match tally.packets == 0 {
+                true => now,
+                false => tally.since,
+            },
+        };
+        (Counting(counted), (), counted)
+    }
 }
 
 pub fn fresh_target(now: Tick) -> Target {
