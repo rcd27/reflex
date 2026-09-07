@@ -27,8 +27,8 @@ pub trait Word {
 
 /// ОБЛАСТЬ, РЕШЕНИЕ О КОТОРОЙ МОЖНО ОТЛОЖИТЬ.
 ///
-/// Маркер, а не градация: сегодняшний запрет ровно один — ждать нельзя там, где ждать нельзя
-/// физически. Градации заведутся тогда, когда появится второй запрет, и не раньше.
+/// Маркер, а не градация: запрет выражается в трейте, потому что градации нужны там, где запретов
+/// несколько. Сегодня запрет один: ждать нельзя там, где ждать нельзя физически.
 pub trait CanDefer: Region {}
 
 /// ПАКЕТ В РУКАХ ЯДРА. Ждать нельзя: очередь держит его до ответа.
@@ -67,6 +67,27 @@ where
 ///
 /// Разным областям слиться нельзя: их слова едят в разные места, и склейка была бы ложью о том,
 /// кому сказано.
+///
+/// ```
+/// use reflex_core::word::{Conversation, Word};
+/// struct Sever;
+/// impl Word for Sever { type Of = Conversation; }
+/// struct Ordered;
+/// impl Word for Ordered { type Of = Conversation; }
+/// fn takes<W: Word>() {}
+/// takes::<(Sever, Ordered)>();
+/// ```
+///
+/// ```compile_fail
+/// use reflex_core::word::{Conversation, Packet, Word};
+/// struct Sever;
+/// impl Word for Sever { type Of = Conversation; }
+/// struct Verdict;
+/// impl Word for Verdict { type Of = Packet; }
+/// fn takes<W: Word>() {}
+/// // Разным областям слиться нельзя: их слова едят в разные места.
+/// takes::<(Sever, Verdict)>();
+/// ```
 impl<A: Word, B: Word<Of = A::Of>> Word for (A, B) {
     type Of = A::Of;
 }
@@ -77,7 +98,11 @@ impl<A: Word, B: Word<Of = A::Of>> Word for (A, B) {
 /// обязан потребовать этот же баунд, и тогда ожидание на пакетной цепочке не соберётся.
 ///
 /// ```
-/// reflex_core::word::may_wait::<()>();
+/// use reflex_core::word::{may_wait, Conversation, Word};
+/// struct Sever;
+/// impl Word for Sever { type Of = Conversation; }
+/// // Разговор ожидание терпит.
+/// may_wait::<Sever>();
 /// ```
 ///
 /// ```compile_fail
