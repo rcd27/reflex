@@ -15,8 +15,6 @@ pub mod flow_table;
 pub mod grid;
 pub mod held;
 pub mod interleave;
-#[cfg(feature = "tls")]
-pub mod l7;
 pub mod meter;
 pub mod parse;
 pub mod serves;
@@ -55,7 +53,5 @@ pub use detector::{
     Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Sensed, Stamped, Timed, Told,
 };
 pub use ext::ReflexExt;
-#[cfg(feature = "tls")]
-pub use l7::L7;
 pub use serves::Serves;
 pub use stack::{AnyProtocol, Dns, Http, Protocol, Quic, Reads, Tcp, Tls, Udp};
