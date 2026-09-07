@@ -801,13 +801,15 @@ fn retention_is_a_named_span_not_a_side_effect() {
     );
 }
 
-/// ВЫСЕЛЕННЫЙ СЧИТАЕТ УХОДЫ, А НЕ РАССМОТРЕНИЯ.
+/// `evicted_cursors` СЧИТАЕТ ЗАБЫВАНИЯ, А НЕ ЛЮБОЙ УХОД ИЗ ТАБЛИЦЫ.
 ///
-/// Запись внутри удержания законно возвращается в кандидаты уборки на каждом проходе — это
-/// пересмотр, а не выселение. Если счётчик растёт на каждом таком проходе, он перестаёт отвечать
-/// на свой собственный вопрос: «сколько разговоров забыто уборкой».
+/// Забывание — это переход `Running → Lost`: состояние снято, и дальше мы не знаем, что
+/// применяли. Разговор, закрывшийся БУКВОЙ, этого перехода не проходит вовсе: знание не
+/// терялось ни разу, и его позднейшее удаление по истечении удержания — не забывание, а срок
+/// службы уже известного. Счётчик обязан остаться плоским на всём пути `Ended`, включая
+/// пересмотры внутри удержания И само итоговое удаление.
 #[test]
-fn evicted_cursors_counts_departures_not_reconsiderations() {
+fn evicted_cursors_does_not_count_the_ended_path_at_all() {
     let mut plane = Plane::new(Programme::Pass, as_seen);
     let port = 44_150u16;
     feed(&mut plane, &syn(port), 0);
@@ -819,8 +821,7 @@ fn evicted_cursors_counts_departures_not_reconsiderations() {
     let before = plane.pressure().evicted;
 
     // Несколько проходов СТРОГО МЕЖДУ первым горизонтом и концом удержания: запись уже видна
-    // уборке как кандидат (прошёл горизонт), но удержание ещё не истекло. Именно здесь прежде
-    // росло число за каждый проход.
+    // уборке как кандидат (прошёл горизонт), но удержание ещё не истекло.
     for step in 1..=4u64 {
         let now = 1_000_000 + horizon + step * (retention - horizon) / 5;
         plane.tick(Tick(now));
@@ -831,25 +832,79 @@ fn evicted_cursors_counts_departures_not_reconsiderations() {
         assert_eq!(
             plane.pressure().evicted,
             before,
-            "пересмотр внутри удержания не есть выселение"
+            "пересмотр внутри удержания не есть забывание"
         );
     }
 
-    // За удержанием — ровно один фактический уход.
+    // За удержанием запись уходит — но знание не терялось, и это НЕ забывание тоже.
     plane.tick(Tick(1_000_000 + retention + horizon));
     plane.tick(Tick(1_000_000 + retention + 2 * horizon));
     assert!(matches!(plane.cursor_of(flow), Cursor::Fresh));
     assert_eq!(
         plane.pressure().evicted,
+        before,
+        "удаление уже известного (Ended, отслуживший удержание) — не забывание"
+    );
+}
+
+/// `evicted_cursors` ДАЁТ РОВНО ОДИН ИНКРЕМЕНТ ЗА ЖИЗНЬ УМОЛКШЕГО МОЛЧА РАЗГОВОРА.
+///
+/// Забывание случается ОДИН РАЗ — в момент `Running → Lost`. Дальнейшее ожидание в кандидатах
+/// уборки (`Lost`, ждущий второго горизонта) и итоговое удаление — тот же самый уже сосчитанный
+/// факт, а не новое событие. Разговор без `FIN` и `RST` — путь, которым в реальном трафике идёт
+/// большинство соединений, — обязан довериться этому счёту РОВНО ОДИН РАЗ от начала до полного
+/// исчезновения записи.
+#[test]
+fn evicted_cursors_counts_a_silent_death_exactly_once() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let port = 44_160u16;
+    feed(&mut plane, &syn(port), 0);
+
+    let flow = flow_of(port);
+    let horizon = reflex_engine::meter::horizon().0;
+    let before = plane.pressure().evicted;
+    assert!(
+        matches!(plane.cursor_of(flow), Cursor::Running(_)),
+        "предпосылка: разговор наблюдается"
+    );
+
+    // ТИШИНА ДЛИННЕЕ ГОРИЗОНТА: `Running → Lost` — единственное забывание за весь жизненный
+    // цикл записи.
+    plane.tick(Tick(horizon * 2));
+    assert_eq!(
+        plane.cursor_of(flow),
+        Cursor::Lost,
+        "предпосылка: разговор разжалован в Lost"
+    );
+    assert_eq!(
+        plane.pressure().evicted,
         before + 1,
-        "уход из таблицы после удержания обязан засчитаться ровно один раз"
+        "забывание Running → Lost обязано засчитаться"
+    );
+
+    // ВТОРОЙ ГОРИЗОНТ — забытый уходит совсем. Это уже не новое забывание, а исчезновение уже
+    // забытой записи, и счётчик расти не обязан.
+    (0..3).for_each(|_pass| {
+        plane.tick(Tick(horizon * 5));
+    });
+    assert_eq!(
+        plane.cursor_of(flow),
+        Cursor::Fresh,
+        "предпосылка: запись удалена целиком"
+    );
+    assert_eq!(
+        plane.pressure().evicted,
+        before + 1,
+        "удаление уже забытой записи — не второе забывание"
     );
 }
 
 /// ЗАВАЛ ВИДЕН ВЕЛИЧИНОЙ, А НЕ ОПОЗДАНИЕМ.
 ///
 /// Проход осматривает не больше бюджета. Если записей больше, остаток копится — и узнать об этом
-/// человек обязан числом заранее, а не по тому, что тревоги начали опаздывать.
+/// человек обязан ТОЧНЫМ числом заранее, а не по тому, что тревоги начали опаздывать. Точность
+/// проверяется нарочно: число просмотренных за проход и общее число живых записей тоже больше
+/// нуля, но ни одно из них не есть остаток — им обязана быть только их РАЗНОСТЬ.
 #[test]
 fn the_backlog_is_a_number_not_a_surprise() {
     let mut plane = Plane::new(Programme::Pass, as_seen);
@@ -861,8 +916,32 @@ fn the_backlog_is_a_number_not_a_surprise() {
     }
 
     plane.tick(Tick(1_000_000));
-    assert!(
-        plane.backlog() > 0,
-        "записей больше бюджета — остаток обязан быть назван"
+    assert_eq!(
+        plane.backlog(),
+        over_budget - reflex_engine_nfq::plane::SWEEP_BUDGET,
+        "остаток обязан быть ТОЧНЫМ числом непросмотренных записей"
+    );
+}
+
+/// ОТРИЦАТЕЛЬНЫЙ КОНТРОЛЬ: НЕТ ЗАВАЛА — НЕТ ОСТАТКА.
+///
+/// Барьер, который пропускает и `backlog() > 0` на любой подмене смысла (`self.swept`,
+/// `self.seen_at.len()` — оба тоже положительны), не барьер. Записей не больше бюджета — один
+/// проход осматривает их все, и остатку взяться неоткуда.
+#[test]
+fn the_backlog_is_zero_when_nothing_is_left_behind() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let under_budget = reflex_engine_nfq::plane::SWEEP_BUDGET - 10;
+
+    for i in 0..under_budget {
+        let port = 46_000 + i as u16;
+        feed(&mut plane, &syn(port), i as u64 * 1_000);
+    }
+
+    plane.tick(Tick(1_000_000));
+    assert_eq!(
+        plane.backlog(),
+        0,
+        "записей не больше бюджета — остатка обязано не быть вовсе"
     );
 }
