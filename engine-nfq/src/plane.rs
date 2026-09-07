@@ -165,6 +165,8 @@ pub struct Plane {
     sweep_from_target: Addr,
     swept: u64,
     sweeps: u64,
+    /// Сколько записей осталось за пределами бюджета на последнем проходе.
+    backlog: usize,
 }
 
 /// Различитель без имени — то, что нужно ядру.
@@ -220,6 +222,7 @@ impl Plane {
             sweep_from_target: Addr(0),
             swept: 0,
             sweeps: 0,
+            backlog: 0,
         }
     }
 
@@ -852,6 +855,7 @@ impl Plane {
                     .map(|(flow, _seen)| *flow)
                     .collect();
                 self.swept += looked.len() as u64;
+                self.backlog = self.seen_at.len().saturating_sub(looked.len());
                 self.sweep_from = match looked.last() {
                     Some(FlowKey(last)) => FlowKey(last.saturating_add(1)),
                     None => FlowKey(0),
@@ -992,6 +996,14 @@ impl Plane {
 
     pub fn sweeps(&self) -> u64 {
         self.sweeps
+    }
+
+    /// СКОЛЬКО ЗАПИСЕЙ ОСТАЛОСЬ НЕОСМОТРЕННЫМИ на последнем проходе уборки.
+    ///
+    /// Растущий остаток значит, что круг удлиняется: тревоги ещё не опаздывают, но начнут. Это
+    /// показание, а не счётчик работы, — оно говорит о ЗАПАСЕ, а не о сделанном.
+    pub fn backlog(&self) -> usize {
+        self.backlog
     }
 
     pub fn pressure(&self) -> Pressure {

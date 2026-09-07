@@ -800,3 +800,24 @@ fn retention_is_a_named_span_not_a_side_effect() {
         "за удержанием память о закрытом разговоре обязана уйти"
     );
 }
+
+/// ЗАВАЛ ВИДЕН ВЕЛИЧИНОЙ, А НЕ ОПОЗДАНИЕМ.
+///
+/// Проход осматривает не больше бюджета. Если записей больше, остаток копится — и узнать об этом
+/// человек обязан числом заранее, а не по тому, что тревоги начали опаздывать.
+#[test]
+fn the_backlog_is_a_number_not_a_surprise() {
+    let mut plane = Plane::new(Programme::Pass, as_seen);
+    let over_budget = reflex_engine_nfq::plane::SWEEP_BUDGET + 50;
+
+    for i in 0..over_budget {
+        let port = 45_000 + i as u16;
+        feed(&mut plane, &syn(port), i as u64 * 1_000);
+    }
+
+    plane.tick(Tick(1_000_000));
+    assert!(
+        plane.backlog() > 0,
+        "записей больше бюджета — остаток обязан быть назван"
+    );
+}
