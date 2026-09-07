@@ -34,6 +34,7 @@ pub mod tempo;
 pub mod timeout;
 pub mod types;
 pub mod watch;
+pub mod word;
 
 pub use tap::Tap;
 pub use tempo::Tempo;
