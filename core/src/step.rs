@@ -205,10 +205,14 @@ pub trait StepExt: Step + Sized {
     ///
     /// Не конвейер: событие идёт в оба звена, а не из одного в другое. Имя `and` — речь цепочки,
     /// а не логическое «и»: в логике `A AND B` значит «сработали оба», здесь — «слушают оба».
-    fn and<B, I, S>(self, other: B) -> crate::detector::Both<Self, B>
+    ///
+    /// Баунд требует общую ОБЛАСТЬ слов, а не общий ТИП: два прибора складываются, даже говоря на
+    /// разных словарях, пока оба адресованы туда же.
+    fn and<B, I>(self, other: B) -> crate::detector::Both<Self, B>
     where
-        Self: Step<From = crate::detector::DetectorEvent<I>, To = smallvec::SmallVec<[S; 2]>>,
-        B: Step<From = Self::From, To = Self::To>,
+        Self: Step<From = crate::detector::DetectorEvent<I>>,
+        B: Step<From = Self::From>,
+        B::To: crate::word::Word<Of = <Self::To as crate::word::Word>::Of>,
         I: Clone,
     {
         crate::detector::Both(self, other)

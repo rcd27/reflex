@@ -20,7 +20,7 @@
 //! НА КЛЮЧ — то есть переход считается по той цели, о которой высказывание. Две цели,
 //! чередуясь, прошли бы оператор потока насквозь.
 
-use reflex_core::detector::DetectorEvent;
+use reflex_core::detector::{Both, DetectorEvent};
 use reflex_core::step::{Step, StepExt};
 use reflex_core::word::{Region, Word};
 use smallvec::{smallvec, SmallVec};
@@ -516,23 +516,26 @@ fn timed_stamps_a_tick_signal_with_the_tick_moment() {
     assert_eq!(said, vec![(tick_at, Distress::Rst)]);
 }
 
-/// АВТОРСТВО ПЕРЕЖИВАЕТ СЛОЖЕНИЕ.
+/// ИМЯ ПЕРЕЖИВАЕТ СЛОЖЕНИЕ РЯДОМ С ПОЗИЦИЕЙ.
 ///
-/// `and` складывает наблюдателей в один поток сигналов, и после сложения не видно, кто сказал.
-/// Для двух приборов с общим словарём (у нас `Silence` и `Choked` оба говорят `no_bytes`) это
-/// потеря РАЗЛИЧЕНИЯ: беды разные, лечение разное, показание одно.
+/// Позиция в паре уже называет сторону, но подпись `Told`/`By` остаётся читаемой сама по себе:
+/// внутри каждой стороны показание несёт имя автора, а не только место в типе.
 #[test]
 fn attribution_survives_composition() {
-    let said = run(
-        Rst.by("сброс")
-            .and(Level.rmap(|_| Distress::Rst).by("уровень")),
-        vec![packet(Kind::Rst)],
-    );
+    let watchers = Rst
+        .by("сброс")
+        .and(Level.rmap(|_| Distress::Rst).by("уровень"));
+    let (_, (from_rst, from_level), _) = watchers.step(packet(Kind::Rst));
 
     assert_eq!(
-        said.iter().map(|told| told.by).collect::<Vec<_>>(),
-        vec!["сброс", "уровень"],
-        "после сложения авторство потерялось: {said:?}"
+        from_rst.iter().map(|told| told.by).collect::<Vec<_>>(),
+        vec!["сброс"],
+        "левая сторона держит своё имя: {from_rst:?}"
+    );
+    assert_eq!(
+        from_level.iter().map(|told| told.by).collect::<Vec<_>>(),
+        vec!["уровень"],
+        "правая сторона держит своё имя: {from_level:?}"
     );
 }
 
@@ -548,6 +551,24 @@ fn attribution_changes_nothing_but_the_name() {
             .map(|told| told.signal)
             .collect::<Vec<_>>(),
         bare
+    );
+}
+
+/// ПОСЛЕ СЛОЖЕНИЯ ВИДНО, КТО СКАЗАЛ — ПОЗИЦИЯ В ТИПЕ И ЕСТЬ ИМЯ.
+///
+/// Прежде два прибора с общим словарём давали неразличимые показания при разном лечении, и
+/// различить их можно было только меткой в работе. Произведение решает это типом: левое слово
+/// пришло от левого звена, и перепутать их нечем.
+#[test]
+fn both_keeps_the_authors_apart_by_position() {
+    let watchers = Both(Rst, Clock);
+    let (_, said, _) = watchers.step(packet(Kind::Rst));
+
+    let (from_rst, from_clock) = said;
+    assert!(!from_rst.is_empty(), "левое звено сказало своё слово");
+    assert!(
+        from_clock.is_empty(),
+        "правое промолчало, и это видно отдельно"
     );
 }
 

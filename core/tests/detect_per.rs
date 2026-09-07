@@ -153,6 +153,28 @@ fn packet(addr: u8, kind: Kind, at: Instant) -> DetectorEvent<Event> {
     }
 }
 
+/// СЛИТЬ ПАРУ ОБРАТНО В ОДИН ВЕКТОР — стенд решает здесь заранее, что обе стороны говорят одним
+/// словарём, и это решение стенда, а не обязанность `Both`: `detect_per` держит состояние по
+/// плоскому алфавиту одного сигнала на ключ, а произведение `Both` отдаёт пару сторон.
+#[derive(Debug, Clone, Copy, Default)]
+struct Merged<D>(D);
+
+impl<D, I, S> Step for Merged<D>
+where
+    D: Step<From = DetectorEvent<I>, To = (SmallVec<[S; 2]>, SmallVec<[S; 2]>)>,
+    S: Word,
+{
+    type From = DetectorEvent<I>;
+    type To = SmallVec<[S; 2]>;
+    type Notes = D::Notes;
+
+    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+        let (next, (mut left, right), notes) = self.0.step(event);
+        left.extend(right);
+        (Merged(next), left, notes)
+    }
+}
+
 /// СОСТОЯНИЕ ЖИВЁТ ПО КЛЮЧУ и не смешивается между целями.
 #[tokio::test]
 async fn state_is_per_key() {
@@ -164,7 +186,7 @@ async fn state_is_per_key() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Rst.and(Bytes),
+        || Merged(Rst.and(Bytes)),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()
@@ -275,7 +297,7 @@ async fn composition_lets_both_observe() {
     let got: Vec<(u8, Signal)> = stream::iter([packet(1, Kind::Rst, t0)])
         .detect_per(
             |e: &Event| e.addr,
-            || Rst.and(Everything),
+            || Merged(Rst.and(Everything)),
             reflex_core::stream::Lifetime::Bounded,
         )
         .collect()
@@ -299,7 +321,7 @@ async fn chain_grows_by_appending() {
     ])
     .detect_per(
         |e: &Event| e.addr,
-        || Rst.and(Quiet::after(Duration::from_secs(1))).and(Bytes),
+        || Merged(Merged(Rst.and(Quiet::after(Duration::from_secs(1)))).and(Bytes)),
         reflex_core::stream::Lifetime::Bounded,
     )
     .collect()

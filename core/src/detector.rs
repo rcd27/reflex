@@ -104,28 +104,31 @@ pub enum Sensed<T> {
 /// Метод остаётся `.and(…)` как речь цепочки.
 ///
 /// ЦЕНА: событие клонируется по разу на детектор; цепочка из N звеньев клонирует N раз.
-/// ЦЕНА: словарь сигналов общий, поэтому после сложения не видно, кто сказал.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Both<A, B>(pub A, pub B);
 
-impl<A, B, I, S> crate::step::Step for Both<A, B>
+impl<A, B, I> crate::step::Step for Both<A, B>
 where
-    A: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
-    B: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    A: crate::step::Step<From = DetectorEvent<I>>,
+    B: crate::step::Step<From = DetectorEvent<I>>,
+    B::To: crate::word::Word<Of = <A::To as crate::word::Word>::Of>,
     I: Clone,
-    S: crate::word::Word,
 {
     type From = DetectorEvent<I>;
-    type To = SmallVec<[S; 2]>;
+    /// СЛОВА ОДНОЙ ОБЛАСТИ, СЛОЖЕННЫЕ ПРОИЗВЕДЕНИЕМ.
+    ///
+    /// Разным областям слиться нельзя: их слова едут в разные места, и склейка была бы ложью о
+    /// том, кому сказано. Позиция в типе называет автора вернее всякой метки: левое слово пришло
+    /// от левого звена, и перепутать их нечем — даже когда оба говорят на одном словаре.
+    type To = (A::To, B::To);
     /// ПРОИЗВЕДЕНИЕ, КАК И У [`crate::step::Then`]: два прибора не обязаны говорить на одном
     /// языке показаний, чтобы их показания сложились, а позиция в типе называет автора.
     type Notes = (A::Notes, B::Notes);
 
     fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
-        let (first, mut signals, noted) = self.0.step(event.clone());
-        let (second, more, also_noted) = self.1.step(event);
-        signals.extend(more);
-        (Both(first, second), signals, (noted, also_noted))
+        let (first, said, noted) = self.0.step(event.clone());
+        let (second, also, also_noted) = self.1.step(event);
+        (Both(first, second), (said, also), (noted, also_noted))
     }
 }
 
