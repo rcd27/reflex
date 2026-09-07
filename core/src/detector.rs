@@ -457,6 +457,12 @@ impl<D: Clone, S: Clone> Clone for Changes<D, S> {
     }
 }
 
+/// ПЕРЕИМЕНОВАНО ИЗ `Told`: ОДНО СЛОВО НАЗЫВАЛО ДВА РАЗНЫХ ТИПА В ОДНОМ КРЕЙТЕ.
+///
+/// В `sight` `Told<T>` — решётка того, что известно о величине; здесь — слово, помнящее автора.
+/// Общего только написание, и оно расходится молча. Переименован МЕНЬШИЙ по употреблению —
+/// тем же правилом, каким `engine` уже развёл свою одноимённую пару.
+///
 /// СЛОВО, ПОМНЯЩЕЕ, КТО ЕГО СКАЗАЛ.
 ///
 /// Подпись стоит на СЛОВЕ, а не на показаниях: показания идут вбок и автора уже называют позицией
@@ -466,17 +472,17 @@ impl<D: Clone, S: Clone> Clone for Changes<D, S> {
 /// (`Silence` и `Choked` оба говорят «байтов нет») дают неразличимые слова при разном лечении.
 /// Имя берётся из паспорта прибора, а не пишется у места сборки.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Told<S> {
+pub struct Signed<S> {
     pub by: &'static str,
     pub signal: S,
 }
 
 /// ИМЯ АВТОРА АДРЕСАТА НЕ МЕНЯЕТ: подпись говорит, КТО сказал, а не КОМУ.
-impl<S: crate::word::Word> crate::word::Word for Told<S> {
+impl<S: crate::word::Word> crate::word::Word for Signed<S> {
     type Of = S::Of;
 }
 
-/// Приписать СЛОВУ автора. См. [`Told`].
+/// Приписать СЛОВУ автора. См. [`Signed`].
 pub struct By<D> {
     inner: D,
     by: &'static str,
@@ -488,18 +494,18 @@ where
     S: crate::word::Word,
 {
     type From = DetectorEvent<I>;
-    type To = SmallVec<[Told<S>; 2]>;
+    type To = SmallVec<[Signed<S>; 2]>;
     /// Подпись автора меняет слово, не показания: показания идут сквозь без изменений.
     type Notes = D::Notes;
 
     fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
         let Self { inner, by } = self;
         let (stepped, signals, notes) = inner.step(event);
-        let told = signals
+        let signed = signals
             .into_iter()
-            .map(|signal| Told { by, signal })
+            .map(|signal| Signed { by, signal })
             .collect();
-        (Self { inner: stepped, by }, told, notes)
+        (Self { inner: stepped, by }, signed, notes)
     }
 }
 

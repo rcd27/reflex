@@ -50,7 +50,7 @@ pub use capability::{
 };
 pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{
-    Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Sensed, Stamped, Timed, Told,
+    Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Sensed, Signed, Stamped, Timed,
 };
 pub use ext::ReflexExt;
 pub use serves::Serves;

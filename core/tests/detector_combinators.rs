@@ -530,7 +530,7 @@ fn timed_stamps_a_tick_signal_with_the_tick_moment() {
 
 /// ИМЯ ПЕРЕЖИВАЕТ СЛОЖЕНИЕ РЯДОМ С ПОЗИЦИЕЙ.
 ///
-/// Позиция в паре уже называет сторону, но подпись `Told`/`By` остаётся читаемой сама по себе:
+/// Позиция в паре уже называет сторону, но подпись `Signed`/`By` остаётся читаемой сама по себе:
 /// внутри каждой стороны показание несёт имя автора, а не только место в типе.
 #[test]
 fn attribution_survives_composition() {
@@ -540,12 +540,15 @@ fn attribution_survives_composition() {
     let (_, (from_rst, from_level), _) = watchers.step(packet(Kind::Rst));
 
     assert_eq!(
-        from_rst.iter().map(|told| told.by).collect::<Vec<_>>(),
+        from_rst.iter().map(|signed| signed.by).collect::<Vec<_>>(),
         vec!["сброс"],
         "левая сторона держит своё имя: {from_rst:?}"
     );
     assert_eq!(
-        from_level.iter().map(|told| told.by).collect::<Vec<_>>(),
+        from_level
+            .iter()
+            .map(|signed| signed.by)
+            .collect::<Vec<_>>(),
         vec!["уровень"],
         "правая сторона держит своё имя: {from_level:?}"
     );
@@ -560,7 +563,7 @@ fn attribution_changes_nothing_but_the_name() {
     assert_eq!(
         named
             .into_iter()
-            .map(|told| told.signal)
+            .map(|signed| signed.signal)
             .collect::<Vec<_>>(),
         bare
     );
