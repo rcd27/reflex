@@ -42,14 +42,31 @@ pub struct FlowKey(pub u64);
 /// крейтах, и менять их ради нового пути значило бы платить churn'ом за ноль смысла.
 pub use reflex_core::types::Dir;
 
-pub struct Packet<'a> {
+/// БУКВА ГОРЯЧЕГО ПУТИ — БЕЗ ЗАИМСТВОВАНИЯ, И ЭТО НЕ ЭКОНОМИЯ, А УСЛОВИЕ ВЫРАЗИМОСТИ.
+///
+/// Поле было `payload: &'a [u8]`, и лайфтайм уходил в `Advancing<'a>`, а оттуда в
+/// `Step::From`. У `Step::From` собственного лайфтайма нет, значит вход не умеет заимствовать
+/// ТОЛЬКО НА ВРЕМЯ ВЫЗОВА: все пакеты, поданные одной машине, обязаны делить одну область
+/// заимствования. Боевой путь устроен ровно наоборот — байты принадлежат сообщению ядра и живут
+/// до вердикта, — и цикл по пакетам не собирался вовсе (`E0597`, установлено сборкой 06.09.2026).
+/// Носитель существовал, а горячий путь им не выражался.
+///
+/// Заменено длиной, потому что ЧИТАЛАСЬ ТОЛЬКО ОНА: во всём движке у нагрузки брались `.len()` и
+/// `.is_empty()`, ни одного индексирования. Алфавит переигровки назван шестым vision (§7.2)
+/// в том же составе.
+///
+/// ЦЕНА НАЗВАНА: байты из буквы движка больше недостижимы. Кому нужно содержимое — разбирает ДО,
+/// в краю (`engine-nfq::parse`), где байты и живут; движок получает разобранное.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Packet {
     pub flow: FlowKey,
     pub dst: Addr,
     pub dir: Dir,
     pub opens: bool,
     pub closes: bool,
     pub resets: bool,
-    pub payload: &'a [u8],
+    /// СКОЛЬКО БАЙТОВ НЁС — не сами байты. См. докблок структуры.
+    pub payload_len: usize,
     /// ЧТО ЭТОТ ПАКЕТ СКАЗАЛ О ЛИЧНОСТИ. Ядро имён не знает и знать не должно — оно знает МОМЕНТ,
     /// в который личность стала известна, и этого хватает, чтобы принять план по ней.
     pub says: Said,
@@ -647,12 +664,12 @@ pub fn advance<S, M, T>(
     measure: M,
     cursor: Cursor,
     tally: T,
-    packet: Packet<'_>,
+    packet: Packet,
     now: Tick,
 ) -> Advanced<T>
 where
-    S: Fn(Cursor, &Packet<'_>, Tick) -> Stepped,
-    M: Fn(T, &Packet<'_>, Tick) -> T,
+    S: Fn(Cursor, &Packet, Tick) -> Stepped,
+    M: Fn(T, &Packet, Tick) -> T,
 {
     let counted = measure(tally, &packet, now);
     let stepped = step(cursor, &packet, now);
@@ -890,7 +907,10 @@ mod sighting_passport_tests {
     /// «состояние потеряно, не знаем что применяли» — то есть именно отказ, а не пустоту.
     #[test]
     fn the_passport_calls_its_silence_blindness() {
-        assert_eq!(SightingInstrument::SILENCE, Some(reflex_instrument::Silence::Blind));
+        assert_eq!(
+            SightingInstrument::SILENCE,
+            Some(reflex_instrument::Silence::Blind)
+        );
     }
 
     /// УЛИКА ОТКРЫВАЕТСЯ ПАСПОРТНЫМ ИМЕНЕМ — и это не косметика (#325, срез 1).

@@ -21,7 +21,7 @@ fn feed(target: Target, bucket: u64, bytes: usize) -> Charged {
         opens: false,
         closes: false,
         resets: false,
-        payload: &payload,
+        payload_len: payload.len(),
         says: reflex_engine::row::Naming::Awaited,
     };
     charged_target(target, &packet, at(bucket))

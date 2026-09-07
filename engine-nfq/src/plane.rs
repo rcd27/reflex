@@ -351,12 +351,12 @@ impl Plane {
             opens: wire.opens,
             closes: wire.closes,
             resets: wire.resets,
-            payload: wire.payload,
+            payload_len: wire.payload.len(),
             says,
         };
 
         let advanced = advance(
-            |held, seen, at| step(|_asked: &Packet<'_>| plan, epoch, held, seen, at),
+            |held, seen, at| step(|_asked: &Packet| plan, epoch, held, seen, at),
             counted,
             cursor,
             self.tally,
@@ -718,7 +718,7 @@ impl Plane {
             opens: wire.opens,
             closes: wire.closes,
             resets: wire.resets,
-            payload: wire.payload,
+            payload_len: wire.payload.len(),
             // СЧЁТУ БАЙТОВ ЛИЧНОСТЬ ЦЕЛИ БЕЗРАЗЛИЧНА: здесь меряется темп, а не решается план.
             says: Naming::Awaited,
         };
@@ -1098,8 +1098,8 @@ impl Plane {
     }
 }
 
-fn counted(tally: Tally, packet: &Packet<'_>, now: Tick) -> Tally {
-    let size = packet.payload.len() as u64;
+fn counted(tally: Tally, packet: &Packet, now: Tick) -> Tally {
+    let size = packet.payload_len as u64;
     Tally {
         up_bytes: match packet.dir {
             Dir::Up => tally.up_bytes + size,

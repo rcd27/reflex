@@ -9,7 +9,7 @@ use crate::{Dir, Packet, Run, Span, Tick};
 /// Здесь остались ОБЁРТКИ, знающие наш предмет: счёт цели (`Target`), счёт коробки (`Tally`) и
 /// правила их начисления по `Packet` и `Run`.
 pub use reflex_core::meter::{
-    applied, ceiling, empty_ring, faster, freshness_of, merged, paced, room, rolled, slot,
+    applied, ceiling, empty_ring, faster, freshness_of, merged, paced, rolled, room, slot,
     slower_than, Bucket, Charge, Freshness, Pace, Pressure, Ring, BUCKETS, BUCKET_SHIFT,
 };
 
@@ -85,8 +85,8 @@ pub fn fresh_target(now: Tick) -> Target {
     }
 }
 
-pub fn charged_target(target: Target, packet: &Packet<'_>, now: Tick) -> Charged {
-    let size = packet.payload.len() as u64;
+pub fn charged_target(target: Target, packet: &Packet, now: Tick) -> Charged {
+    let size = packet.payload_len as u64;
     let down = match packet.dir {
         Dir::Down => size,
         Dir::Up => 0,

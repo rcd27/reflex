@@ -2,11 +2,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use reflex_core::command::InjectablePacket;
 use reflex_engine::watch::Watch;
 use reflex_engine::{Act, Addr, Basis, Interest, Mark, Noticed, Programme, Tick};
 use reflex_engine_nfq::parse::{read, Read, SERVER_PORT};
 use reflex_engine_nfq::plane::Plane;
-use reflex_core::command::InjectablePacket;
 use reflex_linux::nfqueue::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
 
 const INJECT_MARK: u32 = 0xBB;

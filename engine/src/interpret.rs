@@ -130,9 +130,12 @@ pub use reflex_instrument::departure::Left;
 /// вопроса прибора (см. `impl Departure for Sighting`), прибор из ответов делает вывод. Обёртка
 /// оставлена ради читателей, которые зовут `left` по имени.
 pub fn left(sighting: &Sighting) -> Option<Left> {
-    reflex_instrument::says(reflex_instrument::departure::DepartureInstrument::new(), sighting)
-        .first()
-        .copied()
+    reflex_instrument::says(
+        reflex_instrument::departure::DepartureInstrument::new(),
+        sighting,
+    )
+    .first()
+    .copied()
 }
 
 #[cfg(test)]
@@ -287,15 +290,21 @@ mod tests {
         };
 
         assert_eq!(
-            reflex_instrument::says(reflex_instrument::departure::DepartureInstrument::new(), &unserved)
-                .first()
-                .copied(),
+            reflex_instrument::says(
+                reflex_instrument::departure::DepartureInstrument::new(),
+                &unserved
+            )
+            .first()
+            .copied(),
             left(&unserved)
         );
         assert_eq!(
-            reflex_instrument::says(reflex_instrument::departure::DepartureInstrument::new(), &unserved)
-                .first()
-                .copied(),
+            reflex_instrument::says(
+                reflex_instrument::departure::DepartureInstrument::new(),
+                &unserved
+            )
+            .first()
+            .copied(),
             Some(Left::Unserved)
         );
     }

@@ -145,7 +145,6 @@ pub fn keyed<N>(naming: Naming<N>, dst: Addr, width: fn(Addr) -> Addr) -> Target
     }
 }
 
-
 /// Ответила ли цель, и через сколько — в единице, у которой слепота выразима.
 pub type Spoke = Told<Span>;
 
@@ -392,7 +391,10 @@ impl reflex_instrument::Instrument for BlindnessInstrument {
     /// УРОВЕНЬ: говорит о НАС: видим ли мы поток вообще — вопрос транспортной видимости, не содержимого.
     const LAYER: reflex_instrument::Layer = reflex_instrument::Layer::Transport;
     /// ТРАНСПОРТЫ: предмет — видим ли мы поток вообще, а поток есть у обоих.
-    const PROTOCOLS: &'static [reflex_instrument::Protocol] = &[reflex_instrument::Protocol::Tcp, reflex_instrument::Protocol::Udp];
+    const PROTOCOLS: &'static [reflex_instrument::Protocol] = &[
+        reflex_instrument::Protocol::Tcp,
+        reflex_instrument::Protocol::Udp,
+    ];
     const RUNG: Option<reflex_instrument::Rung> = None;
 
     /// ПАКЕТ: полнота считается по ходу разговора, из счётчиков ядра.
@@ -694,7 +696,10 @@ mod blindness_passport_tests {
     /// Объяви он `Nothing` — человек прочитал бы «цель молчит» там, где молчим мы.
     #[test]
     fn the_blindness_passport_calls_itself_blind() {
-        assert_eq!(BlindnessInstrument::SILENCE, Some(reflex_instrument::Silence::Blind));
+        assert_eq!(
+            BlindnessInstrument::SILENCE,
+            Some(reflex_instrument::Silence::Blind)
+        );
         assert!(BlindnessInstrument::LIES
             .iter()
             .any(|lie| lie.contains("НЕ ПОДКЛЮЧЁН")));

@@ -39,7 +39,7 @@ fn plan() -> Plan {
     }
 }
 
-fn opening(payload: &[u8]) -> Packet<'_> {
+fn opening(payload: &[u8]) -> Packet {
     Packet {
         flow: FlowKey(7),
         dst: Addr(0x0A00_0001),
@@ -47,7 +47,7 @@ fn opening(payload: &[u8]) -> Packet<'_> {
         opens: true,
         closes: false,
         resets: false,
-        payload,
+        payload_len: payload.len(),
         says: Naming::Awaited,
     }
 }
@@ -121,5 +121,42 @@ fn engine_composes_with_a_foreign_link() {
         second_notes.is_none(),
         "продолжение того же разговора не несёт нового наблюдения — сосед этого не видел бы \
          в любом случае, он его и не читает"
+    );
+}
+
+/// ГОРЯЧИЙ ПУТЬ ВЫРАЖЕН: одна машина, у каждого пакета свой срок жизни байтов.
+///
+/// Этот цикл НЕ СОБИРАЛСЯ (`E0597`, 06.09.2026), и потому продукт звал свободную функцию мимо
+/// морфизма. Причина была в `Packet<'a>`: лайфтайм уходил в `Advancing<'a>`, а `Step::From` не
+/// умеет заимствовать только на время вызова — все пакеты одной машины обязаны были делить одну
+/// область заимствования, тогда как в бою байты принадлежат сообщению ядра и живут до вердикта.
+///
+/// Байты здесь заводятся ВНУТРИ оборота намеренно: это и есть форма боевого цикла, а не
+/// украшение теста.
+#[test]
+fn one_machine_eats_packets_borrowed_for_their_own_turn() {
+    let mut machine = Advancing::new(Cursor::Fresh);
+    let mut verdicts = Vec::new();
+
+    for turn in 1..=3u64 {
+        let bytes = vec![turn as u8; turn as usize];
+        let packet = Packet {
+            opens: turn == 1,
+            ..opening(&bytes)
+        };
+        let (next, act, _notes) = machine.step((plan(), packet, Tick(turn)));
+        machine = next;
+        verdicts.push(act);
+        drop(bytes);
+    }
+
+    assert_eq!(
+        verdicts,
+        vec![Act::Pass; 3],
+        "план говорит пропускать все три"
+    );
+    assert!(
+        matches!(machine.cursor, Cursor::Running(_)),
+        "состояние пережило все три оборота, хотя байты каждого умерли на своём"
     );
 }

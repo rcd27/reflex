@@ -45,7 +45,7 @@ fn plan(programme: Programme, epoch: u32) -> Plan {
     }
 }
 
-fn packet(dir: Dir, payload: &[u8]) -> Packet<'_> {
+fn packet(dir: Dir, payload: &[u8]) -> Packet {
     Packet {
         flow: FlowKey(1),
         dst: Addr(7),
@@ -53,13 +53,13 @@ fn packet(dir: Dir, payload: &[u8]) -> Packet<'_> {
         opens: false,
         closes: false,
         resets: false,
-        payload,
+        payload_len: payload.len(),
         says: Naming::Awaited,
     }
 }
 
 /// ПАКЕТ, НА КОТОРОМ ЦЕЛЬ НАЗВАЛАСЬ. На проводе это `ClientHello`; ядру довольно признака.
-fn hello(payload: &[u8]) -> Packet<'_> {
+fn hello(payload: &[u8]) -> Packet {
     Packet {
         says: Naming::Spoken(()),
         ..packet(Dir::Up, payload)
@@ -68,14 +68,14 @@ fn hello(payload: &[u8]) -> Packet<'_> {
 
 /// ПАКЕТ, НА КОТОРОМ ПРИВЕТСТВИЕ ПРОШЛО БЕЗ ИМЕНИ: коннект по IP, MTProto, ECH. Имени НЕ БУДЕТ —
 /// и это другой факт, чем «имя впереди».
-fn nameless_hello(payload: &[u8]) -> Packet<'_> {
+fn nameless_hello(payload: &[u8]) -> Packet {
     Packet {
         says: Naming::Silent,
         ..packet(Dir::Up, payload)
     }
 }
 
-fn syn<'a>() -> Packet<'a> {
+fn syn<'a>() -> Packet {
     Packet {
         opens: true,
         ..packet(Dir::Up, &[])
@@ -151,7 +151,7 @@ fn a_lost_cursor_passes_and_never_takes_a_new_plan() {
 #[test]
 fn the_table_is_consulted_at_the_opening_and_at_the_naming_and_no_more() {
     let asked = Cell::new(0u32);
-    let look_up = |_packet: &Packet<'_>| {
+    let look_up = |_packet: &Packet| {
         asked.set(asked.get() + 1);
         plan(Programme::Pass, 1)
     };
@@ -191,7 +191,7 @@ fn the_table_is_consulted_at_the_opening_and_at_the_naming_and_no_more() {
 fn the_plan_is_taken_from_the_identity_not_from_the_address_it_opened_on() {
     let by_address = plan(Programme::Pass, 1);
     let by_identity = plan(Programme::Mark(Mark(0xcc)), 1);
-    let look_up = |packet: &Packet<'_>| match packet.says {
+    let look_up = |packet: &Packet| match packet.says {
         Naming::Awaited => by_address,
         Naming::Spoken(()) | Naming::Silent => by_identity,
     };
@@ -229,7 +229,7 @@ fn the_plan_is_taken_from_the_identity_not_from_the_address_it_opened_on() {
 fn a_conversation_that_never_names_its_target_keeps_the_plan_it_opened_with() {
     let by_address = plan(Programme::Pass, 1);
     let by_identity = plan(Programme::Mark(Mark(0xcc)), 1);
-    let look_up = |packet: &Packet<'_>| match packet.says {
+    let look_up = |packet: &Packet| match packet.says {
         Naming::Awaited => by_address,
         Naming::Spoken(()) | Naming::Silent => by_identity,
     };
@@ -444,7 +444,7 @@ fn the_first_packet_of_a_flow_reports_what_the_plan_stood_on() {
 fn a_hello_without_a_name_settles_the_plan_and_a_later_name_does_not_move_it() {
     let by_address = plan(Programme::Pass, 1);
     let by_identity = plan(Programme::Mark(Mark(0xcc)), 1);
-    let look_up = |packet: &Packet<'_>| match packet.says {
+    let look_up = |packet: &Packet| match packet.says {
         Naming::Awaited => by_address,
         Naming::Silent => by_address,
         Naming::Spoken(()) => by_identity,

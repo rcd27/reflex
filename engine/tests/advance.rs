@@ -15,7 +15,7 @@ fn empty_tally() -> Tally {
     }
 }
 
-fn packet(payload: &[u8]) -> Packet<'_> {
+fn packet(payload: &[u8]) -> Packet {
     Packet {
         flow: FlowKey(1),
         dst: Addr(0x0A000001),
@@ -23,14 +23,14 @@ fn packet(payload: &[u8]) -> Packet<'_> {
         opens: false,
         closes: false,
         resets: false,
-        payload,
+        payload_len: payload.len(),
         says: reflex_engine::row::Naming::Awaited,
     }
 }
 
-fn counting(tally: Tally, packet: &Packet<'_>, _now: Tick) -> Tally {
+fn counting(tally: Tally, packet: &Packet, _now: Tick) -> Tally {
     Tally {
-        down_bytes: tally.down_bytes + packet.payload.len() as u64,
+        down_bytes: tally.down_bytes + packet.payload_len as u64,
         packets: tally.packets + 1,
         ..tally
     }
@@ -38,7 +38,7 @@ fn counting(tally: Tally, packet: &Packet<'_>, _now: Tick) -> Tally {
 
 #[test]
 fn tally_advances_even_when_the_step_lost_the_flow() {
-    let losing = |_cursor: Cursor, _packet: &Packet<'_>, _now: Tick| Stepped {
+    let losing = |_cursor: Cursor, _packet: &Packet, _now: Tick| Stepped {
         act: Act::Pass,
         cursor: Cursor::Lost,
         sighting: None,
@@ -60,7 +60,7 @@ fn tally_advances_even_when_the_step_lost_the_flow() {
 
 #[test]
 fn tally_advances_even_when_the_packet_is_dropped() {
-    let dropping = |_cursor: Cursor, _packet: &Packet<'_>, _now: Tick| Stepped {
+    let dropping = |_cursor: Cursor, _packet: &Packet, _now: Tick| Stepped {
         act: Act::Drop,
         cursor: Cursor::Fresh,
         sighting: None,
@@ -87,7 +87,7 @@ fn tally_advances_even_when_the_packet_is_dropped() {
 /// дальше разговора не будет.
 #[test]
 fn tally_advances_even_when_the_flow_is_severed() {
-    let severing = |_cursor: Cursor, _packet: &Packet<'_>, _now: Tick| Stepped {
+    let severing = |_cursor: Cursor, _packet: &Packet, _now: Tick| Stepped {
         act: Act::Sever,
         cursor: Cursor::Fresh,
         sighting: None,
@@ -108,7 +108,7 @@ fn tally_advances_even_when_the_flow_is_severed() {
 
 #[test]
 fn advance_forwards_the_steps_verdict_without_inventing_anything() {
-    let sighted = |_cursor: Cursor, packet: &Packet<'_>, now: Tick| Stepped {
+    let sighted = |_cursor: Cursor, packet: &Packet, now: Tick| Stepped {
         act: Act::Pass,
         cursor: Cursor::Fresh,
         sighting: Some(Noted {

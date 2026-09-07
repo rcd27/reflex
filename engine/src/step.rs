@@ -1,8 +1,8 @@
 use crate::row::Answered;
 use crate::row::Naming;
 use crate::{
-    stood_on, About, Act, Cursor, Dir, Epoch, Noted, Noticed, Ordered, Packet, Plan, Programme,
-    Run, Announced, Sighting, Span, Stepped, Tick,
+    stood_on, About, Act, Announced, Cursor, Dir, Epoch, Noted, Noticed, Ordered, Packet, Plan,
+    Programme, Run, Sighting, Span, Stepped, Tick,
 };
 
 // TODO(#298): числа объявлены по слуху — заменить замером на риге
@@ -30,15 +30,9 @@ pub fn acted(programme: Programme) -> Act {
 /// `look_up` зовётся ДВАЖДЫ за разговор, и это его смысл (#317): на открытии — с тем, что есть
 /// на SYN (адрес), и на пакете, где цель назвалась, — с тем, что стало известно (имя). Ключ
 /// выбирает вызывающий: ядро не знает ни имён, ни адресных карт, оно знает МОМЕНТ.
-pub fn step<'a, L>(
-    look_up: L,
-    epoch: Epoch,
-    cursor: Cursor,
-    packet: &Packet<'a>,
-    now: Tick,
-) -> Stepped
+pub fn step<'a, L>(look_up: L, epoch: Epoch, cursor: Cursor, packet: &Packet, now: Tick) -> Stepped
 where
-    L: Fn(&Packet<'a>) -> Plan,
+    L: Fn(&Packet) -> Plan,
 {
     match cursor {
         // ХВОСТ ЗАКРЫВШЕГОСЯ РАЗГОВОРА НЕСЁТ ТО ЖЕ РЕШЕНИЕ. Прежде здесь стоял `Act::Pass` вместе
@@ -64,13 +58,13 @@ where
                     up: closed.counted.up + u64::from(matches!(packet.dir, Dir::Up)),
                     up_bytes: closed.counted.up_bytes
                         + match packet.dir {
-                            Dir::Up => packet.payload.len() as u64,
+                            Dir::Up => packet.payload_len as u64,
                             Dir::Down => 0,
                         },
                     down: closed.counted.down + u64::from(matches!(packet.dir, Dir::Down)),
                     down_bytes: closed.counted.down_bytes
                         + match packet.dir {
-                            Dir::Down => packet.payload.len() as u64,
+                            Dir::Down => packet.payload_len as u64,
                             Dir::Up => 0,
                         },
                 },
@@ -87,8 +81,8 @@ where
     }
 }
 
-fn opened(plan: Plan, packet: &Packet<'_>, now: Tick) -> Stepped {
-    let carrying = !packet.payload.is_empty();
+fn opened(plan: Plan, packet: &Packet, now: Tick) -> Stepped {
+    let carrying = packet.payload_len > 0;
     let upward = matches!(packet.dir, Dir::Up);
     let run = Run {
         plan,
@@ -99,12 +93,12 @@ fn opened(plan: Plan, packet: &Packet<'_>, now: Tick) -> Stepped {
         up: u16::from(upward),
         down: u16::from(!upward),
         up_bytes: match upward {
-            true => packet.payload.len() as u64,
+            true => packet.payload_len as u64,
             false => 0,
         },
         down_bytes: match upward {
             true => 0,
-            false => packet.payload.len() as u64,
+            false => packet.payload_len as u64,
         },
         began: now,
         last_up: now,
@@ -138,7 +132,7 @@ fn opened(plan: Plan, packet: &Packet<'_>, now: Tick) -> Stepped {
 /// Одно место на все ветви, а не поле в каждой: адресат и момент у наблюдения с провода всегда
 /// одни и те же — разговор, который его породил, и шаг, на котором это случилось. Разнеси их по
 /// ветвям — и появилась бы ветвь, где их забыли проставить.
-fn noted(run: &Run, packet: &Packet<'_>, now: Tick, what: Sighting) -> Noted {
+fn noted(run: &Run, packet: &Packet, now: Tick, what: Sighting) -> Noted {
     Noted {
         at: now,
         about: About::Talk(packet.flow),
@@ -161,15 +155,15 @@ fn noted(run: &Run, packet: &Packet<'_>, now: Tick, what: Sighting) -> Noted {
 /// прежде принятие ждало ИМЕНИ, поэтому разговор, чьё приветствие прошло без имени, оставался
 /// временным навсегда — и мелькни в нём позже имя, план сменился бы на середине применения.
 /// Имени не будет — значит решение окончательно, и ждать нечего.
-fn adopting(run: &Run, packet: &Packet<'_>) -> bool {
+fn adopting(run: &Run, packet: &Packet) -> bool {
     matches!(run.naming, Naming::Awaited) && !matches!(packet.says, Naming::Awaited)
 }
 
-fn carried<'a, L>(look_up: L, run: Run, epoch: Epoch, packet: &Packet<'a>, now: Tick) -> Stepped
+fn carried<'a, L>(look_up: L, run: Run, epoch: Epoch, packet: &Packet, now: Tick) -> Stepped
 where
-    L: Fn(&Packet<'a>) -> Plan,
+    L: Fn(&Packet) -> Plan,
 {
-    let carrying = !packet.payload.is_empty();
+    let carrying = packet.payload_len > 0;
     let upward = matches!(packet.dir, Dir::Up);
     let spoke_now = !upward && carrying && matches!(run.answered, Answered::NotYet);
     // ПЛАН, ПРИНЯТЫЙ ПО ЛИЧНОСТИ, ВЫТЕСНЯЕТ ВРЕМЕННЫЙ. Отсюда же и `act` ниже: он берётся с
@@ -191,8 +185,8 @@ where
         naming: stood_on(run.naming, packet.says),
         up: run.up + u16::from(upward),
         down: run.down + u16::from(!upward),
-        up_bytes: run.up_bytes + (packet.payload.len() as u64) * u64::from(upward),
-        down_bytes: run.down_bytes + (packet.payload.len() as u64) * u64::from(!upward),
+        up_bytes: run.up_bytes + (packet.payload_len as u64) * u64::from(upward),
+        down_bytes: run.down_bytes + (packet.payload_len as u64) * u64::from(!upward),
         last_up: match upward {
             true => now,
             false => run.last_up,
@@ -265,7 +259,7 @@ where
 ///
 /// `Awaited` сюда не попадает по построению: `adopting` истинно только когда пакет СКАЗАЛ о
 /// личности, а сказать «ничего» нельзя.
-fn named_told(run: &Run, packet: &Packet<'_>) -> Option<Sighting> {
+fn named_told(run: &Run, packet: &Packet) -> Option<Sighting> {
     match adopting(run, packet) {
         false => None,
         true => Some(Sighting::Recognised {
@@ -275,7 +269,7 @@ fn named_told(run: &Run, packet: &Packet<'_>) -> Option<Sighting> {
     }
 }
 
-fn reset_told(run: &Run, packet: &Packet<'_>, upward: bool) -> Option<Sighting> {
+fn reset_told(run: &Run, packet: &Packet, upward: bool) -> Option<Sighting> {
     match packet.resets {
         false => None,
         true => Some(Sighting::Reset {
@@ -286,7 +280,7 @@ fn reset_told(run: &Run, packet: &Packet<'_>, upward: bool) -> Option<Sighting> 
     }
 }
 
-fn closed_told(moved: &Run, packet: &Packet<'_>, now: Tick) -> Option<Sighting> {
+fn closed_told(moved: &Run, packet: &Packet, now: Tick) -> Option<Sighting> {
     match packet.closes {
         false => None,
         true => Some(Sighting::Closed {
@@ -299,7 +293,7 @@ fn closed_told(moved: &Run, packet: &Packet<'_>, now: Tick) -> Option<Sighting> 
     }
 }
 
-fn spoke_told(run: &Run, packet: &Packet<'_>, now: Tick, spoke_now: bool) -> Option<Sighting> {
+fn spoke_told(run: &Run, packet: &Packet, now: Tick, spoke_now: bool) -> Option<Sighting> {
     match spoke_now {
         false => None,
         true => Some(Sighting::TargetSpoke {
@@ -345,14 +339,14 @@ fn due(announced: Announced, now: Tick) -> bool {
 
 /// СВИДЕТЕЛЬСТВО ИСПОЛНЕНИЯ ПРИКАЗА. Наблюдение, а не отчёт о себе: разговор кончился, и это
 /// видно тому, кто смотрит на провод.
-fn severed_told(run: &Run, packet: &Packet<'_>) -> Option<Sighting> {
+fn severed_told(run: &Run, packet: &Packet) -> Option<Sighting> {
     match run.ordered {
         Ordered::Nothing => None,
         Ordered::Sever => Some(Sighting::Severed { dst: packet.dst }),
     }
 }
 
-fn stale_told(plan: Plan, packet: &Packet<'_>, stale: bool) -> Option<Sighting> {
+fn stale_told(plan: Plan, packet: &Packet, stale: bool) -> Option<Sighting> {
     match stale {
         false => None,
         true => Some(Sighting::Stale {
@@ -401,51 +395,14 @@ fn stale_told(plan: Plan, packet: &Packet<'_>, stale: bool) -> Option<Sighting> 
 /// `row::Sight { Full, Partial }`, а из него — клетка «не установлено» восьмого закона. Морфизм,
 /// поднявший половину, обязан назвать, какую.
 ///
-/// # Лайфтайм в подписи — цена заимствованных байтов, и она названа ЦЕЛИКОМ
-///
-/// `Packet<'a>` держит `payload: &'a [u8]`, и ассоциированный тип обязан этот лайфтайм назвать.
-/// Свободным параметром импла его оставить нельзя (E0207), поэтому он живёт на структуре через
-/// `PhantomData`.
-///
-/// # ОГРАНИЧЕНИЕ, УСТАНОВЛЕННОЕ КОМПИЛЯТОРОМ 06.09.2026
-///
-/// Все пакеты, поданные ОДНОЙ машине, обязаны делить ОДНУ область заимствования, и она обязана
-/// пережить последнее употребление машины. Ковариантность сужает лайфтайм до этой области, но
-/// пересуживать его на каждой итерации не умеет — оттого цикл, где байты каждого пакета живут
-/// свой оборот, не собирается: `E0597`, «`bytes` does not live long enough».
-///
-/// ПЕРВАЯ РЕДАКЦИЯ ВЫВОДИЛА ИЗ КОВАРИАНТНОСТИ БОЛЬШЕЕ, ЧЕМ ИЗ НЕЁ СЛЕДУЕТ: «машина переживает
-/// любой отдельный пакет». Сборка опровергла ИМЕННО ЭТОТ ВЫВОД, а не саму ковариантность — на
-/// ней стоит и встречный пример, где два разных заимствования одной области проходят насквозь.
-///
-/// Причина не в `Advancing`, а в самом `Step`: у него `type From` без собственного лайфтайма, то
-/// есть вход не умеет заимствовать ТОЛЬКО НА ВРЕМЯ ВЫЗОВА.
-///
-/// ЦЕНА ДЛЯ ПРОДУКТА НАЗВАНА, А НЕ СПРЯТАНА: боевой путь устроен именно так — байты принадлежат
-/// сообщению ядра и живут до вердикта, значит каждый пакет заимствован своим сроком. Носитель в
-/// нынешнем виде горячий путь ещё НЕ ВЫРАЖАЕТ.
-///
-/// # ЛЕКАРСТВ ДВА, И ДЕШЁВОЕ — НЕ В ФУНДАМЕНТЕ
-///
-/// Первое, и оно ЗДЕСЬ: убрать заимствование из самого `Packet`. Весь крейт читает у полезной
-/// нагрузки только `.len()` и `.is_empty()` — ни одного индексирования, — а спека (шестой vision
-/// §7.2) уже назвала алфавит переигровки без байтов: `flow`, `dst`, `dir`, флаги, `payload_len`,
-/// `says`. Заменив `payload: &'a [u8]` длиной, мы убираем лайфтайм целиком, и `Advancing<'a>`
-/// становится `Advancing`. Правка ОДНОГО крейта.
-///
-/// Второе: `type From<'i>` (GAT) у самого `Step`. Оно общее и лечит всякий заимствующий вход, но
-/// достаёт до каждого реализатора воркспейса.
-///
-/// ПОРЯДОК НАЗВАН НАМЕРЕННО: прежде чем платить за второе, стоит померить, довольно ли первого.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Advancing<'a> {
+pub struct Advancing {
     /// СОСТОЯНИЕ РАЗГОВОРА. Публично: живая интроспекция есть обязательство A шестого vision —
     /// спросить у машины, где она, обязано быть можно, не выполняя шага.
     pub cursor: Cursor,
-    wire: core::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Advancing<'a> {
+impl Advancing {
     /// МАШИНА ИЗ КУРСОРА — и больше ни из чего.
     ///
     /// Эпохи здесь НЕТ намеренно, и это правка по ревью. Она приходит буквой входа, внутри
@@ -453,16 +410,13 @@ impl<'a> Advancing<'a> {
     /// которым разрешает план (`plane.rs:324,328`). Держи мы её полем — машина сверяла бы
     /// устаревание с числом, замороженным на постройке, и разошлась бы с продуктом ровно на том
     /// пути, ради которого устаревание и заведено: на смене плана посреди разговора.
-    pub fn new(cursor: Cursor) -> Advancing<'a> {
-        Advancing {
-            cursor,
-            wire: core::marker::PhantomData,
-        }
+    pub fn new(cursor: Cursor) -> Advancing {
+        Advancing { cursor }
     }
 }
 
-impl<'a> reflex_core::step::Step for Advancing<'a> {
-    type From = (Plan, Packet<'a>, Tick);
+impl reflex_core::step::Step for Advancing {
+    type From = (Plan, Packet, Tick);
 
     /// СЛОВО: адресовано пакету — ядро держит его, пока вердикт не дан, и уезжает на нём.
     type To = Act;
@@ -476,7 +430,7 @@ impl<'a> reflex_core::step::Step for Advancing<'a> {
 
     fn step(self, (plan, packet, now): Self::From) -> (Self, Self::To, Self::Notes) {
         let stepped = step(
-            |_asked: &Packet<'a>| plan,
+            |_asked: &Packet| plan,
             // ЭПОХА БЕРЁТСЯ У БУКВЫ, А НЕ У МАШИНЫ — та же величина, что подаёт продукт.
             plan.epoch,
             self.cursor,
