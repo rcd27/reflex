@@ -151,6 +151,11 @@ pub enum Ordered {
     Sever,
 }
 
+/// РАЗГОВОР: слово живёт до его конца.
+impl reflex_core::word::Word for Ordered {
+    type Of = reflex_core::word::Conversation;
+}
+
 /// ПЕРЕИМЕНОВАНО ИЗ `Told` (05.09.2026): ОДНО СЛОВО НАЗЫВАЛО ДВА РАЗНЫХ ТИПА В ОДНОМ КРЕЙТЕ.
 ///
 /// Здесь — «рассказывали ли МЫ и когда»; в `row` — `Told<T> { Nothing, Told, Blind }`, то есть
@@ -234,6 +239,11 @@ pub enum Programme {
     Mark(Mark),
 }
 
+/// ЦЕЛЬ: слово живёт до смены плана.
+impl reflex_core::word::Word for Programme {
+    type Of = reflex_core::word::Target;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run {
     pub plan: Plan,
@@ -314,6 +324,11 @@ pub enum Act {
     Marked(Mark),
     /// Оборвать: пакет дальше не идёт, клиенту сказано.
     Sever,
+}
+
+/// ПАКЕТ В РУКАХ ЯДРА: ответ обязан быть дан на этом же шаге.
+impl reflex_core::word::Word for Act {
+    type Of = reflex_core::word::Packet;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
