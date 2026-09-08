@@ -5,7 +5,7 @@
 //! Модуль был вдвое больше: `guard`/`nft_guard` (1052 строки) ставили правила netfilter,
 //! `typed`/`witness`/`combined` — разбирали провод и сводили две калитки. Замер показал, что ВСЁ
 //! это зовёт только закрытая ветка, объявленная владельцем deprecated и не собирающаяся
-//! (`NfqVerdict::AcceptMarked` не покрыт в её `match` с 31.08).
+//! (её match не покрывал пометку пропуска).
 //!
 //! Потребитель правила ставит СНАРУЖИ — скриптами стенда, — а из
 //! очереди берёт `NfqHandler`/`NfqPacket`/`NfqPipeline`. Комментарий в его `Cargo.toml` уверял,
@@ -21,6 +21,6 @@ mod terminal;
 
 pub use backend::{NfqueueBackend, Waited};
 pub use pipeline::{
-    NfqCounts, NfqHandler, NfqPacket, NfqPipeline, NfqShared, NfqStep, NfqVerdict, NfqVerdictKind,
+    NfqCounts, NfqHandler, NfqPacket, NfqPipeline, NfqShared, NfqStep, NfqVerdictKind,
 };
 pub use terminal::{Answer, NotTaken, Queued};

@@ -7,7 +7,7 @@ use reflex_engine::watch::Watch;
 use reflex_engine::{Act, Addr, Basis, Interest, Mark, Noticed, Programme, Tick};
 use reflex_engine_nfq::parse::{read, Read, SERVER_PORT};
 use reflex_engine_nfq::plane::Plane;
-use reflex_linux::nfqueue::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
+use reflex_linux::nfqueue::{Answer, NfqHandler, NfqPacket, NfqPipeline};
 
 const INJECT_MARK: u32 = 0xBB;
 /// ШАГ СОБСТВЕННЫХ ЧАСОВ ПЛОСКОСТИ.
@@ -43,7 +43,7 @@ struct Shell {
 }
 
 impl NfqHandler for Shell {
-    fn handle(&mut self, packet: &NfqPacket) -> (NfqVerdict, Vec<InjectablePacket>) {
+    fn handle(&mut self, packet: &NfqPacket) -> (Answer, Vec<InjectablePacket>) {
         let entered = Instant::now();
         let injects: Vec<InjectablePacket> = Vec::new();
         let mut opened = false;
@@ -52,7 +52,7 @@ impl NfqHandler for Shell {
 
         let verdict = match read(&packet.payload, SERVER_PORT) {
             Read::Tcp(wire) => match self.plane.lock() {
-                Err(_poisoned) => NfqVerdict::Accept,
+                Err(_poisoned) => Answer::Pass,
                 Ok(mut held) => {
                     held.offer();
                     let fed = held.feed(wire, now);
@@ -63,15 +63,15 @@ impl NfqHandler for Shell {
                     match (fed.act, fed.watch) {
                         (_taken, Watch::Release(mark)) => {
                             self.released.fetch_add(1, Ordering::Relaxed);
-                            NfqVerdict::AcceptMarked(mark.0)
+                            Answer::Marked(mark.0)
                         }
-                        (Act::Pass, Watch::Hold) => NfqVerdict::Accept,
-                        (Act::Drop, Watch::Hold) => NfqVerdict::Drop,
+                        (Act::Pass, Watch::Hold) => Answer::Pass,
+                        (Act::Drop, Watch::Hold) => Answer::Stop,
                         // МЕТКА УХОДИТ ВЕРДИКТОМ. Прежде здесь стоял `Accept`, а адрес поднимался
                         // в множество ядра отдельным ходом — механизм, снятый `df7b3e78` за то, что
                         // применял знание ПО АДРЕСУ. Стенд мерил его ещё сегодня утром, то есть
                         // проверял путь, которого в продукте больше нет.
-                        (Act::Marked(mark), Watch::Hold) => NfqVerdict::AcceptMarked(mark.0),
+                        (Act::Marked(mark), Watch::Hold) => Answer::Marked(mark.0),
                         // ОБРЫВ ПОКА НЕ ИСПОЛНЯЕТСЯ НА ПРОВОДЕ, И ЭТО НАЗВАНО ВСЛУХ (#318).
                         //
                         // Закон обрыва построен и доказан в плоскости (`step`), а вот послать
@@ -84,7 +84,7 @@ impl NfqHandler for Shell {
                         // тишиной. Тем же прибором, что ловил неисполненный `Divert`.
                         (Act::Sever, Watch::Hold) => {
                             held.note_unapplied("Sever");
-                            NfqVerdict::Accept
+                            Answer::Pass
                         }
                     }
                 }
@@ -102,7 +102,7 @@ impl NfqHandler for Shell {
                     Err(_poisoned) => (),
                     Ok(mut held) => held.note_unparsed(),
                 }
-                NfqVerdict::Accept
+                Answer::Pass
             }
         };
 

@@ -8,14 +8,14 @@
 //   iptables -D OUTPUT -p tcp --dport 443 -m mark ! --mark 0xBB -j NFQUEUE --queue-num 200
 
 use reflex_core::command::InjectablePacket;
-use reflex_linux::nfqueue::{NfqHandler, NfqPacket, NfqPipeline, NfqVerdict};
+use reflex_linux::nfqueue::{Answer, NfqHandler, NfqPacket, NfqPipeline};
 
 struct PassthroughHandler {
     count: u64,
 }
 
 impl NfqHandler for PassthroughHandler {
-    fn handle(&mut self, packet: &NfqPacket) -> (NfqVerdict, Vec<InjectablePacket>) {
+    fn handle(&mut self, packet: &NfqPacket) -> (Answer, Vec<InjectablePacket>) {
         self.count += 1;
 
         if packet.payload.len() >= 20 {
@@ -49,7 +49,7 @@ impl NfqHandler for PassthroughHandler {
             }
         }
 
-        (NfqVerdict::Accept, vec![])
+        (Answer::Pass, vec![])
     }
 }
 

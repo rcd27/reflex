@@ -24,20 +24,6 @@ pub struct NfqPacket<'a> {
     pub fwmark: u32,
 }
 
-/// What to do with the original packet.
-pub enum NfqVerdict {
-    Accept,
-    Drop,
-    Modify(Vec<u8>),
-    /// ПРОПУСТИТЬ, ПОСТАВИВ МЕТКУ (#317). Решение о пакете принимается ТАМ, ГДЕ ЕСТЬ ЗНАНИЕ —
-    /// в обработчике, на том самом пакете, — и уезжает в ядро вместе с вердиктом.
-    ///
-    /// Прежде такого вердикта не было, и метку приходилось ставить правилом ядра ПО АДРЕСУ, до
-    /// очереди: то есть решать раньше, чем узнаешь, кто цель. Живой прогон 31.08 это опроверг
-    /// числом — «пакетов ногой 0» при исправной петле, потому что цель ответила с другого адреса.
-    AcceptMarked(u32),
-}
-
 /// Типизированный исход шага пайпа (Rule 17): что пайп сделал с одним пакетом.
 /// Бизнес-агностик — вердикт + число инжектов, без знания домена. Эмитится в `Tap`;
 /// слушатель (rx-конец) — забота потребителя (наблюдаемость в пайпе, не в бизнес-логике).
@@ -48,11 +34,15 @@ pub struct NfqStep {
     pub injects: usize,
 }
 
+/// Лёгкая Copy-метка слова носителя для показаний [`Tap`] — без тяжёлого payload `Modified`.
+/// `Marked` не сливается с `Accept`: наблюдение за пайпом обязано различать «пометили» и
+/// «пропустили» (канон §6.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NfqVerdictKind {
     Accept,
     Drop,
     Modify,
+    Marked,
 }
 
 /// Сколько ждать на дескрипторе, прежде чем вернуть управление циклу для проверки его условия.
@@ -112,7 +102,7 @@ pub struct NfqCounts {
 
 /// Generic handler: receives packet, returns verdict + inject list.
 pub trait NfqHandler {
-    fn handle(&mut self, packet: &NfqPacket<'_>) -> (NfqVerdict, Vec<InjectablePacket>);
+    fn handle(&mut self, packet: &NfqPacket<'_>) -> (Answer, Vec<InjectablePacket>);
 }
 
 /// NFQUEUE verdict loop.
@@ -247,12 +237,11 @@ impl<H: NfqHandler> NfqPipeline<H> {
                     }
 
                     if let Some(tap) = tap {
-                        let kind = match verdict {
-                            NfqVerdict::Accept | NfqVerdict::AcceptMarked(_) => {
-                                NfqVerdictKind::Accept
-                            }
-                            NfqVerdict::Drop => NfqVerdictKind::Drop,
-                            NfqVerdict::Modify(_) => NfqVerdictKind::Modify,
+                        let kind = match &verdict {
+                            Answer::Pass => NfqVerdictKind::Accept,
+                            Answer::Stop => NfqVerdictKind::Drop,
+                            Answer::Modified(_) => NfqVerdictKind::Modify,
+                            Answer::Marked(_) => NfqVerdictKind::Marked,
                         };
                         tap.emit(NfqStep {
                             fwmark: mark,
@@ -261,12 +250,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
                         });
                     }
 
-                    match verdict {
-                        NfqVerdict::Accept => Answer::Pass,
-                        NfqVerdict::Drop => Answer::Stop,
-                        NfqVerdict::Modify(new_payload) => Answer::Modified(new_payload),
-                        NfqVerdict::AcceptMarked(mark) => Answer::Marked(mark),
-                    }
+                    verdict
                 }
             }
         });
