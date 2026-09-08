@@ -6,8 +6,8 @@
 //! совпадение подписей было косметическим.
 
 use reflex_core::detector::DetectorEvent;
-use reflex_core::step::{Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 use smallvec::{smallvec, SmallVec};
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ use std::time::Instant;
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,10 +33,10 @@ impl Word for Count {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Counting(u32);
 
-impl Step for Counting {
-    type From = DetectorEvent<u8>;
-    type To = SmallVec<[Count; 2]>;
-    type Notes = ();
+impl Mealy for Counting {
+    type In = DetectorEvent<u8>;
+    type Out = SmallVec<[Count; 2]>;
+    type Log = ();
 
     fn step(self, event: DetectorEvent<u8>) -> (Self, SmallVec<[Count; 2]>, ()) {
         match event {
@@ -52,10 +52,10 @@ impl Step for Counting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Summing(u32);
 
-impl Step for Summing {
-    type From = SmallVec<[Count; 2]>;
-    type To = Count;
-    type Notes = ();
+impl Mealy for Summing {
+    type In = SmallVec<[Count; 2]>;
+    type Out = Count;
+    type Log = ();
 
     fn step(self, input: SmallVec<[Count; 2]>) -> (Self, Count, ()) {
         let total = self.0 + input.iter().map(|Count(n)| n).sum::<u32>();
@@ -65,9 +65,9 @@ impl Step for Summing {
 
 /// ДЕТЕКТОР ВХОДИТ В ЦЕПОЧКУ НАПРЯМУЮ, БЕЗ ПОСРЕДНИКА.
 ///
-/// Одно имя — `Counting` реализует `Step` напрямую, а не через обёртку над отдельным трейтом:
+/// Одно имя — `Counting` реализует `Mealy` напрямую, а не через обёртку над отдельным трейтом:
 /// два имени для одной машины Мили потребовали бы либо посредника, либо blanket-`impl`,
-/// невозможного как раз потому, что он конфликтовал бы со всякой другой реализацией `Step`.
+/// невозможного как раз потому, что он конфликтовал бы со всякой другой реализацией `Mealy`.
 #[test]
 fn detector_enters_the_step_category() {
     let chain = Counting(0).then(Summing(0));

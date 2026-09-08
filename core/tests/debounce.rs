@@ -6,8 +6,8 @@
 
 use reflex_core::debounce::Debounce;
 use reflex_core::detector::DetectorEvent;
-use reflex_core::step::Step;
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::Mealy;
+use reflex_core::word::{Base, Word};
 use std::time::{Duration, Instant};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СОБЫТИЕ СТЕНДА — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

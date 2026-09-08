@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::detector::DetectorEvent;
-use crate::step::Step;
+use crate::mealy::Mealy;
 use crate::types::{Flow, HasFlow};
 
 /// КАРТА ДЕТЕКТОРОВ ПО ФЛОУ — состояние соединения как ПРИМИТИВ, а не как чужой `HashMap`.
@@ -42,7 +42,7 @@ pub struct FlowTable<D> {
 
 impl<D, In> FlowTable<D>
 where
-    D: Step<From = DetectorEvent<In>>,
+    D: Mealy<In = DetectorEvent<In>>,
     In: HasFlow + Clone,
 {
     /// `idle_timeout` — сколько поток может молчать (без пакетов), прежде чем считается мёртвым и
@@ -64,7 +64,7 @@ where
     /// под которым она легла, вызывающий волен вычислить [`normalize_flow`] — той же функцией, что
     /// метит выход [`tick`](Self::tick), — и сшить два выхода, когда ему это нужно. Метка на
     /// каждом пакете стоила бы клона в горячем пути ради сведений, которые нужны не всякому.
-    pub fn process(&mut self, input: &In, at: Instant) -> (D::To, D::Notes) {
+    pub fn process(&mut self, input: &In, at: Instant) -> (D::Out, D::Log) {
         let flow = normalize_flow(input.flow());
         let detector = self
             .flows
@@ -93,7 +93,7 @@ where
     /// число потоков. Отвод памяти под неё берётся разом: растущий вектор переселялся бы на
     /// каждом удвоении, и цена тика зависела бы от числа потоков логарифмом там, где может не
     /// зависеть вовсе. Примитив заведён под «соединений много», и такой рост в нём непозволителен.
-    pub fn tick(&mut self, at: Instant) -> Vec<(Flow, (D::To, D::Notes))> {
+    pub fn tick(&mut self, at: Instant) -> Vec<(Flow, (D::Out, D::Log))> {
         let flows: Vec<Flow> = self.flows.keys().cloned().collect();
         let mut spoken = Vec::with_capacity(flows.len());
         for flow in flows {
@@ -159,7 +159,7 @@ mod tests {
 
     /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА: у счёта свидетеля адресата в домене нет, и стенд объявляет свой.
     struct Bench;
-    impl crate::word::Region for Bench {}
+    impl crate::word::Base for Bench {}
 
     /// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,12 +184,12 @@ mod tests {
         #[derive(Clone)]
         struct Counter(usize);
 
-        impl Step for Counter {
-            type From = DetectorEvent<UdpDatagram>;
-            type To = SmallVec<[Count; 2]>;
-            type Notes = ();
+        impl Mealy for Counter {
+            type In = DetectorEvent<UdpDatagram>;
+            type Out = SmallVec<[Count; 2]>;
+            type Log = ();
 
-            fn step(self, ev: Self::From) -> (Self, Self::To, ()) {
+            fn step(self, ev: Self::In) -> (Self, Self::Out, ()) {
                 match ev {
                     DetectorEvent::Packet { .. } => {
                         let next = self.0 + 1;
@@ -231,12 +231,12 @@ mod tests {
     #[derive(Debug, Clone)]
     struct TickPing;
 
-    impl Step for TickPing {
-        type From = DetectorEvent<TcpSegment>;
-        type To = SmallVec<[(); 2]>;
-        type Notes = ();
+    impl Mealy for TickPing {
+        type In = DetectorEvent<TcpSegment>;
+        type Out = SmallVec<[(); 2]>;
+        type Log = ();
 
-        fn step(self, ev: Self::From) -> (Self, Self::To, ()) {
+        fn step(self, ev: Self::In) -> (Self, Self::Out, ()) {
             let mut out = SmallVec::new();
             if let DetectorEvent::Tick { .. } = ev {
                 out.push(());

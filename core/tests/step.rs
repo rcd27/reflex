@@ -6,18 +6,18 @@
 //! места для носителя в той конструкции не было вовсе.
 //!
 //! Здесь заводится новая БАЗА, на носителе значения: морфизм как машина Мили. Поток получается из
-//! неё функтором, обратно — нет, и это не пробел, а несущая стена (`step::StepExt::over`).
+//! неё функтором, обратно — нет, и это не пробел, а несущая стена (`step::MealyExt::over`).
 
 use futures::StreamExt;
-use reflex_core::step::{Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
 ///
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СЛОВО НУМЕРАТОРА: номер и само слово.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,10 +42,10 @@ impl Word for Record {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Numbering(u32);
 
-impl Step for Numbering {
-    type From = &'static str;
-    type To = Numbered;
-    type Notes = ();
+impl Mealy for Numbering {
+    type In = &'static str;
+    type Out = Numbered;
+    type Log = ();
 
     fn step(self, word: &'static str) -> (Self, Numbered, ()) {
         (Numbering(self.0 + 1), Numbered(self.0, word), ())
@@ -56,10 +56,10 @@ impl Step for Numbering {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Longest(usize);
 
-impl Step for Longest {
-    type From = Numbered;
-    type To = Record;
-    type Notes = ();
+impl Mealy for Longest {
+    type In = Numbered;
+    type Out = Record;
+    type Log = ();
 
     fn step(self, Numbered(number, word): Numbered) -> (Self, Record, ()) {
         let seen = match word.len() > self.0 {
@@ -72,7 +72,7 @@ impl Step for Longest {
 
 /// СОСТОЯНИЕ ЖИВЁТ У ОБОИХ ЗВЕНЬЕВ, а не у первого.
 ///
-/// Это и есть содержание композиции: `Then` обязан вернуть НОВУЮ пару машин, а не пересобрать
+/// Это и есть содержание композиции: `Compose` обязан вернуть НОВУЮ пару машин, а не пересобрать
 /// цепочку из начальных. Забудь он состояние второго звена — рекорд обнулялся бы на каждом слове,
 /// и цепочка выглядела бы работающей на одном входе.
 #[test]

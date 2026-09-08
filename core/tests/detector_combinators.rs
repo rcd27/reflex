@@ -21,8 +21,8 @@
 //! чередуясь, прошли бы оператор потока насквозь.
 
 use reflex_core::detector::{Both, DetectorEvent, Stamped};
-use reflex_core::step::{Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 use smallvec::{smallvec, SmallVec};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -30,7 +30,7 @@ use smallvec::{smallvec, SmallVec};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// Вход: что случилось на проводе. Роль «мирового» словаря в этих тестах.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,12 +83,12 @@ impl Word for Flow {
 #[derive(Debug, Clone, Copy, Default)]
 struct Rst;
 
-impl Step for Rst {
-    type From = DetectorEvent<Kind>;
-    type To = SmallVec<[Distress; 2]>;
-    type Notes = ();
+impl Mealy for Rst {
+    type In = DetectorEvent<Kind>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet {
                 input: Kind::Rst, ..
@@ -112,7 +112,7 @@ fn packet(input: Kind) -> DetectorEvent<Kind> {
 /// значило бы поверять два механизма одним тестом.
 fn run<D, I, S>(detector: D, events: Vec<DetectorEvent<I>>) -> Vec<S>
 where
-    D: Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
 {
     events
         .into_iter()
@@ -182,12 +182,12 @@ fn rmap_composes() {
 #[derive(Debug, Clone, Copy, Default)]
 struct Clock;
 
-impl Step for Clock {
-    type From = DetectorEvent<Kind>;
-    type To = SmallVec<[Distress; 2]>;
-    type Notes = ();
+impl Mealy for Clock {
+    type In = DetectorEvent<Kind>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst], ()),
             DetectorEvent::Packet { .. } => (self, smallvec![], ()),
@@ -285,12 +285,12 @@ fn lmap_with_a_total_narrowing_changes_nothing() {
 #[derive(Debug, Clone, Copy, Default)]
 struct Level;
 
-impl Step for Level {
-    type From = DetectorEvent<Kind>;
-    type To = SmallVec<[Kind; 2]>;
-    type Notes = ();
+impl Mealy for Level {
+    type In = DetectorEvent<Kind>;
+    type Out = SmallVec<[Kind; 2]>;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { input, .. } => (self, smallvec![input], ()),
             DetectorEvent::Tick { .. } => (self, smallvec![], ()),

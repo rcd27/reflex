@@ -98,7 +98,7 @@ pub struct Passport {
 /// повторяет её вслух. Плата за то, что связь проверяется, а не описывается.
 pub fn of<I: crate::Instrument>() -> Passport
 where
-    (I::To, I::Notes): crate::Spoken<Signals = smallvec::SmallVec<[I::Signal; 2]>>,
+    (I::Out, I::Log): crate::Spoken<Signals = smallvec::SmallVec<[I::Signal; 2]>>,
 {
     const {
         assert!(

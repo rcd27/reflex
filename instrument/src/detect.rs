@@ -8,7 +8,7 @@
 //! прежняя реализация считала бедой только сброс ДО первого отданного байта, здешний прибор —
 //! любой. По живой очереди работал первый, фикстурами поверялся второй.
 //!
-//! Прибор есть машина Мили `Step`: `(State, Event) → (State, Signals)`. Состояние стоит в подписи,
+//! Прибор есть машина Мили `Mealy`: `(State, Event) → (State, Signals)`. Состояние стоит в подписи,
 //! часы приходят буквой входного алфавита (`DetectorEvent::Tick`), а доменное знание (чьё
 //! соединение, какая нога) надевается СНАРУЖИ комбинаторами `lmap`/`contextual`.
 //!
@@ -47,17 +47,17 @@ impl RstInstrument {
     }
 }
 
-impl reflex_core::step::Step for RstInstrument {
+impl reflex_core::mealy::Mealy for RstInstrument {
     /// СЛОВАРЬ СОЕДИНЕНИЯ, А НЕ ОБЩИЙ: сброс есть улика TCP, и прибор, читающий её, в поток
     /// датаграмм не собирается — равенство `PROTOCOLS: Tcp` ниже держится тем же словарём.
-    type From = reflex_core::DetectorEvent<SeenTcp>;
+    type In = reflex_core::DetectorEvent<SeenTcp>;
 
     /// Беда. Отсутствие беды сигналом НЕ ЯВЛЯЕТСЯ: прибор высказывается, когда есть что сказать,
     /// а `Option` в сигнале сделал бы «всё в порядке» отдельным сообщением в ленте.
-    type To = smallvec::SmallVec<[Distress; 2]>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
     /// # ПОДПИСЬ ПЕРЕХВАТА УЗНАЁТСЯ ДВУМЯ ПРИЗНАКАМИ РАЗОМ
     ///
@@ -67,7 +67,7 @@ impl reflex_core::step::Step for RstInstrument {
     ///
     /// ЦЕНА НАЗВАНА: сброс посреди живой сессии пропускается — от штатного закрытия он неотличим
     /// ничем, что видно на проводе.
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 match (&input, self.fired, self.answered) {
@@ -264,20 +264,20 @@ pub struct Measured {
     pub watch: Watch,
 }
 
-impl reflex_core::step::Step for SilenceInstrument {
-    type From = reflex_core::DetectorEvent<Seen>;
+impl reflex_core::mealy::Mealy for SilenceInstrument {
+    type In = reflex_core::DetectorEvent<Seen>;
 
     /// ДВЕ БЕДЫ, А НЕ ОДНА: «цель не ответила вовсе» (`NoBytes`) и «поток встал на середине»
     /// (`Silence`) расследуются и лечатся по-разному. Невод 1 звал обе молчанием — оттого и лечил
     /// обходом упавшие серверы.
     ///
     /// РАЗЛИЧАЕТ ИХ СЧЁТЧИК БАЙТОВ, то есть ПАМЯТЬ.
-    type To = smallvec::SmallVec<[Distress; 2]>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
 
     /// `None` — мерить не от чего: наблюдений ещё не было.
-    type Notes = Option<Measured>;
+    type Log = Option<Measured>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Option<Measured>) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Option<Measured>) {
         // ЧЕТЫРЕ ВЕЛИЧИНЫ, КОТОРЫМИ РЕШЕНИЕ УЖЕ ПРИНИМАЕТСЯ НИЖЕ, взятые ДО этого шага: тик,
         // заводящий отсчёт впервые (`last: None`), решает по тому же `self`, что стоял тут ещё до
         // события, — и показание обязано назвать те же значения, а не пересчитанные заново.
@@ -498,7 +498,7 @@ impl ThrottledInstrument {
     }
 }
 
-impl reflex_core::step::Step for ThrottledInstrument {
+impl reflex_core::mealy::Mealy for ThrottledInstrument {
     /// СЛОВАРЬ СОЕДИНЕНИЯ, А НЕ ОБЩИЙ.
     ///
     /// Предмет прибора от транспорта не зависит — байты во времени есть у всех. Но его
@@ -511,13 +511,13 @@ impl reflex_core::step::Step for ThrottledInstrument {
     /// о пути, которого не было, а пропуск лишь оставляет вопрос открытым. Цена названа —
     /// ТРОТТЛИНГ НА QUIC НЕ СЛЫШЕН НИКЕМ. Снимется, когда предохранитель станет отдельным звеном
     /// цепочки (он и есть отдельное правило), а не веткой внутри прибора.
-    type From = reflex_core::DetectorEvent<SeenTcp>;
-    type To = smallvec::SmallVec<[Distress; 2]>;
+    type In = reflex_core::DetectorEvent<SeenTcp>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let next = match input {
@@ -716,19 +716,19 @@ impl ChokedInstrument {
     }
 }
 
-impl reflex_core::step::Step for ChokedInstrument {
+impl reflex_core::mealy::Mealy for ChokedInstrument {
     /// ОБЩИЙ СЛОВАРЬ, А НЕ СЛОВАРЬ СОЕДИНЕНИЯ.
     ///
     /// Предмет прибора — «клиент просил, цель не отдала ни разу», и он существует на любом
     /// транспорте: окна приёма этот прибор не читает вовсе, и потому вход не требует улик
     /// соединения.
-    type From = reflex_core::DetectorEvent<Seen>;
-    type To = smallvec::SmallVec<[Distress; 2]>;
+    type In = reflex_core::DetectorEvent<Seen>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // МОМЕНТ ПЕРВОЙ ПРОСЬБЫ — начало отсчёта терпения. Повторная просьба его не
@@ -860,7 +860,7 @@ impl crate::Instrument for ChokedInstrument {
 #[cfg(test)]
 mod silence_tests {
     use super::*;
-    use reflex_core::step::Step;
+    use reflex_core::mealy::Mealy;
     use reflex_core::DetectorEvent;
     use std::time::{Duration, Instant};
 
@@ -975,7 +975,7 @@ mod silence_tests {
 #[cfg(test)]
 mod throttled_and_choked_tests {
     use super::*;
-    use reflex_core::step::Step;
+    use reflex_core::mealy::Mealy;
     use reflex_core::DetectorEvent;
     use std::time::Instant;
 
@@ -986,7 +986,7 @@ mod throttled_and_choked_tests {
     /// чужим входом.
     fn run<D, In>(instrument: D, script: Vec<(Option<In>, u64)>) -> Vec<Distress>
     where
-        D: Step<From = DetectorEvent<In>, To = smallvec::SmallVec<[Distress; 2]>>,
+        D: Mealy<In = DetectorEvent<In>, Out = smallvec::SmallVec<[Distress; 2]>>,
     {
         let start = Instant::now();
         script
@@ -1097,7 +1097,7 @@ mod throttled_and_choked_tests {
 #[cfg(test)]
 mod rst_tests {
     use super::*;
-    use reflex_core::step::Step;
+    use reflex_core::mealy::Mealy;
     use reflex_core::DetectorEvent;
 
     fn saw(seen: SeenTcp) -> DetectorEvent<SeenTcp> {

@@ -7,8 +7,8 @@
 //! Здесь проверяется не поведение комбинаторов (это `detector_combinators.rs`), а то, что форма
 //! ВЫРАЗИМА и ВЫВОДИМА: `E0207` не кусается, вложение собирается без аннотаций.
 use reflex_core::detector::DetectorEvent;
-use reflex_core::step::{Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 use smallvec::SmallVec;
 use std::time::Instant;
 
@@ -17,7 +17,7 @@ use std::time::Instant;
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// ПОКАЗАНИЕ СТЕНДА — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,12 +46,12 @@ impl Word for Beat {
 #[derive(Clone, Copy)]
 struct Rst;
 
-impl Step for Rst {
-    type From = DetectorEvent<Beat>;
-    type To = SmallVec<[Sig; 2]>;
-    type Notes = ();
+impl Mealy for Rst {
+    type In = DetectorEvent<Beat>;
+    type Out = SmallVec<[Sig; 2]>;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { input: Beat(1), .. } => {
                 (self, SmallVec::from_slice(&[Sig(7)]), ())
@@ -99,7 +99,7 @@ fn вложение_комбинаторов_выводится_без_един�
 #[test]
 fn тождество_нейтрально_и_в_этой_форме() {
     // Второй закон категории на алфавите детектора: `f ∘ id` даёт то же, что `f`.
-    use reflex_core::step::Id;
+    use reflex_core::mealy::Id;
     let (_, прямо, _) = Rst.step(packet(1));
     let (_, через_тождество, _) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
     assert_eq!(прямо, через_тождество, "тождество ничего не изменило");

@@ -8,7 +8,7 @@
 /// нём можно, когда ни одного разговора нет. Заводится здесь, а не в фундаменте: маршрут —
 /// предмет прибора о мире, и фундаменту знать о нём нечего.
 pub struct Link;
-impl reflex_core::word::Region for Link {}
+impl reflex_core::word::Base for Link {}
 
 /// Канал живёт дольше решения о нём: сказать «в заторе» можно и следующим окном.
 impl reflex_core::word::CanDefer for Link {}
@@ -61,18 +61,20 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> LinkInstrument<L> {
     }
 }
 
-impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for LinkInstrument<L> {
+impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::mealy::Mealy
+    for LinkInstrument<L>
+{
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<L>;
+    type In = reflex_core::DetectorEvent<L>;
 
     /// СЛОВО. Отсутствие слова сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[Leg; 2]>;
+    type Out = smallvec::SmallVec<[Leg; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

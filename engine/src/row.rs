@@ -354,21 +354,21 @@ impl BlindnessInstrument {
     }
 }
 
-impl reflex_core::step::Step for BlindnessInstrument {
+impl reflex_core::mealy::Mealy for BlindnessInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<Sight>;
+    type In = reflex_core::DetectorEvent<Sight>;
 
     /// СКАЗАТЬ СОСЕДУ НЕЧЕГО, И ЭТО СКАЗАНО РЕШЕНИЕМ, А НЕ ВЫВЕДЕНО ИЗ НАЧИНКИ. Прибор говорит о
     /// НАС в момент наблюдения — имеем ли мы право судить о цели, — и у такого суждения области
     /// нет: ни пакет, ни разговор, ни цель его не ждут. Адрес пустой начинки тут ни при чём:
     /// адресуется суждение, а не то, во что оно завёрнуто.
-    type To = ();
+    type Out = ();
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является — прибор высказывается, когда есть
     /// что сказать.
-    type Notes = smallvec::SmallVec<[Told<()>; 2]>;
+    type Log = smallvec::SmallVec<[Told<()>; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

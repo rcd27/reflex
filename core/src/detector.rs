@@ -1,6 +1,6 @@
 //! Алфавит входа детектора ([`DetectorEvent`]) и комбинаторы, собирающие детекторы в цепочки на
-//! носителе [`crate::step::Step`]: каждый прибор — машина Мили `(State, Event) → (State,
-//! Signals)`, реализующая `Step` напрямую, без промежуточного имени.
+//! носителе [`crate::mealy::Mealy`]: каждый прибор — машина Мили `(State, Event) → (State,
+//! Signals)`, реализующая `Mealy` напрямую, без промежуточного имени.
 //!
 //! `DetectorEvent` — буква входного алфавита, а не диалект машины: время приходит в событии, а не
 //! берётся прибором самостоятельно, чтобы наблюдение оставалось детерминированным.
@@ -107,25 +107,25 @@ pub enum Sensed<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Both<A, B>(pub A, pub B);
 
-impl<A, B, I> crate::step::Step for Both<A, B>
+impl<A, B, I> crate::mealy::Mealy for Both<A, B>
 where
-    A: crate::step::Step<From = DetectorEvent<I>>,
-    B: crate::step::Step<From = DetectorEvent<I>>,
-    B::To: crate::word::Word<Of = <A::To as crate::word::Word>::Of>,
+    A: crate::mealy::Mealy<In = DetectorEvent<I>>,
+    B: crate::mealy::Mealy<In = DetectorEvent<I>>,
+    B::Out: crate::word::Word<Of = <A::Out as crate::word::Word>::Of>,
     I: Clone,
 {
-    type From = DetectorEvent<I>;
+    type In = DetectorEvent<I>;
     /// СЛОВА ОДНОЙ ОБЛАСТИ, СЛОЖЕННЫЕ ПРОИЗВЕДЕНИЕМ.
     ///
     /// Разным областям слиться нельзя: их слова едут в разные места, и склейка была бы ложью о
     /// том, кому сказано. Позиция в типе называет автора вернее всякой метки: левое слово пришло
     /// от левого звена, и перепутать их нечем — даже когда оба говорят на одном словаре.
-    type To = (A::To, B::To);
-    /// ПРОИЗВЕДЕНИЕ, КАК И У [`crate::step::Then`]: два прибора не обязаны мерить одним и тем же,
+    type Out = (A::Out, B::Out);
+    /// ПРОИЗВЕДЕНИЕ, КАК И У [`crate::mealy::Compose`]: два прибора не обязаны мерить одним и тем же,
     /// чтобы их показания сложились, а позиция в типе называет автора.
-    type Notes = (A::Notes, B::Notes);
+    type Log = (A::Log, B::Log);
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let (first, said, noted) = self.0.step(event.clone());
         let (second, also, also_noted) = self.1.step(event);
         (Both(first, second), (said, also), (noted, also_noted))
@@ -138,20 +138,20 @@ pub struct RMap<D, F> {
     f: F,
 }
 
-impl<D, F, I, S, Renamed> crate::step::Step for RMap<D, F>
+impl<D, F, I, S, Renamed> crate::mealy::Mealy for RMap<D, F>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     F: Fn(S) -> Renamed,
     // ПЕРЕИМЕНОВАНИЕ НЕ ОСВОБОЖДАЕТ ОТ АДРЕСА: новое имя обязано сказать, кому оно сказано.
     Renamed: crate::word::Word,
 {
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[Renamed; 2]>;
+    type In = DetectorEvent<I>;
+    type Out = SmallVec<[Renamed; 2]>;
     /// ПЕРЕИМЕНОВАНИЕ МЕНЯЕТ СЛОВО, НЕ ПОКАЗАНИЯ: комбинатор сужает слово и проносит показания
     /// насквозь, без изменений — добавь он от себя показание, он был бы звеном, а не комбинатором.
-    type Notes = D::Notes;
+    type Log = D::Log;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let Self { inner, f } = self;
         let (stepped, signals, notes) = inner.step(event);
         let renamed = signals.into_iter().map(&f).collect();
@@ -170,21 +170,21 @@ pub struct LMap<D, F, Wide> {
     wide: core::marker::PhantomData<fn(&Wide)>,
 }
 
-impl<D, F, Wide, I, S> crate::step::Step for LMap<D, F, Wide>
+impl<D, F, Wide, I, S> crate::mealy::Mealy for LMap<D, F, Wide>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     F: Fn(&Wide) -> Option<I>,
     S: crate::word::Word,
 {
-    type From = DetectorEvent<Wide>;
-    type To = SmallVec<[S; 2]>;
-    /// `Option`, А НЕ ГОЛОЕ `D::Notes`: зафильтрованный вход не зовёт внутреннее звено, и
+    type In = DetectorEvent<Wide>;
+    type Out = SmallVec<[S; 2]>;
+    /// `Option`, А НЕ ГОЛОЕ `D::Log`: зафильтрованный вход не зовёт внутреннее звено, и
     /// `None` записывает ровно это — звено не шагало, показания не существует. Значение по
     /// умолчанию сказало бы другое: звено шагало и намерило пустоту, — а это разные факты,
     /// неотличимые для типа с единицей, но различные для мира, который эта пара описывает.
-    type Notes = Option<D::Notes>;
+    type Log = Option<D::Log>;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let Self { inner, f, wide } = self;
         match event {
             DetectorEvent::Packet { input, at } => match f(&input) {
@@ -240,8 +240,8 @@ where
 ///
 /// Сравнение с ПОСЛЕДНИМ сказанным, а не со всеми виденными: возврат к прежнему есть событие.
 ///
-/// Тип слова `S` назван параметром структуры, а не взят проекцией: `Step` держит алфавит целиком
-/// (`To = SmallVec<[S; 2]>`), а вынуть из него элемент нечем.
+/// Тип слова `S` назван параметром структуры, а не взят проекцией: `Mealy` держит алфавит целиком
+/// (`Out = SmallVec<[S; 2]>`), а вынуть из него элемент нечем.
 pub struct Changes<D, S> {
     inner: D,
     /// Первое слово проходит всегда: ему не с чем совпадать.
@@ -267,21 +267,21 @@ pub struct Contextual<D, Ctx, Pick, Dress> {
     context: Option<Ctx>,
 }
 
-impl<D, Ctx, Pick, Dress, Dressed, I, S> crate::step::Step for Contextual<D, Ctx, Pick, Dress>
+impl<D, Ctx, Pick, Dress, Dressed, I, S> crate::mealy::Mealy for Contextual<D, Ctx, Pick, Dress>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     I: Clone,
     Pick: Fn(&I) -> Ctx,
     Dress: Fn(Option<&Ctx>, S) -> Option<Dressed>,
     // ОДЕТОЕ СЛОВО — тоже слово: контекст меняет наряд, а не адресата.
     Dressed: crate::word::Word,
 {
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[Dressed; 2]>;
+    type In = DetectorEvent<I>;
+    type Out = SmallVec<[Dressed; 2]>;
     /// Наряд меняет слово, не показания: показания идут сквозь без изменений.
-    type Notes = D::Notes;
+    type Log = D::Log;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let Self {
             inner,
             pick,
@@ -313,17 +313,17 @@ where
     }
 }
 
-impl<D, I, S> crate::step::Step for Changes<D, S>
+impl<D, I, S> crate::mealy::Mealy for Changes<D, S>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     S: PartialEq + Clone + crate::word::Word,
 {
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[S; 2]>;
+    type In = DetectorEvent<I>;
+    type Out = SmallVec<[S; 2]>;
     /// Сравнение с прошлым меняет слово, не показания: показания идут сквозь без изменений.
-    type Notes = D::Notes;
+    type Log = D::Log;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let Self { inner, said } = self;
         let (stepped, signals, notes) = inner.step(event);
         // Повтор внутри одного шага — тоже повтор.
@@ -387,17 +387,17 @@ pub struct Timed<D> {
     inner: D,
 }
 
-impl<D, I, S> crate::step::Step for Timed<D>
+impl<D, I, S> crate::mealy::Mealy for Timed<D>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     S: crate::word::Word,
 {
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[Stamped<S>; 2]>;
+    type In = DetectorEvent<I>;
+    type Out = SmallVec<[Stamped<S>; 2]>;
     /// Штамп времени меняет слово, не показания: показания идут сквозь без изменений.
-    type Notes = D::Notes;
+    type Log = D::Log;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let at = event.at();
         let (stepped, signals, notes) = self.inner.step(event);
         let stamped = signals
@@ -487,17 +487,17 @@ pub struct By<D> {
     by: &'static str,
 }
 
-impl<D, I, S> crate::step::Step for By<D>
+impl<D, I, S> crate::mealy::Mealy for By<D>
 where
-    D: crate::step::Step<From = DetectorEvent<I>, To = SmallVec<[S; 2]>>,
+    D: crate::mealy::Mealy<In = DetectorEvent<I>, Out = SmallVec<[S; 2]>>,
     S: crate::word::Word,
 {
-    type From = DetectorEvent<I>;
-    type To = SmallVec<[Signed<S>; 2]>;
+    type In = DetectorEvent<I>;
+    type Out = SmallVec<[Signed<S>; 2]>;
     /// Подпись автора меняет слово, не показания: показания идут сквозь без изменений.
-    type Notes = D::Notes;
+    type Log = D::Log;
 
-    fn step(self, event: Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, Self::Log) {
         let Self { inner, by } = self;
         let (stepped, signals, notes) = inner.step(event);
         let signed = signals
@@ -572,12 +572,12 @@ impl<D> Muted<D> {
     }
 }
 
-impl<D: crate::step::Step> crate::step::Step for Muted<D> {
-    type From = D::From;
-    type To = D::To;
-    type Notes = ();
+impl<D: crate::mealy::Mealy> crate::mealy::Mealy for Muted<D> {
+    type In = D::In;
+    type Out = D::Out;
+    type Log = ();
 
-    fn step(self, input: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, input: Self::In) -> (Self, Self::Out, ()) {
         let (stepped, said, _) = self.inner.step(input);
         (Self { inner: stepped }, said, ())
     }

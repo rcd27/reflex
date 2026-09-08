@@ -96,19 +96,19 @@ impl TrustInstrument {
     }
 }
 
-impl reflex_core::step::Step for TrustInstrument {
+impl reflex_core::mealy::Mealy for TrustInstrument {
     /// ОДНА ЗАПИСЬ TLS, а не срез потока: прибор читает разговор ПО МЕРЕ поступления записей, а
     /// не ждёт, пока поток кончится, — иначе он годился бы только записи, а не живой очереди.
-    type From = reflex_core::DetectorEvent<TlsRecord>;
+    type In = reflex_core::DetectorEvent<TlsRecord>;
 
     /// СЛОВО. Отсутствие слова сигналом не является: прибор высказывается, когда есть что
     /// сказать.
-    type To = smallvec::SmallVec<[Trust; 2]>;
+    type Out = smallvec::SmallVec<[Trust; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => self.saw(input),
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new()),
@@ -197,7 +197,7 @@ impl crate::Instrument for TrustInstrument {
 #[cfg(test)]
 mod stream_tests {
     use super::*;
-    use reflex_core::step::Step;
+    use reflex_core::mealy::Mealy;
     use reflex_core::tls::{TlsContentType, TlsRecord};
     use reflex_core::DetectorEvent;
 

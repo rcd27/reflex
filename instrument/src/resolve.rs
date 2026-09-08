@@ -106,18 +106,18 @@ impl ResolutionInstrument {
     }
 }
 
-impl reflex_core::step::Step for ResolutionInstrument {
+impl reflex_core::mealy::Mealy for ResolutionInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<DnsMessage>;
+    type In = reflex_core::DetectorEvent<DnsMessage>;
 
     /// СЛОВО. Отсутствие слова сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type To = smallvec::SmallVec<[Resolved; 2]>;
+    type Out = smallvec::SmallVec<[Resolved; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

@@ -3,7 +3,7 @@
 //! Одним прогоном проверяется закон, а не факт о том, что где лежит: край читает байты РОВНО ОДИН
 //! РАЗ; через шов ([`reflex_core::interleave::Interleave::unread`],
 //! [`reflex_runtime::timed::on_grid`]) едет РАЗОБРАННАЯ БУКВА, а не байты; счётчик непонятого стоит
-//! ЗВЕНОМ ЦЕПОЧКИ (`Step`), а не счётчиком в краю до канала; причина отказа едет ЗНАЧЕНИЕМ, потому
+//! ЗВЕНОМ ЦЕПОЧКИ (`Mealy`), а не счётчиком в краю до канала; причина отказа едет ЗНАЧЕНИЕМ, потому
 //! что «не наш протокол» законно и вечно, а «обрезан» есть потеря и чинится настройкой съёма —
 //! слитые в одно число, эти два отказа стали бы неразличимы; и сетка идёт одним и тем же способом
 //! что на разобранном, что на непонятом трафике.
@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use reflex_core::clock::TestClock;
 use reflex_core::detector::{DetectorEvent, Sensed};
+use reflex_core::mealy::{Mealy, MealyExt};
 use reflex_core::parse::Unread;
-use reflex_core::step::{Step, StepExt};
 use reflex_engine_nfq::parse::{framed, Framed, SERVER_PORT};
 use reflex_runtime::timed::on_grid;
 
@@ -140,10 +140,10 @@ fn at(began: Instant, millis: u64) -> Instant {
     began + Duration::from_millis(millis)
 }
 
-/// СЧЁТЧИК НЕПОНЯТОГО КАК ЗВЕНО ЦЕПОЧКИ (`Step`), А НЕ СЧЁТЧИК В КРАЮ ДО КАНАЛА.
+/// СЧЁТЧИК НЕПОНЯТОГО КАК ЗВЕНО ЦЕПОЧКИ (`Mealy`), А НЕ СЧЁТЧИК В КРАЮ ДО КАНАЛА.
 ///
 /// Питается тем же `DetectorEvent`, каким живёт всякий детектор фундамента, и стыкуется тем же
-/// комбинатором ([`StepExt::over`]), каким стыкуется всякий шаг. Показание — обычный выход шага,
+/// комбинатором ([`MealyExt::over`]), каким стыкуется всякий шаг. Показание — обычный выход шага,
 /// а не что-то, добытое сбоку.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Tally {
@@ -156,19 +156,19 @@ struct Tally {
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl reflex_core::word::Region for Bench {}
+impl reflex_core::word::Base for Bench {}
 
 /// Счёт стенда адресован стенду: ни пакету, ни разговору, ни цели он ничего не говорит.
 impl reflex_core::word::Word for Tally {
     type Of = Bench;
 }
 
-impl Step for Tally {
-    type From = DetectorEvent<Letter>;
-    type To = Tally;
-    type Notes = ();
+impl Mealy for Tally {
+    type In = DetectorEvent<Letter>;
+    type Out = Tally;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let next = match event {
             DetectorEvent::Packet { .. } => Tally {
                 packets: self.packets + 1,
@@ -187,7 +187,7 @@ impl Step for Tally {
 /// ПЯТЬ УТВЕРЖДЕНИЙ ЗАДАЧИ 4′, ОДНИМ ПРОГОНОМ.
 ///
 /// Кадры настоящие (способ построения — из тестов `engine-nfq`), сетка настоящая
-/// (`reflex_runtime::timed::on_grid` на [`TestClock`]), счётчик — настоящее звено `Step`.
+/// (`reflex_runtime::timed::on_grid` на [`TestClock`]), счётчик — настоящее звено `Mealy`.
 #[tokio::test]
 async fn a_feeder_exists_the_seam_carries_opaque_traffic_end_to_end() {
     STATIC_PROOF();

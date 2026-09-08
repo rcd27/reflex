@@ -9,7 +9,7 @@
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
-use reflex_core::step::{Step, StepExt};
+use reflex_core::mealy::{Mealy, MealyExt};
 use reflex_core::DetectorEvent;
 use reflex_instrument::agreement::{Agreement, AgreementInstrument};
 use reflex_instrument::detect::{Measured, SilenceInstrument, Watch};
@@ -42,10 +42,10 @@ fn a_stalled_stream(start: Instant) -> Vec<DetectorEvent<Seen>> {
 }
 
 /// Прогнать машину по входам и собрать ТОЛЬКО слова.
-fn words<M>(machine: M, inputs: Vec<M::From>) -> Vec<M::To>
+fn words<M>(machine: M, inputs: Vec<M::In>) -> Vec<M::Out>
 where
-    M: Step,
-    M::To: Debug + PartialEq,
+    M: Mealy,
+    M::Out: Debug + PartialEq,
 {
     let mut machine = machine;
     let mut said = Vec::new();
@@ -114,12 +114,12 @@ fn forgetting_the_notes_changes_no_word() {
 /// уходят показания. Значит соседу по стрелке эти приборы говорят пустое слово, и вся их речь идёт
 /// вбок.
 ///
-/// Проверяет компилятор: границы `To = ()` и `Notes = SmallVec<[S; 2]>` утверждают ровно это.
+/// Проверяет компилятор: границы `Out = ()` и `Log = SmallVec<[S; 2]>` утверждают ровно это.
 #[test]
 fn an_instrument_without_a_region_speaks_sideways() {
     fn speaks_sideways<M, S>()
     where
-        M: Step<To = (), Notes = SmallVec<[S; 2]>>,
+        M: Mealy<Out = (), Log = SmallVec<[S; 2]>>,
     {
     }
 

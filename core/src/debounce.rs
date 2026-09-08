@@ -24,7 +24,7 @@ use std::time::Instant;
 use smallvec::{smallvec, SmallVec};
 
 use crate::detector::DetectorEvent;
-use crate::step::Step;
+use crate::mealy::Mealy;
 
 /// ДЕРЖИТ ПОСЛЕДНЕЕ СОБЫТИЕ И ОТДАЁТ ЕГО, КОГДА ОКНО ТИШИНЫ ПРОШЛО.
 #[derive(Debug, Clone)]
@@ -41,13 +41,13 @@ impl<T> Debounce<T> {
 }
 
 /// ЗАДЕРЖКА АДРЕСА НЕ МЕНЯЕТ: наружу выходит то же событие, тому же адресату, только позже.
-impl<T: crate::word::Word> Step for Debounce<T> {
-    type From = DetectorEvent<T>;
-    type To = SmallVec<[T; 2]>;
+impl<T: crate::word::Word> Mealy for Debounce<T> {
+    type In = DetectorEvent<T>;
+    type Out = SmallVec<[T; 2]>;
     /// Показаний этот оператор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             // НОВОЕ СОБЫТИЕ ВЫТЕСНЯЕТ УДЕРЖАННОЕ и отодвигает окно. Отсчёт идёт от ПОСЛЕДНЕГО, а
             // не от первого: иначе поток, идущий чуть чаще окна, выпускался бы регулярно, и

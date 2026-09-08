@@ -45,7 +45,7 @@ pub use reflex_core::types::Dir;
 /// БУКВА ГОРЯЧЕГО ПУТИ — БЕЗ ЗАИМСТВОВАНИЯ, И ЭТО НЕ ЭКОНОМИЯ, А УСЛОВИЕ ВЫРАЗИМОСТИ.
 ///
 /// Поле было `payload: &'a [u8]`, и лайфтайм уходил в `Advancing<'a>`, а оттуда в
-/// `Step::From`. У `Step::From` собственного лайфтайма нет, значит вход не умеет заимствовать
+/// `Mealy::In`. У `Mealy::In` собственного лайфтайма нет, значит вход не умеет заимствовать
 /// ТОЛЬКО НА ВРЕМЯ ВЫЗОВА: все пакеты, поданные одной машине, обязаны делить одну область
 /// заимствования. Боевой путь устроен ровно наоборот — байты принадлежат сообщению ядра и живут
 /// до вердикта, — и цикл по пакетам не собирался вовсе (`E0597`, установлено сборкой 06.09.2026).
@@ -738,18 +738,18 @@ impl SightingInstrument {
     }
 }
 
-impl reflex_core::step::Step for SightingInstrument {
+impl reflex_core::mealy::Mealy for SightingInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<Sighting>;
+    type In = reflex_core::DetectorEvent<Sighting>;
 
     /// СЛОВО. Отсутствие слова сигналом не является — прибор высказывается, когда есть что
     /// сказать.
-    type To = smallvec::SmallVec<[Sighting; 2]>;
+    type Out = smallvec::SmallVec<[Sighting; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

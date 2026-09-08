@@ -17,11 +17,11 @@ pub mod held;
 pub mod interleave;
 #[cfg(feature = "tls")]
 pub mod l7;
+pub mod mealy;
 pub mod meter;
 pub mod parse;
 pub mod serves;
 pub mod stack;
-pub mod step;
 // ЗАПИСАННЫЙ ПРОВОД — симуляционный источник (#295, срез 0). Под фичей, потому что читать файлы
 // нужно не всякому потребителю: на коробке провод живой. Зависимостей нет — только `std`.
 #[cfg(feature = "pcap")]

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use reflex_core::step::{Alongside, Step, StepExt};
+use reflex_core::mealy::{Mealy, MealyExt, Pair};
 use reflex_engine::meter::{
     applied, charge, charged_target, empty_ring, expired, fresh_target, horizon, Counting, Pace,
     Pressure, Ring, Tally, Target,
@@ -352,7 +352,7 @@ impl Plane {
         // рукописная композиция «посчитать и шагнуть», собранная ровно потому, что морфизм не
         // выражал заимствованный пакет. Заимствования больше нет, и композиция берётся у
         // фундамента: `Advancing` говорит вердикт, `Counting` молчит и копит.
-        let (Alongside(advanced, _counting), act, (sighting, tally)) = Advancing::new(cursor)
+        let (Pair(advanced, _counting), act, (sighting, tally)) = Advancing::new(cursor)
             .alongside(Counting(self.tally))
             .step((plan, packet, now));
 

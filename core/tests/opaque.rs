@@ -8,9 +8,9 @@
 use std::time::Instant;
 
 use reflex_core::detector::DetectorEvent;
+use reflex_core::mealy::Mealy;
 use reflex_core::parse::Unread;
-use reflex_core::step::Step;
-use reflex_core::word::{Region, Word};
+use reflex_core::word::{Base, Word};
 use smallvec::SmallVec;
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СЧЁТ СТЕНДА: разобранное и непонятое. С именем, а не голой парой чисел — адрес объявляет
 /// значение, а числа молчат.
@@ -36,12 +36,12 @@ struct Counting {
     unread: u32,
 }
 
-impl Step for Counting {
-    type From = DetectorEvent<u8>;
-    type To = SmallVec<[Tally; 2]>;
-    type Notes = ();
+impl Mealy for Counting {
+    type In = DetectorEvent<u8>;
+    type Out = SmallVec<[Tally; 2]>;
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let next = match event {
             DetectorEvent::Packet { .. } => Counting {
                 seen: self.seen + 1,

@@ -413,20 +413,20 @@ impl Advancing {
     }
 }
 
-impl reflex_core::step::Step for Advancing {
-    type From = (Plan, Packet, Tick);
+impl reflex_core::mealy::Mealy for Advancing {
+    type In = (Plan, Packet, Tick);
 
     /// СЛОВО: адресовано пакету — ядро держит его, пока вердикт не дан, и уезжает на нём.
-    type To = Act;
+    type Out = Act;
 
     /// ПОКАЗАНИЕ: не адресовано никому. Прежде обе половины были слиты в один тип (`Answer`) —
     /// временную обёртку, заведённую ровно потому, что голому кортежу `(Act, Option<Noted>)`
     /// нельзя было объявить адрес, не соврав про половину: `Act` адресован пакету, `Noted` не
     /// адресован никому. С появлением второго выхода у шага обёртка растворяется — ход вбок
     /// выражает сам носитель, а не имя рядом с ним.
-    type Notes = Option<Noted>;
+    type Log = Option<Noted>;
 
-    fn step(self, (plan, packet, now): Self::From) -> (Self, Self::To, Self::Notes) {
+    fn step(self, (plan, packet, now): Self::In) -> (Self, Self::Out, Self::Log) {
         let stepped = step(
             |_asked: &Packet| plan,
             // ЭПОХА БЕРЁТСЯ У БУКВЫ, А НЕ У МАШИНЫ — та же величина, что подаёт продукт.

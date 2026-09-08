@@ -55,14 +55,14 @@ impl RetransmitInstrument {
     }
 }
 
-impl reflex_core::step::Step for RetransmitInstrument {
-    type From = reflex_core::DetectorEvent<Seen>;
-    type To = smallvec::SmallVec<[Distress; 2]>;
+impl reflex_core::mealy::Mealy for RetransmitInstrument {
+    type In = reflex_core::DetectorEvent<Seen>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
 
     /// Показаний этот прибор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => match input {
                 // ПРОСЬБА ОТКРЫВАЕТ ОТСЧЁТ, и повторная его не сдвигает: величина показания есть
@@ -213,7 +213,7 @@ impl crate::Instrument for RetransmitInstrument {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reflex_core::step::Step;
+    use reflex_core::mealy::Mealy;
     use reflex_core::DetectorEvent;
     use std::time::Duration;
 

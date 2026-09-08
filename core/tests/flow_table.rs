@@ -1,8 +1,8 @@
 use reflex_core::detector::DetectorEvent;
 use reflex_core::flow_table::FlowTable;
-use reflex_core::step::Step;
+use reflex_core::mealy::Mealy;
 use reflex_core::types::{Flow, Protocol, TcpFlags, TcpOptions, TcpSegment};
-use reflex_core::word::{Region, Word};
+use reflex_core::word::{Base, Word};
 use smallvec::SmallVec;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СЧЁТ СБРОСОВ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +28,12 @@ struct RstCounter {
     flow: Flow,
 }
 
-impl Step for RstCounter {
-    type From = DetectorEvent<TcpSegment>;
-    type To = SmallVec<[Count; 2]>;
-    type Notes = ();
+impl Mealy for RstCounter {
+    type In = DetectorEvent<TcpSegment>;
+    type Out = SmallVec<[Count; 2]>;
+    type Log = ();
 
-    fn step(mut self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(mut self, event: Self::In) -> (Self, Self::Out, ()) {
         let mut signals = SmallVec::new();
         if let DetectorEvent::Packet { input: ref seg, .. } = event {
             if seg.flags.is_rst() {

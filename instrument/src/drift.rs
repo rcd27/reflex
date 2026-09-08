@@ -117,19 +117,19 @@ impl HistoryInstrument {
     }
 }
 
-impl reflex_core::step::Step for HistoryInstrument {
+impl reflex_core::mealy::Mealy for HistoryInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<(Vec<Point>, Point)>;
+    type In = reflex_core::DetectorEvent<(Vec<Point>, Point)>;
 
     /// СКАЗАТЬ СОСЕДУ НЕЧЕГО: предмет сравнения — прогоны, а не живой разговор, и области у него
     /// нет. Ждёт его человек, читающий отчёт, — а он стоит за границей цепочки.
-    type To = ();
+    type Out = ();
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Notes = smallvec::SmallVec<[Shift; 2]>;
+    type Log = smallvec::SmallVec<[Shift; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

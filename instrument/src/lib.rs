@@ -500,12 +500,12 @@ impl<S> Spoken for ((), smallvec::SmallVec<[S; 2]>) {
 ///   `(Vec<Point>, Point)`), то есть его обязан помнить каждый вызывающий, и это не сторожит
 ///   ничто.
 ///
-/// `Step::step: (State, Event) → (State, Signals)` даёт ту же чистоту, но состояние стоит В
+/// `Mealy::step: (State, Event) → (State, Signals)` даёт ту же чистоту, но состояние стоит В
 /// ПОДПИСИ. Часы — тоже: момент приходит `DetectorEvent::Tick`, словарным событием, а не
 /// аргументом `now_ms`. Взамен прибор получает композицию (`and`, `lmap`, `rmap`, `contextual`,
 /// `changes`) — то есть перестаёт быть тем, что вызывающий обязан звать руками.
 ///
-/// # ПОЧЕМУ У ПАСПОРТА СВОЙ `Signal`, ХОТЯ ОН НАВЕШЕН НА `Step`
+/// # ПОЧЕМУ У ПАСПОРТА СВОЙ `Signal`, ХОТЯ ОН НАВЕШЕН НА `Mealy`
 ///
 /// Шаг держит выходной алфавит целиком (пачкой), и вынуть из него элемент нечем: проекции у
 /// типа-контейнера нет. А `name` обязан говорить об ОДНОМ сигнале, а не о пачке. Поэтому паспорт
@@ -516,12 +516,11 @@ impl<S> Spoken for ((), smallvec::SmallVec<[S; 2]>) {
 /// объявляет, кладёт пачку в показания и говорит соседу пустое слово. Обе клетки таблицы связаны
 /// одинаково крепко, и подставить в паспорт чужую пачку нельзя ни в одной из них.
 ///
-/// Отвергнуто: `fn name(told: &Self::To)`. Он принимал бы пачку и обязывал бы каждый прибор
+/// Отвергнуто: `fn name(told: &Self::Out)`. Он принимал бы пачку и обязывал бы каждый прибор
 /// решать, о котором из сигналов говорить, — то есть переносил бы выбор с автора на вызывающего.
-pub trait Instrument: reflex_core::step::Step
+pub trait Instrument: reflex_core::mealy::Mealy
 where
-    (Self::To, Self::Notes):
-        Spoken<Signals = smallvec::SmallVec<[<Self as Instrument>::Signal; 2]>>,
+    (Self::Out, Self::Log): Spoken<Signals = smallvec::SmallVec<[<Self as Instrument>::Signal; 2]>>,
 {
     /// СИГНАЛ — то, о чём прибор говорит по одному разу.
     ///
@@ -601,7 +600,7 @@ where
     const DEATH: &'static str;
 
     /// ИМЯ ПРИБОРА в публичном круге. Им же подписываются его показания в общем потоке
-    /// (`StepExt::by`): без подписи два прибора с общим словарём неразличимы после сложения.
+    /// (`MealyExt::by`): без подписи два прибора с общим словарём неразличимы после сложения.
     const INSTRUMENT: &'static str;
 
     /// ПУБЛИЧНЫЕ ИМЕНА СОБЫТИЙ — реестр, снятый с типа.
@@ -869,9 +868,9 @@ mod ladder {
 ///
 /// ЦЕНА НАЗВАНА: прибор со своими часами так не поверяется — его предмет есть ход времени, и одно
 /// наблюдение о нём не говорит ничего. Такие поверяются подачей `Tick`, как на проводе.
-pub fn says<D, In>(instrument: D, observation: In) -> D::To
+pub fn says<D, In>(instrument: D, observation: In) -> D::Out
 where
-    D: reflex_core::step::Step<From = reflex_core::DetectorEvent<In>>,
+    D: reflex_core::mealy::Mealy<In = reflex_core::DetectorEvent<In>>,
 {
     instrument
         .step(reflex_core::DetectorEvent::packet_now(observation))

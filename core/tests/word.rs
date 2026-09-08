@@ -5,13 +5,13 @@
 //!
 //! Здесь проверяется, что закон выражен типами, а не уговором: объявить область обязан всякий,
 //! кто хочет стоять в позиции слова, и своя область объявляется без правки фундамента.
-use reflex_core::word::{may_wait, Conversation, Region, Word};
+use reflex_core::word::{may_wait, Base, Conversation, Word};
 use smallvec::SmallVec;
 
 /// СВОЯ ОБЛАСТЬ, ОБЪЯВЛЕННАЯ СНАРУЖИ ФУНДАМЕНТА — то, ради чего закон вводится трейтом, а не
 /// перечислением трёх слов движка.
 struct Tunnel;
-impl Region for Tunnel {}
+impl Base for Tunnel {}
 
 struct Reroute;
 impl Word for Reroute {

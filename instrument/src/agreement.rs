@@ -41,19 +41,19 @@ impl AgreementInstrument {
     }
 }
 
-impl reflex_core::step::Step for AgreementInstrument {
+impl reflex_core::mealy::Mealy for AgreementInstrument {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
-    type From = reflex_core::DetectorEvent<(u64, Option<u64>)>;
+    type In = reflex_core::DetectorEvent<(u64, Option<u64>)>;
 
     /// СКАЗАТЬ СОСЕДУ НЕЧЕГО: у сверки нет области. Ни пакет, ни разговор, ни цель её не ждут —
     /// ждёт её человек, читающий отчёт, а он стоит за границей цепочки, куда уходят показания.
-    type To = ();
+    type Out = ();
 
     /// ПОКАЗАНИЕ. Отсутствие показания сигналом не является: прибор высказывается, когда есть что
     /// сказать, и «ничего не случилось» не занимает места в ленте.
-    type Notes = smallvec::SmallVec<[Agreement; 2]>;
+    type Log = smallvec::SmallVec<[Agreement; 2]>;
 
-    fn step(self, event: Self::From) -> (Self, (), Self::Notes) {
+    fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
                 let reading = self.read(&input, 0);

@@ -5,9 +5,9 @@
 //! удобства.
 
 use reflex_core::detector::DetectorEvent;
-use reflex_core::step::Step;
+use reflex_core::mealy::Mealy;
 use reflex_core::timeout::{Deadline, Expiry, Timeout};
-use reflex_core::word::{Region, Word};
+use reflex_core::word::{Base, Word};
 use std::time::{Duration, Instant};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// ПРЕДМЕТ, ЗА КОТОРЫМ СМОТРИТ ОПЕРАТОР. Своё имя, а не голое число: срок наследует АДРЕС
 /// предмета, и предмет обязан его иметь.

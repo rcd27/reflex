@@ -1,13 +1,13 @@
 //! ДВИЖОК ВХОДИТ В КАТЕГОРИЮ ШАГА (канон §1).
 //!
-//! Один из живых диалектов шага (`step::Step::step`, `engine::step::step`, `Plane::feed`,
+//! Один из живых диалектов шага (`step::Mealy::step`, `engine::step::step`, `Plane::feed`,
 //! `NfqHandler::handle`) и единственный, у которого вход НЕ БЫЛ ЗАМКНУТ: знание о цели
 //! приходило Reader'ом (`look_up: Fn(&Packet) -> Plan`), то есть незаписанным входом. Здесь оно
 //! становится БУКВОЙ входного алфавита, и этим переигровка одного разговора замыкается: чтобы
 //! прогнать его заново, не нужна вся таблица целей — довольно того, что `look_up` ответил.
 
-use reflex_core::step::{Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 use reflex_engine::row::Naming;
 use reflex_engine::step::Advancing;
 use reflex_engine::{
@@ -19,7 +19,7 @@ use reflex_engine::{
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 /// СЧЁТ НАБЛЮДЕНИЙ — с именем, а не голым числом: у числа адресата нет, и в позицию слова оно не
 /// встаёт.
@@ -81,10 +81,10 @@ fn engine_enters_the_step_category() {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CountingSteps(u32);
 
-impl Step for CountingSteps {
-    type From = Act;
-    type To = Seen;
-    type Notes = ();
+impl Mealy for CountingSteps {
+    type In = Act;
+    type Out = Seen;
+    type Log = ();
 
     fn step(self, _act: Act) -> (Self, Seen, ()) {
         let seen = self.0 + 1;
@@ -94,8 +94,8 @@ impl Step for CountingSteps {
 
 /// ЦЕПОЧКА «ДВИЖОК → ЧУЖОЕ ЗВЕНО» СОБИРАЕТСЯ, И ПОКАЗАНИЕ ИДЁТ МИМО СОСЕДА.
 ///
-/// Собралась бы цепочка при косметическом совпадении подписей — не было бы: `Step` требует
-/// `B::From = A::To`, и здесь это ровно `Act`, а не слитая пара. Показание же (`Option<Noted>`)
+/// Собралась бы цепочка при косметическом совпадении подписей — не было бы: `Mealy` требует
+/// `B::In = A::Out`, и здесь это ровно `Act`, а не слитая пара. Показание же (`Option<Noted>`)
 /// достаётся ТОЛЬКО вызывающему цепочку целиком — позиция в типе (`Advancing` первым) называет
 /// автора без единого слова прозы.
 #[test]
@@ -127,7 +127,7 @@ fn engine_composes_with_a_foreign_link() {
 /// ГОРЯЧИЙ ПУТЬ ВЫРАЖЕН: одна машина, у каждого пакета свой срок жизни байтов.
 ///
 /// Этот цикл НЕ СОБИРАЛСЯ (`E0597`, 06.09.2026), и потому продукт звал свободную функцию мимо
-/// морфизма. Причина была в `Packet<'a>`: лайфтайм уходил в `Advancing<'a>`, а `Step::From` не
+/// морфизма. Причина была в `Packet<'a>`: лайфтайм уходил в `Advancing<'a>`, а `Mealy::In` не
 /// умеет заимствовать только на время вызова — все пакеты одной машины обязаны были делить одну
 /// область заимствования, тогда как в бою байты принадлежат сообщению ядра и живут до вердикта.
 ///

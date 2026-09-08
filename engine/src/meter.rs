@@ -84,7 +84,7 @@ pub struct Tally {
 /// пакете, которого одна из веток не увидела.
 ///
 /// План в букве не читается: счёту байтов знание о цели безразлично. Он всё равно обязан стоять в
-/// подписи — соседство требует ОДНОЙ буквы на обоих ([`reflex_core::step::Alongside`]).
+/// подписи — соседство требует ОДНОЙ буквы на обоих ([`reflex_core::mealy::Pair`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Counting(pub Tally);
 
@@ -102,12 +102,12 @@ impl Counting {
     }
 }
 
-impl reflex_core::step::Step for Counting {
-    type From = (Plan, Packet, Tick);
-    type To = ();
-    type Notes = Tally;
+impl reflex_core::mealy::Mealy for Counting {
+    type In = (Plan, Packet, Tick);
+    type Out = ();
+    type Log = Tally;
 
-    fn step(self, (_plan, packet, now): Self::From) -> (Self, (), Tally) {
+    fn step(self, (_plan, packet, now): Self::In) -> (Self, (), Tally) {
         let tally = self.0;
         let size = packet.payload_len as u64;
         let counted = Tally {

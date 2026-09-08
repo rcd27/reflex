@@ -3,11 +3,11 @@
 //! Слово уходит соседу по стрелке; показание уходит вбок и не читается никем. Композиция цепляет
 //! слова и ПЕРЕМНОЖАЕТ показания: двум звеньям не нужно говорить на одном языке, чтобы их
 //! показания сложились, — а кто сказал, называет позиция в типе.
-use reflex_core::step::{Id, Step, StepExt};
-use reflex_core::word::{Region, Word};
+use reflex_core::mealy::{Id, Mealy, MealyExt};
+use reflex_core::word::{Base, Word};
 
 struct Bench;
-impl Region for Bench {}
+impl Base for Bench {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Count(u8);
@@ -19,10 +19,10 @@ impl Word for Count {
 #[derive(Debug, Clone, Copy)]
 struct Counting(u8);
 
-impl Step for Counting {
-    type From = Count;
-    type To = Count;
-    type Notes = u8;
+impl Mealy for Counting {
+    type In = Count;
+    type Out = Count;
+    type Log = u8;
 
     fn step(self, input: Count) -> (Self, Count, u8) {
         (Counting(self.0 + 1), Count(input.0 + 1), self.0)
@@ -33,10 +33,10 @@ impl Step for Counting {
 #[derive(Debug, Clone, Copy)]
 struct Doubling;
 
-impl Step for Doubling {
-    type From = Count;
-    type To = Count;
-    type Notes = ();
+impl Mealy for Doubling {
+    type In = Count;
+    type Out = Count;
+    type Log = ();
 
     fn step(self, input: Count) -> (Self, Count, ()) {
         (self, Count(input.0 * 2), ())
@@ -60,7 +60,7 @@ fn composition_multiplies_the_notes() {
 fn nothing_to_note_weighs_nothing() {
     // «Пусто» здесь по ТИПУ, а не по проверке в работе: пустые показания не занимают памяти.
     assert_eq!(
-        core::mem::size_of::<<Doubling as Step>::Notes>(),
+        core::mem::size_of::<<Doubling as Mealy>::Log>(),
         0,
         "пустое показание обязано быть бесплатным"
     );

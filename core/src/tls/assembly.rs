@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use smallvec::SmallVec;
 
 use crate::detector::DetectorEvent;
-use crate::step::Step;
+use crate::mealy::Mealy;
 
 use super::{record_need, RecordNeed};
 
@@ -130,7 +130,7 @@ fn two(first: Assembly, second: Assembly) -> SmallVec<[Assembly; 2]> {
 }
 
 /// Сборщик первой TLS-записи одного потока. Чистая машина состояний: `(state, event) → (state,
-/// signals)`, часов не дёргает — время приходит в событии (контракт [`Step`](crate::step::Step)).
+/// signals)`, часов не дёргает — время приходит в событии (контракт [`Mealy`](crate::mealy::Mealy)).
 #[derive(Debug, Clone)]
 pub struct RecordAssembler {
     hold_deadline: Duration,
@@ -285,13 +285,13 @@ impl RecordAssembler {
     }
 }
 
-impl Step for RecordAssembler {
-    type From = DetectorEvent<RecordChunk>;
-    type To = SmallVec<[Assembly; 2]>;
+impl Mealy for RecordAssembler {
+    type In = DetectorEvent<RecordChunk>;
+    type Out = SmallVec<[Assembly; 2]>;
     /// Показаний этот оператор не заводит: он говорит, что увидел, и не говорит, чем мерил.
-    type Notes = ();
+    type Log = ();
 
-    fn step(self, event: Self::From) -> (Self, Self::To, ()) {
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (assembler, signals) = match event {
             DetectorEvent::Packet { input, at } => match (&self.hold, input.payload.is_empty()) {
                 // Голый ACK/FIN без данных записи не двигает — и не должен закрывать удержание.
