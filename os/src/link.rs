@@ -99,7 +99,7 @@ mod tests {
         assert!(level.is_ok());
         assert_eq!(level.map(|l| l.get()).ok(), Some(true));
 
-        let nowhere = std::path::PathBuf::from("/nevod/такого/пути/нет");
+        let nowhere = std::path::PathBuf::from("/такого/пути/нет");
         let level = present_at(nowhere, Duration::from_millis(50));
         assert_eq!(level.map(|l| l.get()).ok(), Some(false));
     }
@@ -107,7 +107,7 @@ mod tests {
     // Заведомо несуществующее имя: уровень честно ложен, ожидание доходит до дедлайна.
     #[test]
     fn absent_device_times_out() {
-        let level = present("nevod-которого-нет", Duration::from_millis(50));
+        let level = present("устройства-которого-нет", Duration::from_millis(50));
         assert!(level.is_ok());
         let waited = level.map(|l| l.wait_until(|up| *up, Duration::from_millis(200)));
         assert_eq!(waited.ok(), Some(Outcome::TimedOut));

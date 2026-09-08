@@ -354,7 +354,7 @@ fn stale_told(plan: Plan, packet: &Packet, stale: bool) -> Option<Sighting> {
     }
 }
 
-/// ДВИЖОК КАК МОРФИЗМ КАТЕГОРИИ ШАГА (шестой vision §3).
+/// ДВИЖОК КАК МОРФИЗМ КАТЕГОРИИ ШАГА (канон §1).
 ///
 /// # Что этим лечится
 ///
@@ -395,7 +395,7 @@ fn stale_told(plan: Plan, packet: &Packet, stale: bool) -> Option<Sighting> {
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Advancing {
-    /// СОСТОЯНИЕ РАЗГОВОРА. Публично: живая интроспекция есть обязательство A шестого vision —
+    /// СОСТОЯНИЕ РАЗГОВОРА. Публично: живая интроспекция есть обязательство канона (§6) —
     /// спросить у машины, где она, обязано быть можно, не выполняя шага.
     pub cursor: Cursor,
 }

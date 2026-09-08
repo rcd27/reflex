@@ -1,7 +1,7 @@
 //! Состояние ОС как УРОВНИ (#152).
 //!
-//! Референт: `model/infra/WitnessSource.tla` (атом) + `model/infra/WitnessedAttach.tla`
-//! (молекула `WitnessSource × AttachGate`) в репозитории `nevod`.
+//! Референт: модель `WitnessSource` (атом) + `WitnessedAttach`
+//! (молекула `WitnessSource × AttachGate`) — модель потребителя.
 //!
 //! Примитив — не «сервис» и не «событие», а `Level<T>`: три поля, из которых ровно
 //! одно необязательное, и минимальность эта ДОКАЗАНА прогонами TLC, а не заявлена:

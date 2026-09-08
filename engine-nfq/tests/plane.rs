@@ -673,7 +673,7 @@ fn a_target_still_within_the_horizon_is_not_buried() {
 ///
 /// Контроль в том же тесте обязателен: сосед, о котором приказа не было, продолжает жить. Без
 /// него проверка прошла бы и у реализации, рвущей всё подряд, — а рвать живое чужой цели значит
-/// делать ровно то, чем нас бьёт ТСПУ.
+/// делать ровно то, чем бьёт молчаливый дроп на пути.
 #[test]
 fn an_order_to_sever_reaches_the_conversations_of_that_target() {
     let mut plane = Plane::new(Programme::Pass, as_seen);

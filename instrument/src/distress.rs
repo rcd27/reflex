@@ -18,8 +18,6 @@ pub enum Distress {
     Silence { ms: u32 },
     /// Байты идут, но так медленно, что это неотличимо от поломки.
     Throttled { bps: u32 },
-    /// Ответ пришёл, но это заглушка «недоступно в вашей стране».
-    GeoStub,
     /// Соединение живо, байтов ноль.
     NoBytes,
     /// КЛИЕНТ ПОВТОРИЛ ПРОСЬБУ, а цель не отдала ни байта. Величина — сколько человек ждёт с
@@ -44,7 +42,6 @@ impl Distress {
             Distress::Rst => "rst",
             Distress::Silence { .. } => "silence",
             Distress::Throttled { .. } => "throttled",
-            Distress::GeoStub => "geo_stub",
             Distress::NoBytes => "no_bytes",
             Distress::Retransmit { .. } => "retransmit",
         }
@@ -75,7 +72,7 @@ impl Distress {
             Distress::Silence { ms } => format!("{ms} мс без байтов"),
             Distress::Throttled { bps } => format!("{} КБ/с", bps / 1024),
             Distress::Retransmit { after_ms } => format!("повтор через {after_ms} мс"),
-            Distress::Rst | Distress::NoBytes | Distress::GeoStub => String::new(),
+            Distress::Rst | Distress::NoBytes => String::new(),
         }
     }
 }
@@ -99,7 +96,6 @@ impl core::fmt::Display for Distress {
             Distress::Rst => f.write_str("rst"),
             Distress::Silence { ms } => write!(f, "silence ms={ms}"),
             Distress::Throttled { bps } => write!(f, "throttled bps={bps}"),
-            Distress::GeoStub => f.write_str("geo_stub"),
             Distress::NoBytes => f.write_str("no_bytes"),
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
         }
@@ -126,12 +122,17 @@ mod tests {
     /// суть два взгляда на одну таблицу и сверяются глазом за секунду; та же пара в разных файлах
     /// расходится молча. Игла — буква без полей, входящая в КАЖДУЮ полную таблицу.
     ///
-    /// Игла собирается `concat!`: целиком в исходнике она не встречается, и самосчёт невозможен
-    /// по построению, а не по внимательности (грабля оплачена реестром парка — там счётчик
-    /// пополнял собственную выборку).
+    /// Игла — ОБЪЯВЛЕНИЕ самого типа: полная таблица возможна лишь там, где объявлен `enum`, и
+    /// потому «перечислен в одном файле» и «объявлен в одном файле» суть одно. Прежде иглой была
+    /// одинокая буква алфавита; когда такую букву срезали за политическую частность, служба иглы
+    /// осталась при ней невидимо — оттого игла теперь при самом типе, а не при его букве.
+    ///
+    /// Собирается `concat!`: целиком в исходнике теста строка не встречается, и самосчёт
+    /// невозможен по построению, а не по внимательности (грабля оплачена реестром парка — там
+    /// счётчик пополнял собственную выборку).
     #[test]
     fn the_alphabet_of_trouble_is_spelled_out_in_exactly_one_file() {
-        let needle = concat!("Distress::", "GeoStub");
+        let needle = concat!("enum ", "Distress");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         // Нечитаемый каталог даёт ПУСТОЙ список, а не панику: пустой не равен ожидаемому, и тест
         // покраснеет — то есть «не смогли посмотреть» отличимо от «посмотрели и чисто».

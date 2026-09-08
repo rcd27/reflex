@@ -33,21 +33,21 @@ impl reflex_core::word::Word for Leg {
 /// Прибор о МИРЕ, и единственный, отвечающий на вопрос «а не мы ли виноваты в просадке»: при
 /// ЗАТОРЕ проседают ВСЕ, при цензуре — избирательно. Различитель пропорциональный, и потому не
 /// зависит ни от источника затора, ни от того, виден ли нам весь канал.
-pub struct LegInstrument<L>(std::marker::PhantomData<L>);
+pub struct LinkInstrument<L>(std::marker::PhantomData<L>);
 
-impl<L> Default for LegInstrument<L> {
+impl<L> Default for LinkInstrument<L> {
     fn default() -> Self {
         Self(std::marker::PhantomData)
     }
 }
 
-impl<L> LegInstrument<L> {
+impl<L> LinkInstrument<L> {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl<L: crate::ask::Carrying + crate::ask::Stalled> LegInstrument<L> {
+impl<L: crate::ask::Carrying + crate::ask::Stalled> LinkInstrument<L> {
     fn read(&self, link: &L, _now_ms: u64) -> Option<Leg> {
         match link.carrying() {
             // ПУСТОЕ ОКНО НЕ СУДИТСЯ: доли без знаменателя не существует, и «ноль из нуля» есть
@@ -61,7 +61,7 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> LegInstrument<L> {
     }
 }
 
-impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for LegInstrument<L> {
+impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for LinkInstrument<L> {
     /// НАБЛЮДЕНИЕ, которое подают прибору.
     type From = reflex_core::DetectorEvent<L>;
 
@@ -85,7 +85,7 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::step::Step for 
     }
 }
 
-impl<L: crate::ask::Carrying + crate::ask::Stalled> crate::Instrument for LegInstrument<L> {
+impl<L: crate::ask::Carrying + crate::ask::Stalled> crate::Instrument for LinkInstrument<L> {
     type Signal = Leg;
 
     const INSTRUMENT: &'static str = "leg";

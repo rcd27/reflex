@@ -7,7 +7,7 @@ use pin_project_lite::pin_project;
 
 pin_project! {
     /// bounded-flatMap / mergeMap(Cap) — проекция молекулы `FlowPermit`
-    /// (nevod/model/molecule/FlowPermit.tla).
+    /// (модель `FlowPermit`).
     ///
     /// Маппит стрим айтемов в future (по одной на айтем) и гонит их конкуррентно,
     /// но одновременно живых НЕ больше `cap`. Слот в `inflight` = permit; завершение

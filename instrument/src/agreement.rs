@@ -95,7 +95,7 @@ impl crate::Instrument for AgreementInstrument {
     const SILENCE: Option<crate::Silence> = Some(crate::Silence::Blind);
 
     const LIES: &'static [&'static str] = &[
-        "ПОСТРОЕН И НЕ ПОДКЛЮЧЁН. Единственный читатель — `nevod2-runtime/examples/kernel-witness.rs`, \
+        "ПОСТРОЕН И НЕ ПОДКЛЮЧЁН. Единственный читатель — пример потребителя, \
          то есть ПРИМЕР, а не живой вход. Прибор, свидетельствующий применение приказов, сам не \
          применён.",
         "ЦЕНА ОПРОСА ЗАМЕРЕНА И ВЫСОКА: `/proc` ×4,6 к стоимости вердикта, `nft` ×760. Поэтому \

@@ -166,7 +166,7 @@ fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> 
         (true, _, _) => Some(SeenTcp::Rst {
             by: match from_client {
                 true => ResetBy::Person,
-                // НЕ `Target`: со стороны цели приходит и её отказ, и инжект ТСПУ от её имени, а
+                // НЕ `Target`: со стороны цели приходит и её отказ, и инжект постороннего от её имени, а
                 // различитель (TTL, фингерпринт) здесь не читается — Н10 эпика #320.
                 false => ResetBy::TargetSide,
             },

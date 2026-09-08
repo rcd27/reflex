@@ -1,4 +1,4 @@
-//! Тесты `merge_map_bounded` — проекция молекулы `FlowPermit` (nevod/model/molecule).
+//! Тесты `merge_map_bounded` — проекция модели `FlowPermit`.
 //!
 //! Оператор = bounded-flatMap / mergeMap(Cap): стрим айтемов → по future на айтем, но
 //! одновременно живых future НЕ больше `cap`. Слот в пуле = permit; завершение future =

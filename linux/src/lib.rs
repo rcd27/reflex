@@ -1,8 +1,8 @@
 //! # ДВА КРЫЛА ПОМЕЧЕНЫ УСТАРЕВШИМИ (05.09.2026): `tc` и `tun`
 //!
-//! Перепись публичных имён показала: обе фичи включает ТОЛЬКО `nevod/` — первый невод, объявленный
-//! владельцем deprecated и не собирающийся вовсе. У живых потребителей (zond, nevod2-runtime,
-//! reflex-engine-nfq, tablo) в зависимостях лишь `nfqueue` и `conntrack`.
+//! Перепись публичных имён показала: обе фичи включает ТОЛЬКО закрытая ветка, объявленная
+//! владельцем deprecated и не собирающаяся вовсе. У живых потребителей в зависимостях лишь
+//! `nfqueue` и `conntrack`.
 //!
 //! Помечены, а НЕ СНЕСЕНЫ, и это решение владельца: там техника, а не обвязка — eBPF-steering с
 //! картами действий и userspace-терминация TCP поверх smoltcp. Из 21 мёртвого публичного имени
@@ -78,8 +78,8 @@ pub use inject::Injector;
 pub use rawsend::RawSender;
 
 // Контракт src-порт-метки анти-петли ловца (`SelfLoop.portmark`): eBPF-steer гейтит лифт по нему, а
-// потребитель (nevod) биндит src-порт из `PROBE_PORT_LO..=PROBE_PORT_HI` на direct-пробу. Реэкспорт —
-// nevod тянет `reflex-linux`, не `-common` напрямую.
+// потребитель биндит src-порт из `PROBE_PORT_LO..=PROBE_PORT_HI` на direct-пробу. Реэкспорт —
+// потребитель тянет `reflex-linux`, не `-common` напрямую.
 #[cfg(feature = "tc")]
 #[allow(deprecated)]
 pub use reflex_linux_common::{

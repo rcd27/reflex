@@ -62,7 +62,7 @@ pub trait ReflexExt: Stream + Sized {
     ///
     /// По future на айтем, одновременно живых НЕ больше `cap`; пока потолок занят,
     /// источник не опрашивается (backpressure). Проекция молекулы `FlowPermit`
-    /// (nevod/model/molecule/FlowPermit.tla): permit = слот, `Terminate` = завершение
+    /// (модель `FlowPermit`): permit = слот, `Terminate` = завершение
     /// future. Порядок выхода не гарантирован.
     fn merge_map_bounded<F, Fut>(self, cap: usize, f: F) -> MergeMapBounded<Self, F, Fut>
     where
