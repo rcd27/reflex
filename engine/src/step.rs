@@ -23,7 +23,7 @@ pub fn acted(programme: Programme) -> Act {
 
 /// `look_up` зовётся дважды за разговор (#317): на открытии — по адресу (SYN), на пакете, где цель
 /// назвалась, — по имени. Ключ выбирает вызывающий: ядро знает момент, не имена.
-pub fn step<'a, L>(look_up: L, epoch: Epoch, cursor: Cursor, packet: &Packet, now: Tick) -> Stepped
+pub fn step<L>(look_up: L, epoch: Epoch, cursor: Cursor, packet: &Packet, now: Tick) -> Stepped
 where
     L: Fn(&Packet) -> Plan,
 {
@@ -132,7 +132,7 @@ fn adopting(run: &Run, packet: &Packet) -> bool {
     matches!(run.naming, Naming::Awaited) && !matches!(packet.says, Naming::Awaited)
 }
 
-fn carried<'a, L>(look_up: L, run: Run, epoch: Epoch, packet: &Packet, now: Tick) -> Stepped
+fn carried<L>(look_up: L, run: Run, epoch: Epoch, packet: &Packet, now: Tick) -> Stepped
 where
     L: Fn(&Packet) -> Plan,
 {
