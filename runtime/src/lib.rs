@@ -7,18 +7,12 @@
 //! lives here.
 
 pub mod clock;
-pub mod ext;
 pub mod pid;
 pub mod signal;
-pub mod stream;
 pub mod subject;
 pub mod timed;
 
 pub use clock::SystemClock;
-pub use ext::ReflexRuntimeExt;
 pub use pid::{PidError, PidGuard};
 pub use signal::shutdown_signal;
-pub use stream::{
-    DebounceStream, DetectStream, FlowConfig, GroupByConnectionStream, GroupByFlowStream,
-};
 pub use subject::Subject;

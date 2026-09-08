@@ -10,7 +10,7 @@ pub mod debounce;
 pub mod detector;
 pub mod disclosure;
 pub mod expiring_set;
-pub mod ext;
+pub mod fibre;
 pub mod flow_table;
 pub mod grid;
 pub mod held;
@@ -28,7 +28,6 @@ pub mod step;
 pub mod pcap;
 pub mod role;
 pub mod sight;
-pub mod stream;
 pub mod tap;
 pub mod tempo;
 pub mod timeout;
@@ -54,7 +53,6 @@ pub use command::{Command, InjectablePacket, ModifyPacket};
 pub use detector::{
     Both, By, Changes, Contextual, DetectorEvent, LMap, RMap, Sensed, Signed, Stamped, Timed,
 };
-pub use ext::ReflexExt;
 #[cfg(feature = "tls")]
 pub use l7::L7;
 pub use serves::Serves;
