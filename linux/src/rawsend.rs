@@ -119,8 +119,8 @@ impl Drop for RawSender {
 ///
 /// # Команда — ГОТОВЫЕ БАЙТЫ, а не пакет
 ///
-/// Сериализацию делает [`CanInject::inject`], и потому она видна в типе: сток принимает то, что
-/// уже есть на проводе. Принимай он [`InjectablePacket`], выбор формы (канальная или IP) прятался
+/// Сериализацию делает [`CanInject::inject`](reflex_core::capability::CanInject::inject), и потому она видна в типе: сток принимает то, что
+/// уже есть на проводе. Принимай он [`InjectablePacket`](reflex_core::command::InjectablePacket), выбор формы (канальная или IP) прятался
 /// бы внутри `emit`, и закон не мог бы снять отпечаток тем же способом, каким носитель отправляет.
 impl reflex_core::backend::Sink for RawSender {
     type Command = Vec<u8>;

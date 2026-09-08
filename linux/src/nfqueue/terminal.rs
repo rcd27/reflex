@@ -242,7 +242,7 @@ impl reflex_core::CanMark for NfqueueBackend {
     }
 }
 
-/// ОЧЕРЕДЬ ВОШЛА В КАТЕГОРИЮ — НЕ КАК `Source`, А КАК [`Serves`] (#326, 05.09.2026).
+/// ОЧЕРЕДЬ ВОШЛА В КАТЕГОРИЮ — НЕ КАК `Source`, А КАК [`Serves`](reflex_core::serves::Serves) (#326, 05.09.2026).
 ///
 /// `TODO(#326)` в `backend.rs` требовал «подключить очередь как `NfqSource`». Проба показала, что
 /// так нельзя: `Source::packets(&mut self)` держит бэкенд заимствованным, пока жив поток, а ответ
