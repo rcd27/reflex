@@ -8,7 +8,9 @@
 /// нём можно, когда ни одного разговора нет. Заводится здесь, а не в фундаменте: маршрут —
 /// предмет прибора о мире, и фундаменту знать о нём нечего.
 pub struct Link;
-impl reflex_core::word::Base for Link {}
+impl reflex_core::word::Base for Link {
+    type Fibre = ();
+}
 
 /// Канал живёт дольше решения о нём: сказать «в заторе» можно и следующим окном.
 impl reflex_core::word::CanDefer for Link {}

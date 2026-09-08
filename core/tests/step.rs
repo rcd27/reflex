@@ -17,7 +17,9 @@ use reflex_core::word::{Base, Word};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Base for Bench {}
+impl Base for Bench {
+    type Fibre = ();
+}
 
 /// СЛОВО НУМЕРАТОРА: номер и само слово.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

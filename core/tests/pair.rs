@@ -7,7 +7,9 @@ use reflex_core::mealy::{Id, Mealy, MealyExt};
 use reflex_core::word::{Base, Word};
 
 struct Bench;
-impl Base for Bench {}
+impl Base for Bench {
+    type Fibre = ();
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Count(u8);

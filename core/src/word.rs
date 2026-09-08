@@ -4,9 +4,12 @@
 //! их адрес, а не наклонение. Из области берётся срок, из срока — отложимость: адрес есть проекция
 //! слова в базу расслоения.
 
-/// База расслоения — адресат слова. Канон §4. Пуста: всё, что о базе знает фундамент, — терпит ли
-/// она ожидание ([`CanDefer`]).
-pub trait Base {}
+/// База расслоения — адресат слова, расслаиваемый ключом `Fibre`. Канон §4. `Fibre = ()` — ключа
+/// нет (пакет); иначе — тип адреса слоя. Смена области вверх есть сборка слоёв по `Fibre`.
+pub trait Base {
+    /// Ключ, которым область расслаивается.
+    type Fibre: Eq + std::hash::Hash;
+}
 
 /// Слово — значение с проекцией `Of` в базу.
 pub trait Word {
@@ -34,10 +37,18 @@ mod nobody {
 
 pub(crate) use nobody::Nobody;
 
-impl Base for Packet {}
-impl Base for Conversation {}
-impl Base for Target {}
-impl Base for Nobody {}
+impl Base for Packet {
+    type Fibre = ();
+}
+impl Base for Conversation {
+    type Fibre = crate::types::Flow;
+}
+impl Base for Target {
+    type Fibre = std::net::IpAddr;
+}
+impl Base for Nobody {
+    type Fibre = ();
+}
 
 /// Охват `⊆`: `Packet ⊂ Conversation ⊂ Target`. Канон §5. Порядок объявлен, не выведен;
 /// транзитивность (`Packet: Within<Target>`) — рукой, ибо спуск через уровень существует в бою.

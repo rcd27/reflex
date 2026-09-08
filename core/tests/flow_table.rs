@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Base for Bench {}
+impl Base for Bench {
+    type Fibre = ();
+}
 
 /// СЧЁТ СБРОСОВ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

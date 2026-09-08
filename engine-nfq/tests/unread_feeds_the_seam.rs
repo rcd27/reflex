@@ -156,7 +156,9 @@ struct Tally {
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl reflex_core::word::Base for Bench {}
+impl reflex_core::word::Base for Bench {
+    type Fibre = ();
+}
 
 /// Счёт стенда адресован стенду: ни пакету, ни разговору, ни цели он ничего не говорит.
 impl reflex_core::word::Word for Tally {

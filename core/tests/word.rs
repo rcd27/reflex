@@ -11,7 +11,9 @@ use smallvec::SmallVec;
 /// СВОЯ ОБЛАСТЬ, ОБЪЯВЛЕННАЯ СНАРУЖИ ФУНДАМЕНТА — то, ради чего закон вводится трейтом, а не
 /// перечислением трёх слов движка.
 struct Tunnel;
-impl Base for Tunnel {}
+impl Base for Tunnel {
+    type Fibre = ();
+}
 
 struct Reroute;
 impl Word for Reroute {

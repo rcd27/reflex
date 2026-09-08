@@ -159,7 +159,9 @@ mod tests {
 
     /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА: у счёта свидетеля адресата в домене нет, и стенд объявляет свой.
     struct Bench;
-    impl crate::word::Base for Bench {}
+    impl crate::word::Base for Bench {
+        type Fibre = ();
+    }
 
     /// СЧЁТ СВИДЕТЕЛЯ — с именем, а не голым числом: адрес объявляет значение, а число молчит.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

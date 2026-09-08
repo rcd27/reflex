@@ -43,7 +43,9 @@ pub enum Ending {
 /// из них. Заводится здесь, а не в фундаменте: эпизод — предмет прибора о человеке, и фундаменту
 /// знать о нём нечего.
 pub struct Episode;
-impl reflex_core::word::Base for Episode {}
+impl reflex_core::word::Base for Episode {
+    type Fibre = ();
+}
 
 /// Эпизод живёт до своего конца и ожидание терпит: сказать «кончился» можно и следующим тиком.
 impl reflex_core::word::CanDefer for Episode {}

@@ -30,7 +30,9 @@ use smallvec::{smallvec, SmallVec};
 /// Объявляется здесь, а не в фундаменте: закон обязан быть выразим для того, кто заводит свою
 /// область снаружи, и стенд — законный заводящий.
 struct Bench;
-impl Base for Bench {}
+impl Base for Bench {
+    type Fibre = ();
+}
 
 /// Вход: что случилось на проводе. Роль «мирового» словаря в этих тестах.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

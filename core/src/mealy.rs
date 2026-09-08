@@ -13,7 +13,7 @@ pub trait Mealy: Sized {
     /// use reflex_core::mealy::Mealy;
     /// use reflex_core::word::{Base, Word};
     /// struct Bench;
-    /// impl Base for Bench {}
+    /// impl Base for Bench { type Fibre = (); }
     /// struct Beat(u8);
     /// impl Word for Beat { type Of = Bench; }
     /// struct Echo;
