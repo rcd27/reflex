@@ -710,6 +710,8 @@ git commit -m "feat(instrument): кодек края — фаза, оттиск,
 pub trait EdgeView {
     fn down_packets(&self) -> Option<u64>;   // от клиента к цели
     fn up_packets(&self) -> Option<u64>;     // от цели к клиенту
+    fn down_bytes(&self) -> Option<u64>;     // ДАННЫЕ от клиента: SYN и ACK их не несут
+    fn up_bytes(&self) -> Option<u64>;       // данные от цели: SYN+ACK — пакет, но ноль байт
     fn idle(&self) -> Option<Duration>;      // сколько прошло с последнего пакета
     fn mark(&self) -> u32;                   // слово состояния, как его хранит край
 }
@@ -876,7 +878,7 @@ Expected: FAIL — `EdgeSilence` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-Величины берутся через `EdgeView`: «не ответила вовсе» = `up.packets == 0`; «сколько молчит» = `base − expires_in`, где `base` — таймаут ядра для состояния из `view.tcp`, прочитанный при старте (Task 7). Фаза и оттиск читаются `Layout::read`; `Recall::Foreign` даёт `Distress::Diverged`. На выходе — пара слов: беда и памятка края, обе `Of = Conversation`.
+Величины берутся через `EdgeView`. **«Цель не ответила» — это `up_bytes == Some(0)` при `down_bytes > Some(0)`, а не ноль ПАКЕТОВ:** ответных пакетов нет у всякого открывающегося соединения, а при дропе `ClientHello` после рукопожатия `SYN+ACK` приходит и обнуляет пакетный признак (найдено боевым прогоном, 20 ложных из 20). Ноль пакетов остаётся признаком `SynDrop` — соединение не состоялось вовсе; «сколько молчит» = `base − expires_in`, где `base` — таймаут ядра для состояния из `view.tcp`, прочитанный при старте (Task 7). Фаза и оттиск читаются `Layout::read`; `Recall::Foreign` даёт `Distress::Diverged`. На выходе — пара слов: беда и памятка края, обе `Of = Conversation`.
 
 Добавить в `instrument/src/distress.rs` вариант `Diverged { theirs: u32 }`.
 
