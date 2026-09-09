@@ -23,7 +23,7 @@
 
 ---
 
-### Task 0: Ключ потока — одна функция, не два понятия
+### Task 0: Ключ потока рождается из четвёрки ядра
 
 **Files:**
 - Modify: `engine-nfq/src/parse.rs:363` — там живёт единственная ковка (`pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> FlowKey`, дальше `mixed`)
@@ -37,7 +37,11 @@
 
 **Зависимость крейтов.** `reflex-engine-nfq` уже зависит от `reflex-linux` с фичей `conntrack`, так что `Tuple` там виден; обратного ребра заводить не нужно.
 
-Нулевой шаг спеки: ключ таблицы имён и кортеж conntrack обязаны быть одной личностью потока. Две ковки одного ключа разойдутся молча при зелёной сборке.
+Нулевой шаг спеки, в усиленной формулировке: ключ не «сверяется» с четвёркой ядра, а **рождается** из неё. `CTA_TUPLE_ORIG` приложен к каждому пакету и уже нормализован (инициатор — `src`), поэтому эвристика направления для КЛЮЧА не нужна вовсе: две ковки не согласуются, а не рождаются.
+
+**Фолбэк остаётся, и это не вторая ковка.** `NFQA_CT` есть не у всякого пакета: поток может быть `INVALID` для ядра, а `nf_conntrack` — не загружен вовсе. Ковка одна (`keyed`), источник четвёрки — предпочтительно `CTA_TUPLE_ORIG`, при его отсутствии провод с существующей эвристикой `upward`. Закон, который это держит: там, где есть оба источника, ключи совпадают — тест ниже.
+
+**Протокол в ключ НЕ входит, и это намеренно.** `keyed` берёт четыре поля и роняет `proto` (`parse.rs:364`); докблок `datagrammed` (`parse.rs:263`) объявляет это законом: «разговор по QUIC и по TCP к одной цели ключуются одинаково, иначе знание о цели разъедется по транспортам». Ковка из кортежа этого не нарушает — `keyed_of_tuple` берёт из `Tuple` те же четыре поля и `proto` не трогает. Претензия докблока остаётся живой; снимать её не нужно.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -63,6 +67,34 @@ fn reply_direction_yields_the_same_conversation() {
     assert_eq!(
         keyed_of_tuple(reply.dst, reply.dst_port, reply.src, reply.src_port),
         keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port)
+    );
+}
+```
+
+```rust
+/// Два источника четвёрки дают один ключ: пока это так, фолбэк на провод не заводит второго
+/// понятия «какой это поток».
+#[test]
+fn both_sources_agree_while_both_exist() {
+    let segment = syn_from(0x0A00_0001, 44321, 0x5DB8_D822, 443);
+    let from_wire = wired(segment, true).flow;
+    let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
+    assert_eq!(
+        keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port),
+        from_wire,
+        "ORIG-инициатор и upward-клиент — одно лицо"
+    );
+}
+
+/// Протокол в ключ не входит: QUIC и TCP к одной цели остаются одним разговором, как объявлено
+/// докблоком `datagrammed`.
+#[test]
+fn protocol_does_not_enter_the_key() {
+    let tcp = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
+    let quic = Tuple { proto: 17, ..tcp };
+    assert_eq!(
+        keyed_of_tuple(tcp.src, tcp.src_port, tcp.dst, tcp.dst_port),
+        keyed_of_tuple(quic.src, quic.src_port, quic.dst, quic.dst_port)
     );
 }
 ```
@@ -210,7 +242,7 @@ git commit -m "refactor(linux): обход и сборка TLV netlink — од�
 ```rust
 pub struct CtView {
     pub id: u32,
-    pub tuple: Tuple,
+    pub tuple: Option<Tuple>,          // None — адреса не IPv4: ключ не куётся
     pub down: Counts,      // от клиента к цели (orig)
     pub up: Counts,        // от цели к клиенту (reply)
     pub started_ago: Option<Duration>,   // из CTA_TIMESTAMP
@@ -259,6 +291,17 @@ fn missing_attributes_are_unknown_not_zero() {
     assert_eq!(view.expires_in, None);
     assert_eq!(view.started_ago, None);
     assert!(view.tcp.is_none());
+}
+
+/// Кортеж не-IPv4 — «не знаю», а не нули. Разбор читает только `CTA_IP_V4_*`; отдай он на
+/// IPv6-потоке четвёрку по умолчанию — ВСЕ они схлопнулись бы в один ключ, и сборка осталась бы
+/// зелёной. Незнание обитаемо (§7), молчаливая порча — нет.
+#[test]
+fn a_non_ipv4_tuple_is_unknown_not_zeroes() {
+    // CTA_TUPLE_IP = 1, внутри CTA_IP_V6_SRC = 3 / CTA_IP_V6_DST = 4.
+    let ipv6 = nested_raw(1, &[tlv_bytes(3, &[0x20; 16]), tlv_bytes(4, &[0x20; 16])].concat());
+    let view = view_of(&nested_raw(1, &ipv6));
+    assert!(view.tuple.is_none(), "четвёрки нет — ключ не куётся, пакет уйдёт непонятым");
 }
 ```
 
