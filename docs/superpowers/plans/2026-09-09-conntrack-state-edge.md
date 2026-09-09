@@ -902,7 +902,9 @@ git commit -m "feat(instrument): приборы на величинах края
 
 **Interfaces:**
 - Consumes: ничего.
-- Produces: варианты `PreflightError::{NoConntrack, NoAccounting, NoTimestamps}`; `pub(crate) fn tcp_timeout_base(state: CtTcp) -> Option<Duration>` — читает `/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_*`.
+- Produces: варианты `PreflightError::{NoConntrack, NoAccounting, NoTimestamps}`.
+
+**Базы таймаута здесь НЕТ, и это не отсрочка.** `preflight` отвечает на вопрос «годится ли машина», а база таймаута — знание носителя о себе (`CtEdge` считает по ней `idle`). Место ей рядом с носителем, а потребитель появляется в Task 10; писать её раньше значило бы оставить мёртвое звено на три задачи вместо одной.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -1027,6 +1029,8 @@ Expected: FAIL — `remembers` не найден.
 Run: `cargo test --workspace && cargo build -p reflex-linux --features certify --example certify`
 Expected: PASS + пример собирается.
 
+**Живого прогона здесь нет, и это названо, а не забыто.** Закон требует ядра с включёнными `acct`/`timestamp` и правами; на машине разработки они выключены. Прогон закона на живом ядре — первый шаг стенда Task 10, ДО боевого A/B: если состояние не доезжает до ядра и не возвращается, сравнивать пути бессмысленно. До того момента девятый закон считается написанным, но не подтверждённым.
+
 - [ ] **Step 5: Коммит**
 
 ```bash
@@ -1050,6 +1054,14 @@ git commit -m "feat(core): девятый закон — край помнит �
 - [ ] **Step 1: Собрать пример с обоими путями**
 
 Существующий юзерспейсный путь НЕ трогается. Рядом поднимается второй, на `QueueSocket` + `EdgeSilence`, на своей очереди; оба печатают находки с пометкой пути.
+
+- [ ] **Step 1.5: Поднять стенд и подтвердить девятый закон**
+
+Стенд (docker, `NET_ADMIN`, своя netns): `sysctl -w net.netfilter.nf_conntrack_acct=1 net.netfilter.nf_conntrack_timestamp=1`, правило `queue num N`.
+
+Сначала `certify remember` — девятый закон на живом ядре. Затем ТА ЖЕ проверка с мутацией `apply → verdict(id, accept, None)`: закон обязан покраснеть `Broken::StateLost`. Это закрывает дыру, оставленную сознательно на Task 4 (перевод решения в системный вызов тестами не покрывается).
+
+Здесь же появляется `tcp_timeout_base` рядом с `CtEdge` — у него наконец есть потребитель, и гейт «ноль предупреждений» на обеих фичах проверяется в этой задаче.
 
 - [ ] **Step 2: Прогнать на вантаже**
 
