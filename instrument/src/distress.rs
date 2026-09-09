@@ -24,6 +24,9 @@ pub enum Distress {
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
+    /// По НАШИМ битам марки писал другой агент (тег не наш) — не ошибка и не тишина, а находка:
+    /// на машине крутится кто-то ещё. `theirs` — чужое слово целиком, для расследования.
+    Diverged { theirs: u32 },
 }
 
 impl Distress {
@@ -38,6 +41,7 @@ impl Distress {
             Distress::Retransmit { .. } => "retransmit",
             Distress::Blackhole { .. } => "blackhole",
             Distress::Poisoned => "poisoned",
+            Distress::Diverged { .. } => "diverged",
         }
     }
 
@@ -57,6 +61,7 @@ impl Distress {
             Distress::Throttled { bps } => format!("{} КБ/с", bps / 1024),
             Distress::Retransmit { after_ms } => format!("повтор через {after_ms} мс"),
             Distress::Blackhole { after_ms } => format!("SYN без ответа через {after_ms} мс"),
+            Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
         }
     }
@@ -80,6 +85,7 @@ impl core::fmt::Display for Distress {
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
             Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
             Distress::Poisoned => f.write_str("poisoned"),
+            Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
         }
     }
 }
