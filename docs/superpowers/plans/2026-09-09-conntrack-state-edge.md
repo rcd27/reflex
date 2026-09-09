@@ -337,7 +337,7 @@ Expected: FAIL — `view_of` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-`addressed` учится читать `CTA_IP_V6_SRC` (3) и `CTA_IP_V6_DST` (4) наравне с `CTA_IP_V4_*` и отдаёт `CtEnds`; `tuple` выводится из `CtEnds::V4` и только из неё. `view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` (be32, секунды), `CTA_TIMESTAMP` (вложенный, `CTA_TIMESTAMP_START` = be64 наносекунд), `CTA_PROTOINFO` → `CTA_PROTOINFO_TCP` → `CTA_PROTOINFO_TCP_STATE` (u8).
+`addressed` учится читать `CTA_IP_V6_SRC` (3) и `CTA_IP_V6_DST` (4) наравне с `CTA_IP_V4_*` и отдаёт `CtEnds`; `tuple` выводится из `CtEnds::V4` и только из неё. `view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` = 7 (be32, секунды), `CTA_TIMESTAMP` = 20 (вложенный, `CTA_TIMESTAMP_START` = 1, be64 наносекунд), `CTA_PROTOINFO` = 4 → `CTA_PROTOINFO_TCP` = 1 → `CTA_PROTOINFO_TCP_STATE` = 1 (u8), `CTA_ID` = 12. Все сверены с `nfnetlink_conntrack.h`; `CTA_IP_V6_SRC` = 3, `CTA_IP_V6_DST` = 4.
 
 **Отсутствие — `None`, не ноль.** Ядро без `nf_conntrack_acct` счётчиков не шлёт; ноль пакетов неотличим от «не считали».
 
@@ -388,9 +388,9 @@ use reflex_linux::queue::{incoming_of, verdict_message, conntrack_flag_request, 
 #[test]
 fn conntrack_flag_request_sets_flag_and_mask() {
     let built = conntrack_flag_request(200, 1);
-    // NFQA_CFG_FLAGS = 5, NFQA_CFG_MASK = 6, NFQA_CFG_F_CONNTRACK = 0x0002, оба be32.
+    // NFQA_CFG_FLAGS = 5, NFQA_CFG_MASK = 4, NFQA_CFG_F_CONNTRACK = 0x0002, оба be32.
     assert!(contains_be32_attr(&built, 5, 0x0002), "флаг выставлен");
-    assert!(contains_be32_attr(&built, 6, 0x0002), "маска называет тот же бит");
+    assert!(contains_be32_attr(&built, 4, 0x0002), "маска называет тот же бит");
 }
 
 /// Состояние уезжает вложенным NFQA_CT{CTA_MARK} — именно этого не умеет крейт nfq.
@@ -439,7 +439,21 @@ Expected: FAIL — модуля `queue` нет.
 
 - [ ] **Step 3: Реализовать**
 
-Константы: `NFNL_SUBSYS_QUEUE = 3`; `NFQNL_MSG_PACKET = 0`, `NFQNL_MSG_VERDICT = 1`, `NFQNL_MSG_CONFIG = 2`; `NFQA_PACKET_HDR = 1`, `NFQA_VERDICT_HDR = 2`, `NFQA_MARK = 8`, `NFQA_PAYLOAD = 10`, `NFQA_CT = 11`; `NFQA_CFG_CMD = 1`, `NFQA_CFG_PARAMS = 2`, `NFQA_CFG_FLAGS = 5`, `NFQA_CFG_MASK = 6`; `NFQNL_CFG_CMD_BIND = 1`; `NFQNL_COPY_PACKET = 2`; `NFQA_CFG_F_CONNTRACK = 0x0002`; `NF_ACCEPT = 1`, `NF_DROP = 0`.
+Константы — сверены с `include/uapi/linux/netfilter/nfnetlink_queue.h`, не по памяти:
+
+```
+NFNL_SUBSYS_QUEUE      3
+NFQNL_MSG_PACKET       0     NFQNL_MSG_VERDICT      1     NFQNL_MSG_CONFIG   2
+NFQA_PACKET_HDR        1     NFQA_VERDICT_HDR       2     NFQA_MARK          3
+NFQA_PAYLOAD          10     NFQA_CT               11     NFQA_CT_INFO      12
+NFQA_CFG_CMD           1     NFQA_CFG_PARAMS        2     NFQA_CFG_QUEUE_MAXLEN 3
+NFQA_CFG_MASK          4     NFQA_CFG_FLAGS         5
+NFQNL_CFG_CMD_BIND     1     NFQNL_COPY_PACKET      2
+NFQA_CFG_F_CONNTRACK   0x0002
+NF_DROP                0     NF_ACCEPT              1
+```
+
+**Осторожно с двумя:** `NFQA_MARK` — **3**, а не 8 (8 — это `CTA_MARK` из ctnetlink, другое пространство имён); `NFQA_CFG_MASK` — **4**, а не 6. Обе ошибки не ловятся ничем, кроме живого ядра: сообщение уйдёт, ядро молча не поймёт атрибут.
 
 Заголовок сообщения — `nlmsghdr` (16 байт) + `nfgenmsg` (`family = AF_UNSPEC`, `version = 0`, `res_id` = номер очереди в **big-endian**). Тип сообщения — `(NFNL_SUBSYS_QUEUE << 8) | msg`.
 
