@@ -1,0 +1,10 @@
+services:
+  certify:
+    build:
+      context: ../../../..
+      dockerfile: examples/detect-silent-drop/lab/certify/Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      CONTROL: vk.com
