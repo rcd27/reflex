@@ -1,0 +1,14 @@
+# Стенд одного use-case: боевая верификация detect-silent-drop на реальном ТСПУ вантажа.
+# Один сервис — сам движок гонит трафик; цензора нет, цензор здесь настоящий (аплинк за ТСПУ).
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/detect-silent-drop/lab/engine/Dockerfile
+    # NFQUEUE и nft в netns контейнера.
+    cap_add:
+      - NET_ADMIN
+    # Реальная цель на нашем вантаже и чистый контроль. Меняются под другой вантаж.
+    environment:
+      TARGET: rutracker.org
+      CONTROL: vk.com

@@ -175,10 +175,10 @@ impl<F: FnMut(&str, Silenced)> Running<F> {
 
         let after = self.after;
         // Ключ молчит до эвикта вдвое дольше окна: снятый раньше потерял бы беду последнего окна.
-        let mut table = FlowTable::<SilenceInstrument, FlowKey>::new(
-            after.saturating_mul(2),
-            move |_flow| SilenceInstrument::after(after),
-        );
+        let mut table =
+            FlowTable::<SilenceInstrument, FlowKey>::new(after.saturating_mul(2), move |_flow| {
+                SilenceInstrument::after(after)
+            });
         let mut talks = Talks::new();
         // Имя цели живёт вне детектора: он мерит молчание, имя добывается из `ClientHello`.
         let mut names: HashMap<FlowKey, String> = HashMap::new();
@@ -201,8 +201,9 @@ impl<F: FnMut(&str, Silenced)> Running<F> {
                             }
                             // Провод → буква детектора; TCP-специфичные улики (SYN/RST) детектор
                             // тишины не читает — `anywhere` их отсеивает.
-                            if let Some(seen) =
-                                talks.read(&wire).and_then(|tcp| Reading::Tcp(tcp).anywhere())
+                            if let Some(seen) = talks
+                                .read(&wire)
+                                .and_then(|tcp| Reading::Tcp(tcp).anywhere())
                             {
                                 let (signals, log) = table.process(wire.flow, &seen, now);
                                 fire(react, names, wire.flow, &signals, log);

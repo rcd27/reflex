@@ -235,9 +235,21 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                     | Seen::Received { .. }
                     | Seen::Payload { .. } => self.watch,
                 };
+                // Часы молчания НЕ двигает клиентский ПОВТОР: ретрансмиссия той же просьбы есть
+                // симптом тишины, а не её разрыв. Считай повтор активностью — и при тихом дропе,
+                // где клиент шлёт `ClientHello` заново каждую секунду, окно тишины не набралось бы
+                // никогда (замер на боевом трафике: `rutracker.org` за ТСПУ). Первую засечку повтор
+                // всё же ставит (`or`): если разговор увиден с середины, мерить надо от него.
+                let last = match &input {
+                    Seen::Resent { .. } => self.last.or(Some(at)),
+                    Seen::Sent { .. }
+                    | Seen::Received { .. }
+                    | Seen::Payload { .. }
+                    | Seen::Closed { .. } => Some(at),
+                };
                 (
                     Self {
-                        last: Some(at),
+                        last,
                         bytes,
                         watch,
                         awaiting,
@@ -737,6 +749,36 @@ mod silence_tests {
         );
 
         assert_eq!(said, vec![Distress::NoBytes]);
+    }
+
+    /// Клиентский ПОВТОР не рушит окно тишины. При тихом дропе клиент шлёт `ClientHello` заново
+    /// каждую секунду; сбрасывай часы на повторе — окно не набралось бы никогда, и тихий дроп с
+    /// ретрансмиссией остался бы непойман (замер на боевом трафике: `rutracker.org` за ТСПУ).
+    #[test]
+    fn a_client_retransmit_does_not_reset_the_silence_clock() {
+        let said = run(
+            SilenceInstrument::after(Duration::from_millis(1_500)),
+            vec![
+                // ClientHello ушёл — ждём ответа.
+                (
+                    Some(Seen::Payload {
+                        head: vec![0x16, 0x03, 0x01],
+                        from_client: true,
+                    }),
+                    0,
+                ),
+                (None, 500),
+                // Повтор той же просьбы: ответа не было. Часы молчания он двигать не смеет.
+                (Some(Seen::Resent { count: 517 }), 1_000),
+                (None, 1_600),
+            ],
+        );
+
+        assert_eq!(
+            said,
+            vec![Distress::NoBytes],
+            "повтор клиента сбросил часы молчания — тихий дроп с ретрансмиссией не пойман"
+        );
     }
 
     /// Поток встал на середине — байты были и кончились, пока их ждут.
