@@ -8,6 +8,11 @@ services:
     # NFQUEUE и nft в netns контейнера.
     cap_add:
       - NET_ADMIN
+    # Предпосылки КРАЯ. Ставятся ЗДЕСЬ, а не в скрипте: /proc/sys в контейнере read-only, и
+    # docker кладёт namespaced-sysctl'ы при создании netns — единственный момент, когда они пишутся.
+    sysctls:
+      net.netfilter.nf_conntrack_acct: "1"
+      net.netfilter.nf_conntrack_timestamp: "1"
     # Реальная цель на нашем вантаже и чистый контроль. Меняются под другой вантаж.
     environment:
       TARGET: rutracker.org

@@ -39,6 +39,7 @@ FP=$!; sleep 1; q_on 200
 hammer "$TARGET" "$N"; hammer "$CONTROL" "$N"; sleep 9
 q_off; kill "$FP" 2>/dev/null; wait "$FP" 2>/dev/null
 FAC_T=$(grep -c "$TARGET" /tmp/facade.log); FAC_C=$(grep -c "$CONTROL" /tmp/facade.log)
+echo "-- фасад: что именно сказал (по роду находки) --"; sed -E 's/.*(подозрение|подтверждено|молчит целиком).*/\1/' /tmp/facade.log | sort | uniq -c
 
 echo "=== B1: ЯДЕРНЫЙ (EdgeSilence, очередь 201) на $TARGET — ЖИВОЙ дроп ==="
 detect-silent-drop-edge > /tmp/edge_t.log 2>&1 &

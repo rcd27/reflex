@@ -85,10 +85,10 @@ fn with_mark(mut edge: TestEdge, mark: u32) -> TestEdge {
     edge
 }
 
-fn packet(edge: TestEdge) -> DetectorEvent<Edged<Seen, TestEdge>> {
+fn packet(edge: TestEdge) -> DetectorEvent<Edged<Seen, Option<TestEdge>>> {
     DetectorEvent::packet_now(Edged {
         narrow: Seen::Received { count: 1 },
-        edge,
+        edge: Some(edge),
     })
 }
 
@@ -122,7 +122,10 @@ fn a_young_silent_target_is_not_yet_confirmed() {
     assert!(said(&first).is_empty(), "первое — подозрение");
     // Всё ещё молод (возраст 0 < окно): цель могла просто не успеть ответить.
     let (_mark, second) = mark_after(s, with_mark(with_request(1, 0), mark));
-    assert!(said(&second).is_empty(), "возраст мал — не дроп, а ещё не ответ");
+    assert!(
+        said(&second).is_empty(),
+        "возраст мал — не дроп, а ещё не ответ"
+    );
 }
 
 /// Цель прислала только `SYN+ACK` и молчит ДОЛЬШЕ окна возраста — тихий дроп: `NoBytes`.
@@ -164,7 +167,10 @@ fn a_synack_only_without_a_request_stays_silent() {
     assert!(said(&second).is_empty());
     // Возраст за окном (3 с), up_pk замер на 1, но запроса нет → НЕ `NoBytes`.
     let (_mark, third) = mark_after(s, with_mark(edge(1, 1, 60, 0, 3), mark));
-    assert!(said(&third).is_empty(), "нет запроса — нечему быть дропнутым");
+    assert!(
+        said(&third).is_empty(),
+        "нет запроса — нечему быть дропнутым"
+    );
 }
 
 /// Цель прислала пакет сверх `SYN+ACK` (up_pk≥2) — жива: `Released`, НЕ `Confirmed`, и возраст тут ни
@@ -231,7 +237,11 @@ fn the_instrument_is_stateless() {
     let s = silence();
     let (_m1, first) = mark_after(s, with_request(1, 0));
     let (_m2, second) = mark_after(s, with_request(1, 0));
-    assert_eq!(said(&first), said(&second), "исход зависит от края, не от прожитого");
+    assert_eq!(
+        said(&first),
+        said(&second),
+        "исход зависит от края, не от прожитого"
+    );
 }
 
 /// По нашим битам писал другой — буква `Diverged`, не тишина; его биты НЕ трогаем (памятка `None`).
@@ -243,4 +253,26 @@ fn a_foreign_writer_is_observed_and_left_alone() {
         .iter()
         .any(|distress| matches!(distress, Distress::Diverged { .. })));
     assert!(verdict.0.is_none(), "чужие биты не затираем");
+}
+
+/// КРАЯ НЕТ — СУДИТЬ НЕ О ЧЕМ, И ПАМЯТКИ НЕТ.
+///
+/// Пакет, которого ядро ещё не завело в conntrack (первый `SYN` вне таблицы), вида не имеет. Это
+/// «не считали», а не «цель не ответила»: скажи прибор что-нибудь здесь — он высказался бы о
+/// разговоре, которого край не видит. И памятки быть не может: писать фазу в марку по незнанию
+/// значит выдумать состояние.
+#[test]
+fn без_края_прибор_молчит_и_ничего_не_помнит() {
+    let silence: EdgeSilence<TestEdge> = EdgeSilence::new(WINDOW, layout());
+
+    let (_next, (memo, said), ()) = silence.step(DetectorEvent::packet_now(Edged {
+        narrow: Seen::Received { count: 1 },
+        edge: None::<TestEdge>,
+    }));
+
+    assert!(said.is_empty(), "без края сказать нечего");
+    assert!(
+        memo.is_none(),
+        "без края нечего и помнить — фаза не выдумывается"
+    );
 }

@@ -112,7 +112,11 @@ impl<V: EdgeView> EdgeSilence<V> {
 }
 
 impl<V: EdgeView> Mealy for EdgeSilence<V> {
-    type In = DetectorEvent<Edged<Seen, V>>;
+    /// Край приезжает `Option`: пакет, которого ядро ещё не завело в conntrack (первый `SYN` вне
+    /// таблицы), вида не имеет. Это ТРЕТЬЕ значение рядом с «ноль» и «много» (§7): «не считали» —
+    /// не «не ответила». Прими прибор непустой `V` — петля роняла бы такие пакеты молча, и разница
+    /// между незнанием и наблюдением исчезла бы ещё до прибора.
+    type In = DetectorEvent<Edged<Seen, Option<V>>>;
     type Out = Verdict;
     type Log = ();
 
@@ -123,6 +127,11 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
             DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => {
                 return (self, (None, SmallVec::new()), ());
             }
+        };
+        // Края нет — судить не о чем, и памятки нет: писать в марку по незнанию значило бы
+        // выдумать фазу разговора, которого край ещё не видит.
+        let Some(edge) = edge else {
+            return (self, (None, SmallVec::new()), ());
         };
 
         // Чужой писатель (тег не наш, слово непустое) — находка, а не тишина. Его биты НЕ трогаем
@@ -170,7 +179,10 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
                         smallvec![Distress::Blackhole { after_ms }],
                     )
                 } else if overdue && only_synack && client_spoke {
-                    (Some(self.memo(Phase::Confirmed, up_pk)), smallvec![Distress::NoBytes])
+                    (
+                        Some(self.memo(Phase::Confirmed, up_pk)),
+                        smallvec![Distress::NoBytes],
+                    )
                 } else {
                     (Some(self.memo(Phase::Suspected, up_pk)), SmallVec::new())
                 }

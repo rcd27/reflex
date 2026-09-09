@@ -76,6 +76,10 @@ impl TimeoutBase {
 /// источнику времени взяться неоткуда.
 ///
 /// [`seen`]: CtEdge::seen
+///
+/// `Copy` — вид края есть ЗНАЧЕНИЕ: снимок, замерший на приходе пакета. Копия его не «второй край»,
+/// а то же наблюдение, поданное второму читателю; удерживать уникальность тут нечего.
+#[derive(Debug, Clone, Copy)]
 pub struct CtEdge {
     pub view: CtView,
     pub base: TimeoutBase,
@@ -91,7 +95,10 @@ impl CtEdge {
     /// по времени, а не соврёт нулём.
     pub fn seen(view: CtView, base: TimeoutBase) -> CtEdge {
         let age = view.started_at.and_then(|started| {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos() as u64;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_nanos() as u64;
             now.checked_sub(started).map(Duration::from_nanos)
         });
         CtEdge { view, base, age }

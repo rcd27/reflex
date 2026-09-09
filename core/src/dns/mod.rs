@@ -161,3 +161,13 @@ impl DnsMessage {
         Some((name, return_pos))
     }
 }
+
+/// Сужение из ПАРЫ «провод и вид края» (§4): прибору DNS край безразличен — его предмет содержимое
+/// сообщения, которого conntrack не читает вовсе. Проекция первого множителя, как у приборов провода
+/// в `instrument`; общего закона «читается из пары, если читается из половины» не написать —
+/// рефлексивный `Reads<A> for A` с ним конфликтует, потому проекции точечные.
+impl<V> crate::stack::Reads<(DnsMessage, V)> for DnsMessage {
+    fn read(wide: &(DnsMessage, V)) -> Option<DnsMessage> {
+        Some(wide.0.clone())
+    }
+}
