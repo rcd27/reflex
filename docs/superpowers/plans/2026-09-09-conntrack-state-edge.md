@@ -26,28 +26,32 @@
 ### Task 0: Ключ потока — одна функция, не два понятия
 
 **Files:**
-- Modify: `engine/src/row.rs` или место ковки `FlowKey` (найти прогоном: `cargo test -p reflex-engine flow_key`)
-- Test: `linux/tests/flow_key_matches_tuple.rs`
+- Modify: `engine-nfq/src/parse.rs:363` — там живёт единственная ковка (`pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> FlowKey`, дальше `mixed`)
+- Test: `engine-nfq/tests/flow_key_matches_tuple.rs`
 
 **Interfaces:**
-- Consumes: `Tuple` из `conntrack::wire` (существующий).
-- Produces: `pub fn flow_key_of_tuple(tuple: Tuple) -> FlowKey` — единственная ковка ключа из четвёрки.
+- Consumes: `keyed` (существующая, `engine-nfq/src/parse.rs:363`); `Tuple` из `conntrack::wire`.
+- Produces: `pub fn keyed_of_tuple(src: u32, src_port: u16, dst: u32, dst_port: u16) -> FlowKey` в том же модуле — обёртка НАД `keyed`, а не второе правило.
+
+**Осторожно: ключ несимметричен.** `keyed` различает клиента и сервера (`mixed(mixed(tuple) ^ server)`), а `CTA_TUPLE_ORIG` даёт четвёрку «как завели»: `src` — инициатор. Значит orig-кортеж кладётся как есть, а reply-кортеж обязан быть развёрнут перед ковкой. Тест на это — второй ниже.
+
+**Зависимость крейтов.** `reflex-engine-nfq` уже зависит от `reflex-linux` с фичей `conntrack`, так что `Tuple` там виден; обратного ребра заводить не нужно.
 
 Нулевой шаг спеки: ключ таблицы имён и кортеж conntrack обязаны быть одной личностью потока. Две ковки одного ключа разойдутся молча при зелёной сборке.
 
 - [ ] **Step 1: Написать падающий тест**
 
 ```rust
-use reflex_engine::FlowKey;
-use reflex_linux::conntrack::{flow_key_of_tuple, Tuple};
+use reflex_engine_nfq::parse::{keyed, keyed_of_tuple};
+use reflex_linux::conntrack::Tuple;
 
 /// Ключ, выкованный из разобранного провода, и ключ из четвёрки ядра — один и тот же ключ.
 /// Иначе беда, найденная по ядерному состоянию, не найдёт имени, заведённого по проводу.
 #[test]
 fn kernel_tuple_and_wire_forge_the_same_key() {
-    let wire_key = key_from_parsed_packet(&syn_from(0x0A00_0001, 44321, 0x5DB8_D822, 443));
+    let wire_key = keyed(0x0A00_0001, 44321, 0x5DB8_D822, 443);
     let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
-    assert_eq!(flow_key_of_tuple(tuple), wire_key);
+    assert_eq!(keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port), wire_key);
 }
 
 /// Направление не теряется: ответный кортеж даёт ключ того же разговора, а не второго.
@@ -55,18 +59,22 @@ fn kernel_tuple_and_wire_forge_the_same_key() {
 fn reply_direction_yields_the_same_conversation() {
     let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
     let reply = Tuple { src: tuple.dst, dst: tuple.src, src_port: tuple.dst_port, dst_port: tuple.src_port, proto: 6 };
-    assert_eq!(flow_key_of_tuple(reply), flow_key_of_tuple(tuple));
+    // Разворот перед ковкой — обязанность зовущего: ключ несимметричен по построению.
+    assert_eq!(
+        keyed_of_tuple(reply.dst, reply.dst_port, reply.src, reply.src_port),
+        keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port)
+    );
 }
 ```
 
 - [ ] **Step 2: Прогнать — обязан упасть**
 
-Run: `cargo test -p reflex-linux --features conntrack --test flow_key_matches_tuple`
-Expected: FAIL — `flow_key_of_tuple` не найден.
+Run: `cargo test -p reflex-engine-nfq --test flow_key_matches_tuple`
+Expected: FAIL — `keyed_of_tuple` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-Найти существующую ковку ключа из разобранного провода и выразить `flow_key_of_tuple` ЧЕРЕЗ неё же, не повторяя правило нормализации направления. Если правило зашито в разбор — вынести его в одну функцию и позвать из обоих мест.
+`keyed_of_tuple` зовёт `keyed` и ничего не считает сама. Правило «кто клиент» не дублируется: у `CTA_TUPLE_ORIG` инициатор — `src`, и это единственное знание, которое обёртка добавляет.
 
 - [ ] **Step 4: Прогнать**
 
@@ -76,7 +84,7 @@ Expected: PASS.
 - [ ] **Step 5: Коммит**
 
 ```bash
-git add engine/src/row.rs linux/tests/flow_key_matches_tuple.rs
+git add engine-nfq/src/parse.rs engine-nfq/tests/flow_key_matches_tuple.rs
 git commit -m "refactor(engine): ключ потока куётся одной функцией из четвёрки"
 ```
 
