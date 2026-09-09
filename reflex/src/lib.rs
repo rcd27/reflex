@@ -45,12 +45,14 @@ use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use reflex_core::capability::{CanAsk, CanHold};
+use reflex_core::certify::replays::{replays, Replayed};
 use reflex_core::colimit::Layer;
 use reflex_core::dns::DnsMessage;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
+use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use reflex_core::tls;
 use reflex_core::word::{Conversation, Target};
 pub use reflex_core::DetectorEvent;
@@ -546,6 +548,7 @@ impl<T: Transport> Detecting<T> {
             longest: self.longest,
             about: self.about,
             react,
+            certify: false,
             transport: PhantomData,
         }
     }
@@ -702,7 +705,109 @@ pub struct Running<T: Transport, F> {
     longest: Duration,
     about: Option<(Fold, TargetVoice)>,
     react: F,
+    /// Предъявлять ли восьмой закон на живой ленте — [`Running::certifying`].
+    certify: bool,
     transport: PhantomData<fn() -> T>,
+}
+
+/// Чьё наблюдение — так сказал РАЗБОР, когда буква рождалась. Два ключа, потому что областей две
+/// (§4): `flow` адресует машину разговора, `target` — слой цели. В живом прогоне их вычисляет
+/// `T::observe`; на переигровке разбора нет, и оба обязаны лежать в ленте — иначе слово о цели
+/// восстановить не из чего, и копредел остался бы непроверенным.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Whose {
+    pub flow: Flow,
+    pub target: TargetKey<Box<str>>,
+}
+
+/// Что машина СКАЗАЛА за прогон — предмет сверки восьмого закона (§10). Обе области: слово о
+/// разговоре пришло бы в `.on`, слово о цели — в `.on_target`. Без второго переигровка не
+/// свидетельствовала бы о копределе, а он и есть свежая постройка.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Said {
+    /// Беда разговора, названная именем цели (так её видит `.on`).
+    OfConversation(String, Distress),
+    /// Слово о цели — итог свёртки (так его видит `.on_target`).
+    OfTarget(String, Voiced),
+}
+
+/// Лента этого движка: буквы провода с адресом разбора. Отклик пока не рождается — акт вопроса в
+/// потребительскую цепочку не вписан (по-актовый гейт способностей ещё не построен), потому
+/// содержимое отклика здесь пусто.
+type Recorded<T> = Tape<<T as Transport>::Wire, Whose, ()>;
+
+/// Сколько букв копит окно ленты, прежде чем закон предъявляется. Окно, а не весь прогон: движок
+/// живёт, пока жив процесс, и бесконечная лента была бы утечкой.
+///
+/// Величина СЧИТАНА, не угадана: узел сетки пишется каждые [`TICK`] (200мс), то есть пять букв в
+/// секунду даже на молчащем проводе — окно закрывается примерно раз в двенадцать секунд, а с
+/// трафиком быстрее. Возьми пятьсот — и короткий прогон закончился бы, не предъявив закона ни разу,
+/// то есть свидетель молчал бы, выглядя исправным.
+const TAPE_WINDOW: usize = 64;
+
+/// Пере-подать записанное окно СВЕЖЕЙ семье машин и собрать сказанное.
+///
+/// Зеркало живой петли, и в этом весь смысл: те же вызовы (`process` на пакет, `tick` на узел
+/// сетки, свёртка на нём же), но вход берётся из ЛЕНТЫ, а не из очереди и часов. Что расходится —
+/// то и есть скрытый вход машины (§10).
+///
+/// Реакции потребителя здесь не зовутся вовсе: они печатают, то есть трогают мир, а переигровка
+/// его не трогает (§9.4). Наружу идут ИСХОДЫ — их и сверяет закон.
+fn replay<T: Transport>(
+    seeds: &[Box<dyn Probe<T::Wire>>],
+    fold: Option<&Fold>,
+    idle: Duration,
+    mode: Mode,
+    letters: &[TapeLetter<T::Wire, Whose, ()>],
+) -> Vec<Said> {
+    // Живой режим сюда не приходит: пере-подача — всегда переигровка. Придёт — упадём в отладке,
+    // а не соврём тихо вердиктом, добытым касанием мира.
+    debug_assert_eq!(mode, Mode::Replay, "переигровка идёт только в Replay");
+
+    let templates: Vec<Box<dyn Probe<T::Wire>>> =
+        seeds.iter().map(|probe| probe.clone_box()).collect();
+    let mut table = FlowTable::<Probes<T::Wire>, Flow>::new(idle, move |_flow| {
+        Probes(templates.iter().map(|probe| probe.clone_box()).collect())
+    });
+    let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
+    let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
+    let mut said: Vec<Said> = Vec::new();
+
+    for letter in letters {
+        let Some((to, event)) = letter.seen() else {
+            // Отклик: до прибора он не доходит §4-сужением, а вопросов эта цепочка не задаёт.
+            continue;
+        };
+        match (to, event) {
+            (To::One(whose), DetectorEvent::Packet { input, at }) => {
+                let (signals, ()) = table.process(whose.flow, input, *at);
+                for signal in &signals {
+                    said.push(Said::OfConversation(label(&whose.target), signal.clone()));
+                    layer.saw(whose.target.clone(), whose.flow, signal.clone(), *at);
+                }
+                targets.insert(whose.flow, whose.target.clone());
+            }
+            (To::Each, DetectorEvent::Tick { at, .. }) => {
+                for (flow, (signals, ())) in table.tick(*at) {
+                    if let Some(key) = targets.get(&flow) {
+                        for signal in &signals {
+                            said.push(Said::OfConversation(label(key), signal.clone()));
+                            layer.saw(key.clone(), flow, signal.clone(), *at);
+                        }
+                    }
+                }
+                if let Some(fold) = fold {
+                    for (target, voice) in voiced(&mut layer, fold, idle, *at) {
+                        said.push(Said::OfTarget(target, voice));
+                    }
+                }
+            }
+            // Непонятое до машин не доходит (у него нет ключа), а прочие сочетания адреса и буквы
+            // лента не рождает: их пишет один и тот же код, что читает.
+            _ => {}
+        }
+    }
+    said
 }
 
 /// Как часто движок будит приборы в тишине. Меньше окна детектора; выбрано, не замерено.
@@ -727,11 +832,18 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
         };
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
+        // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она
+        // обязана начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
+        let seeds: Vec<Box<dyn Probe<T::Wire>>> =
+            self.probes.iter().map(|probe| probe.clone_box()).collect();
         let templates = self.probes;
         let mut table = FlowTable::<Probes<T::Wire>, Flow>::new(idle, move |_flow| {
             Probes(templates.iter().map(|probe| probe.clone_box()).collect())
         });
         let mut state = T::State::default();
+        // Окно ленты: пишется всегда, когда закон предъявляется, и не пишется иначе — лента даром
+        // стоила бы клона слова провода на каждый пакет.
+        let mut tape: Recorded<T> = Tape::new();
         // Ключ цели на разговор — для сигналов, рождённых тиком (у тика пакета с личностью нет).
         // Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
         let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
@@ -750,8 +862,24 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 let state = &mut state;
                 let targets = &mut targets;
                 let react = &mut self.react;
+                let tape = &mut tape;
+                let certify = self.certify;
                 backend.serve(|held| {
                     if let Some(observed) = T::observe(state, parse::read(held.seen(), T::PORT)) {
+                        // Буква пишется ЗДЕСЬ, где рождается, и с адресом, который знает только
+                        // разбор: позже его взять неоткуда — словарь провода потока не несёт.
+                        if certify {
+                            tape.record([TapeLetter::Event {
+                                to: To::One(Whose {
+                                    flow: observed.flow,
+                                    target: observed.key.clone(),
+                                }),
+                                event: DetectorEvent::Packet {
+                                    input: observed.wire.clone(),
+                                    at: now,
+                                },
+                            }]);
+                        }
                         let (signals, ()) = table.process(observed.flow, &observed.wire, now);
                         let named = label(&observed.key);
                         for signal in &signals {
@@ -775,6 +903,15 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
 
             if now.duration_since(last_tick) >= TICK {
                 last_tick = now;
+                // Узел сетки — буква КАЖДОЙ живой машины; в ленту он ложится раз, а фанаут делает
+                // тот, кто её читает: перегенерируй тик на переигровке — и она позвала бы часы,
+                // то есть впустила бы в машину скрытый вход, который сама же и проверяет (§8).
+                if self.certify {
+                    tape.record([TapeLetter::Event {
+                        to: To::Each,
+                        event: DetectorEvent::Tick { node: 0, at: now },
+                    }]);
+                }
                 for (flow, (signals, ())) in table.tick(now) {
                     if let Some(key) = targets.get(&flow) {
                         let named = label(key);
@@ -794,8 +931,48 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 }
                 // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
                 targets.retain(|flow, _| table.get(flow).is_some());
+
+                // ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его
+                // свежей семье дважды и сверяем сказанное. Свидетель тут же и предъявляется: молча
+                // держать закон значит не держать его вовсе.
+                if self.certify && tape.len() >= TAPE_WINDOW {
+                    let fold = self.about.as_ref().map(|(fold, _voice)| fold);
+                    let verdict = replays(&tape, |mode, letters| {
+                        replay::<T>(&seeds, fold, idle, mode, letters)
+                    });
+                    match verdict {
+                        Replayed::Reproduced => {
+                            report!("§10: окно из {} букв воспроизведено", tape.len())
+                        }
+                        Replayed::Unstable { at } => report!(
+                            "§10 НАРУШЕН: прогоны разошлись на исходе {at} — у машины есть вход \
+                             вне её алфавита"
+                        ),
+                        Replayed::NoTape => report!("§10: судить не о чем — лента пуста"),
+                        // Окно из одних узлов сетки без живых машин: согласие двух молчаний
+                        // свидетельством не считается — под ним прошла бы любая порча.
+                        Replayed::Silent => report!(
+                            "§10: окно из {} букв прошло молча — машине нечего было сказать, \
+                             свидетельства нет",
+                            tape.len()
+                        ),
+                    }
+                    // Окно закрыто: следующее пишется с чистого места, иначе лента росла бы вечно.
+                    tape = Tape::new();
+                }
             }
         }
+    }
+
+    /// Предъявлять восьмой закон (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
+    /// пере-подаёт свежей семье машин дважды — сверяя не ленту, а сказанное.
+    ///
+    /// Дверь отдельная и по умолчанию закрытая: запись стоит клона слова провода на каждый пакет, и
+    /// платить её тем, кто закона не просит, незачем. Кто просит — получает свидетельство на СВОЁМ
+    /// трафике, а не на выдуманном стенде: это и отличает предъявимость от обещания.
+    pub fn certifying(mut self) -> Running<T, F> {
+        self.certify = true;
+        self
     }
 }
 
@@ -1048,6 +1225,146 @@ mod tests {
             )
             .is_empty(),
             "разговор затих — сводить нечего, и слово о цели не рождается"
+        );
+    }
+
+    // ─── Восьмой закон на ленте движка ──────────────────────────────────────────────────────
+
+    /// Прибор без своей памяти о мире: говорит на каждый пакет одно и то же.
+    #[derive(Clone)]
+    struct Steady;
+
+    impl Probe<Reading> for Steady {
+        fn observe(&mut self, event: &DetectorEvent<Reading>) -> SmallVec<[Distress; 2]> {
+            match event {
+                DetectorEvent::Packet { .. } => smallvec![Distress::NoBytes],
+                _ => smallvec![],
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn Probe<Reading>> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// Прибор со СКРЫТЫМ входом: величину берёт из счётчика, живущего вне его состояния. Ровно то,
+    /// что восьмой закон обязан ловить, — машина читает то, чего нет в её алфавите.
+    #[derive(Clone)]
+    struct Peeking;
+
+    static PEEKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    impl Probe<Reading> for Peeking {
+        fn observe(&mut self, event: &DetectorEvent<Reading>) -> SmallVec<[Distress; 2]> {
+            match event {
+                DetectorEvent::Packet { .. } => {
+                    let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    smallvec![Distress::Silence { ms }]
+                }
+                _ => smallvec![],
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn Probe<Reading>> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// Окно ленты из двух разговоров одной цели и узла сетки между ними.
+    fn window(start: Instant) -> Tape<Reading, Whose, ()> {
+        let target = TargetKey::Named("rutracker.org".into());
+        let mut tape: Tape<Reading, Whose, ()> = Tape::new();
+        for (n, offset) in [(1u32, 0u64), (2, 10)] {
+            tape.record([TapeLetter::Event {
+                to: To::One(Whose {
+                    flow: flow(n),
+                    target: target.clone(),
+                }),
+                event: DetectorEvent::Packet {
+                    input: Reading::Tcp(SeenTcp::sent(100)),
+                    at: start + Duration::from_millis(offset),
+                },
+            }]);
+        }
+        tape.record([TapeLetter::Event {
+            to: To::Each,
+            event: DetectorEvent::Tick {
+                node: 0,
+                at: start + Duration::from_millis(200),
+            },
+        }]);
+        tape
+    }
+
+    /// ЛЕНТА ДВИЖКА ВОСПРОИЗВОДИТСЯ: две пере-подачи одного окна свежей семье говорят одно и то же.
+    /// Это и есть предмет §10 — не сравнение лент, а сверка ИСХОДОВ.
+    #[test]
+    fn окно_ленты_воспроизводится() {
+        let start = Instant::now();
+        let tape = window(start);
+        let seeds: Vec<Box<dyn Probe<Reading>>> = vec![Box::new(Steady)];
+
+        let verdict = replays(&tape, |mode, letters| {
+            replay::<Tcp>(&seeds, None, Duration::from_secs(10), mode, letters)
+        });
+        assert_eq!(verdict, Replayed::Reproduced);
+    }
+
+    /// СКРЫТЫЙ ВХОД ЛОВИТСЯ: прибор, читающий счётчик вне своего состояния, разводит прогоны — и
+    /// закон называет место расхождения. Без этого теста «Reproduced» значил бы лишь то, что мы
+    /// дважды позвали одно и то же, а не то, что машина детерминирована.
+    #[test]
+    fn скрытый_вход_разводит_прогоны() {
+        let start = Instant::now();
+        let tape = window(start);
+        let seeds: Vec<Box<dyn Probe<Reading>>> = vec![Box::new(Peeking)];
+
+        let verdict = replays(&tape, |mode, letters| {
+            replay::<Tcp>(&seeds, None, Duration::from_secs(10), mode, letters)
+        });
+        assert_eq!(
+            verdict,
+            Replayed::Unstable { at: 0 },
+            "разошлись на первом же исходе — счётчик не вернулся к прежнему значению"
+        );
+    }
+
+    /// СЛОВО О ЦЕЛИ ТОЖЕ ВОСПРОИЗВОДИТСЯ. Копредел — свежая постройка, и не проверить его
+    /// переигровкой значило бы оставить непроверенным ровно то, что мы только что сделали.
+    #[test]
+    fn слово_о_цели_входит_в_сказанное() {
+        let start = Instant::now();
+        let tape = window(start);
+        let seeds: Vec<Box<dyn Probe<Reading>>> = vec![Box::new(Steady)];
+        let fold: Fold = Box::new(|words: &[&Distress]| {
+            words
+                .iter()
+                .all(|distress| matches!(distress, Distress::NoBytes))
+                .then_some(Distress::NoBytes)
+        });
+
+        let said = replay::<Tcp>(
+            &seeds,
+            Some(&fold),
+            Duration::from_secs(10),
+            Mode::Replay,
+            tape.letters(),
+        );
+        assert!(
+            said.iter()
+                .any(|said| matches!(said, Said::OfTarget(name, _) if name == "rutracker.org")),
+            "слово о цели в сказанном: {said:?}"
+        );
+        assert_eq!(
+            replays(&tape, |mode, letters| replay::<Tcp>(
+                &seeds,
+                Some(&fold),
+                Duration::from_secs(10),
+                mode,
+                letters
+            )),
+            Replayed::Reproduced,
+            "с копределом лента тоже воспроизводится"
         );
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "certify-replays"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: предъявить восьмой закон (§10) на СВОЁМ трафике — окно ленты воспроизводится"
+
+# ЗАВИСИМОСТЬ ОДНА. Закон предъявляет сам движок: потребителю незачем знать ни про ленту, ни про
+# режимы, ни про `replays` — он ставит `.certifying()` и читает вердикт.
+[dependencies]
+reflex = { path = "../../reflex" }

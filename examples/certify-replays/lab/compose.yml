@@ -1,0 +1,13 @@
+# Стенд восьмого закона: движок пишет окно СВОЕЙ ленты на реальном трафике и предъявляет §10.
+# Цензор здесь не нужен — закон о воспроизводимости решения, а не о находке; трафик берётся любой
+# живой, чтобы буквы были настоящими, а не выдуманными стендом.
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/certify-replays/lab/engine/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TARGET: rutracker.org
+      CONTROL: vk.com
