@@ -5,7 +5,7 @@
 //! одной величине.
 
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reflex_core::edge::EdgeView;
 
@@ -84,12 +84,33 @@ impl EdgeView for CtEdge {
         Some(self.view.up.packets)
     }
 
+    fn down_bytes(&self) -> Option<u64> {
+        Some(self.view.down.bytes)
+    }
+
+    fn up_bytes(&self) -> Option<u64> {
+        Some(self.view.up.bytes)
+    }
+
     /// `база(состояние) − остаток`. `None`, если состояние не из тех, чью базу держим, или ядро
     /// остатка не дало. Пересчёт — знание conntrack о себе, приборам его знать незачем.
     fn idle(&self) -> Option<Duration> {
         let base = self.base.for_state(self.view.tcp)?;
         let remaining = self.view.expires_in?;
         base.checked_sub(remaining)
+    }
+
+    /// `сейчас − начало`. Начало conntrack кладёт абсолютным (`ktime_get_real_ns`, наносекунды
+    /// эпохи), потому свои часы берём из той же эпохи (`SystemTime`), а не монотонные `Instant` буквы:
+    /// их не вычесть из абсолютного начала. `None` — ядро без `timestamp` начала не дало, тогда
+    /// возраста нет, и прибор честно не подтвердит по времени, а не соврёт нулём.
+    fn age(&self) -> Option<Duration> {
+        let started = self.view.started_at?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_nanos() as u64;
+        now.checked_sub(started).map(Duration::from_nanos)
     }
 
     fn mark(&self) -> u32 {

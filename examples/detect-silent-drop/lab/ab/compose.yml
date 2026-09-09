@@ -1,0 +1,14 @@
+services:
+  ab:
+    build:
+      context: ../../../..
+      dockerfile: examples/detect-silent-drop/lab/ab/Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      net.netfilter.nf_conntrack_acct: "1"
+      net.netfilter.nf_conntrack_timestamp: "1"
+    environment:
+      TARGET: rutracker.org
+      CONTROL: vk.com

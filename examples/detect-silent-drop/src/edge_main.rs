@@ -1,9 +1,10 @@
 //! # Тихий дроп по ЯДЕРНЫМ величинам — второй путь A/B (Task 10)
 //!
 //! Тот же тихий дроп, что ловит `detect-silent-drop`, но БЕЗ юзерспейсного состояния: тишина по
-//! счётчикам conntrack (`up_packets == 0`) и по `idle` (база − остаток), фаза/оттиск живут в марке
-//! ядра. Юзерспейс zero-state. Ставится РЯДОМ с фасадным путём на СВОЕЙ очереди — стенд гоняет оба
-//! и сверяет находки (регресс-гейт: ядерный путь обязан поймать всё, что ловит юзерспейсный).
+//! ПАКЕТНЫМ счётчикам conntrack (`up.packets` 0/1/≥2 — байтом нуля цель не даёт, заголовки), фаза и
+//! оттиск живут в марке ядра. Юзерспейс zero-state. Ставится РЯДОМ с фасадным путём на СВОЕЙ очереди —
+//! стенд гоняет оба и сверяет находки (регресс-гейт: ядерный путь обязан поймать всё, что ловит
+//! юзерспейсный).
 //!
 //! ## Запуск
 //!
@@ -18,8 +19,7 @@ use std::time::Duration;
 
 use reflex_core::mealy::Mealy;
 use reflex_core::DetectorEvent;
-use reflex_instrument::distress::Distress;
-use reflex_instrument::edge::Layout;
+use reflex_instrument::edge::{Layout, Phase, Recall};
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::edge_word::Edged;
 use reflex_instrument::wire::Seen;
@@ -43,7 +43,10 @@ fn main() {
     };
     let layout = Layout::new(MARK_MASK, MARK_TAG).expect("15-битная маска, ненулевой тег");
     // Прибор Copy и без состояния: шаг возвращает тот же прибор, исход — только от края и марки.
-    let silence: EdgeSilence<CtEdge> = EdgeSilence::new(Duration::from_secs(5), layout);
+    // Окно возраста: цель молчит с открытия дольше окна — дроп. Две секунды шире худшего законного
+    // ответа под нагрузкой (секунды не хватило: редкий медленный поток vk ложно кричал), но у́же
+    // терпения клиента — на вечном дропе повторы идут до ~15 с, возраст порог перешагнёт с запасом.
+    let silence: EdgeSilence<CtEdge> = EdgeSilence::new(Duration::from_secs(2), layout);
 
     let socket = match QueueSocket::open(QUEUE) {
         Ok(socket) => socket,
@@ -88,25 +91,26 @@ fn main() {
                     count: view.up.packets as u32,
                 },
             };
-            let (_same, said, ()) = silence.step(DetectorEvent::packet_now(Edged { narrow, edge }));
+            // Трасса РИСКА: пока поток УЖЕ под подозрением, растёт ли счётчик ОТВЕТНЫХ пакетов между
+            // нашими наблюдениями? Растёт при `up.bytes == 0` — спуфер `ACK` (ТСПУ так умеет) двигал
+            // бы оттиск вечно и глушил подтверждение молча. `ct` вяжет строки одного потока.
+            if let Recall::Ours(prior) = layout.read(view.mark) {
+                if prior.phase == Phase::Suspected {
+                    eprintln!(
+                        "[trace] ct={} up_pk={} up_by={} dn_by={} imprint={}",
+                        view.id, view.up.packets, view.up.bytes, view.down.bytes, prior.imprint
+                    );
+                }
+            }
 
-            let mut answered = false;
-            for (distress, memo) in &said {
-                if matches!(
-                    distress,
-                    Distress::NoBytes | Distress::Silence { .. } | Distress::Diverged { .. }
-                ) {
-                    println!("[край] {distress}");
-                }
-                if !answered {
-                    // Памятка уезжает в марку RMW (чужие биты целы); пакет пропускаем.
-                    let _ = socket.verdict(packet.id, true, Some(memo.apply_to(view.mark)));
-                    answered = true;
-                }
+            let (_same, (memo, said), ()) =
+                silence.step(DetectorEvent::packet_now(Edged { narrow, edge }));
+
+            for distress in &said {
+                println!("[край] {distress}");
             }
-            if !answered {
-                let _ = socket.verdict(packet.id, true, None);
-            }
+            // Памятка (если есть) уезжает в марку RMW — чужие биты целы; иначе марку не трогаем.
+            let _ = socket.verdict(packet.id, true, memo.map(|memo| memo.apply_to(view.mark)));
         }
     }
 }
