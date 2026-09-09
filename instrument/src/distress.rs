@@ -69,6 +69,32 @@ impl Distress {
 
 /// Беда сказана о разговоре: наклонение изъявительное (ничего не велит), но адресат есть — потому
 /// слово, а не показание.
+/// Слово беды с ВОЗРАСТОМ наблюдения, его породившего. Фреймворк отдаёт величину и не судит о
+/// годности: возраст — то, что мы видели; годность — вывод из истории цели и независимых проверок,
+/// которых у наблюдателя одного разговора нет и быть не должно. Судить будет потребитель, а судить
+/// не о чем, если возраст не сказан.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spoken {
+    pub distress: Distress,
+    pub since: std::time::Duration,
+}
+
+/// Возраст ничего не переадресует: слово о разговоре остаётся словом о разговоре.
+impl reflex_core::word::Word for Spoken {
+    type Of = reflex_core::word::Conversation;
+}
+
+impl Distress {
+    /// Одеть беду возрастом. Оба момента — аргументы: своих часов у слова нет (§8), иначе одно и то
+    /// же наблюдение звучало бы по-разному при переигровке записи.
+    pub fn aged(self, seen_at: std::time::Instant, now: std::time::Instant) -> Spoken {
+        Spoken {
+            distress: self,
+            since: now.saturating_duration_since(seen_at),
+        }
+    }
+}
+
 impl reflex_core::word::Word for Distress {
     type Of = reflex_core::word::Conversation;
 }
