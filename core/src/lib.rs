@@ -10,6 +10,7 @@ pub mod debounce;
 pub mod detector;
 pub mod disclosure;
 pub mod edge;
+pub mod colimit;
 pub mod expiring_set;
 pub mod fibre;
 pub mod flow_table;
