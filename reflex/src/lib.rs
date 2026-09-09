@@ -49,10 +49,10 @@ use reflex_core::colimit::Layer;
 use reflex_core::dns::DnsMessage;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
-use reflex_core::word::{Conversation, Target};
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tls;
+use reflex_core::word::{Conversation, Target};
 pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::{CanSever, Serves, Toward};
@@ -991,7 +991,12 @@ mod tests {
         let key = TargetKey::Named("rutracker.org".into());
         let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
         layer.saw(key.clone(), flow(1), Distress::NoBytes, t0);
-        layer.saw(key, flow(2), Distress::NoBytes, t0 + Duration::from_secs(20));
+        layer.saw(
+            key,
+            flow(2),
+            Distress::NoBytes,
+            t0 + Duration::from_secs(20),
+        );
 
         let fold: Fold = Box::new(всегда);
         let said = voiced(
@@ -1024,14 +1029,24 @@ mod tests {
 
         let fold: Fold = Box::new(всегда);
         assert!(
-            voiced(&mut layer, &fold, Duration::from_secs(5), t0 + Duration::from_secs(2))
-                .len()
+            voiced(
+                &mut layer,
+                &fold,
+                Duration::from_secs(5),
+                t0 + Duration::from_secs(2)
+            )
+            .len()
                 == 1,
             "разговор жив — цель говорит"
         );
         assert!(
-            voiced(&mut layer, &fold, Duration::from_secs(5), t0 + Duration::from_secs(9))
-                .is_empty(),
+            voiced(
+                &mut layer,
+                &fold,
+                Duration::from_secs(5),
+                t0 + Duration::from_secs(9)
+            )
+            .is_empty(),
             "разговор затих — сводить нечего, и слово о цели не рождается"
         );
     }

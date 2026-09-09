@@ -102,11 +102,7 @@ where
     /// свёртка — потребителя, она видит слова и не видит моментов, и требовать от неё вернуть время
     /// значило бы просить описание угрозы говорить о часах (§8). `None` — слов нет.
     pub fn freshest(&self, wide: &Wide::Fibre) -> Option<Instant> {
-        self.said
-            .get(wide)?
-            .values()
-            .map(|(_said, at)| *at)
-            .max()
+        self.said.get(wide)?.values().map(|(_said, at)| *at).max()
     }
 
     /// Забыть один разговор — его слово больше не участвует в сведении.

@@ -13,7 +13,10 @@ fn target() -> TargetKey<Box<str>> {
 
 fn flow(n: u32) -> Flow {
     Flow {
-        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        src: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)),
+            40000 + n as u16,
+        ),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
         protocol: Protocol::Tcp,
     }
@@ -27,7 +30,11 @@ fn повтор_разговора_заменяет_слово_а_не_множ�
     let mut layer: Layer<Conversation, Target, &str> = Layer::new();
     layer.saw(target(), flow(1), "молчит", now);
     layer.saw(target(), flow(1), "ответил", now);
-    assert_eq!(layer.join(&target(), |words| Some(words.len())), Some(1), "один разговор — одно слово");
+    assert_eq!(
+        layer.join(&target(), |words| Some(words.len())),
+        Some(1),
+        "один разговор — одно слово"
+    );
     assert_eq!(
         layer.join(&target(), |words| Some(*words[0])),
         Some("ответил"),
@@ -45,7 +52,11 @@ fn цель_с_пустым_слоем_молчит() {
     layer.forget(&target(), &flow(1));
 
     let all_silent = |words: &[&u8]| words.iter().all(|w| **w == 1).then_some(());
-    assert_eq!(layer.join(&target(), all_silent), None, "пустота — не «молчат все»");
+    assert_eq!(
+        layer.join(&target(), all_silent),
+        None,
+        "пустота — не «молчат все»"
+    );
 }
 
 /// Свёртка видит МНОЖЕСТВО: порядок перечисления на вывод не влияет. Иначе один и тот же набор
@@ -80,7 +91,11 @@ fn доля_законная_свёртка() {
         let silent = words.iter().filter(|w| ***w).count();
         Some(silent * 100 / words.len())
     };
-    assert_eq!(layer.join(&target(), share), Some(50), "два разговора, один молчит");
+    assert_eq!(
+        layer.join(&target(), share),
+        Some(50),
+        "два разговора, один молчит"
+    );
 }
 
 /// Пустой слой слова не рождает: «сказать нечего» и «свелось в ничто» — разные вещи, и свёртке
@@ -117,7 +132,11 @@ fn цель_без_разговоров_снимается() {
     layer.saw(target(), flow(1), true, t0);
 
     let gone = layer.forget_idle(Duration::from_secs(1), t0 + Duration::from_secs(2));
-    assert_eq!(gone, vec![target()], "ушедшая цель названа, а не молча забыта");
+    assert_eq!(
+        gone,
+        vec![target()],
+        "ушедшая цель названа, а не молча забыта"
+    );
     assert_eq!(layer.join(&target(), |w| Some(w.len())), None);
 }
 
@@ -162,6 +181,14 @@ fn у_цели_без_слов_возраста_нет() {
     layer.saw(target(), flow(1), 1, t0);
     layer.forget(&target(), &flow(1));
 
-    assert_eq!(layer.freshest(&target()), None, "пустой слой возраста не имеет");
-    assert_eq!(layer.freshest(&TargetKey::Unnamed(Addr(1))), None, "незнакомая цель — тем более");
+    assert_eq!(
+        layer.freshest(&target()),
+        None,
+        "пустой слой возраста не имеет"
+    );
+    assert_eq!(
+        layer.freshest(&TargetKey::Unnamed(Addr(1))),
+        None,
+        "незнакомая цель — тем более"
+    );
 }
