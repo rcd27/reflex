@@ -18,6 +18,7 @@ pub mod departure;
 pub mod detect;
 pub mod distress;
 pub mod drift;
+pub mod edge;
 pub mod episode;
 pub mod fate;
 pub mod leg;
