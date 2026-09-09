@@ -60,3 +60,21 @@ fn waiting_is_allowed_where_the_region_tolerates_it() {
     may_wait::<Sever>();
     may_wait::<()>();
 }
+
+/// Ключ цели расслоён: имя, если цепочка его дала, иначе адрес. Плоский адрес был бы ложью — он
+/// утверждает, что имя есть всегда, а `Awaited ⊑ Silent ⊑ Spoken` говорит обратное.
+#[test]
+fn целевой_ключ_несёт_имя_или_адрес() {
+    use reflex_core::types::Addr;
+    use reflex_core::word::{Base, Target, TargetKey};
+
+    let named: <Target as Base>::Fibre = TargetKey::Named("rutracker.org".into());
+    let unnamed: <Target as Base>::Fibre = TargetKey::Unnamed(Addr(0x0A00_0001));
+    assert_ne!(named, unnamed, "имя и адрес — разные ключи одной области");
+
+    // Ключ области годен в карту: `Base::Fibre` требует `Eq + Hash`, и ключ цели обязан их нести.
+    let mut seen = std::collections::HashMap::new();
+    seen.insert(named, 1u8);
+    seen.insert(unnamed, 2u8);
+    assert_eq!(seen.len(), 2);
+}

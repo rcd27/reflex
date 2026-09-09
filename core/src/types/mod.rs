@@ -1,3 +1,4 @@
+pub mod addr;
 mod connection_id;
 mod dir;
 mod ethernet;
@@ -23,3 +24,5 @@ pub use tcp::TcpSegment;
 pub use tcp_flags::TcpFlags;
 pub use tcp_options::{TcpOptions, TcpTimestamps};
 pub use udp::UdpDatagram;
+
+pub use addr::Addr;

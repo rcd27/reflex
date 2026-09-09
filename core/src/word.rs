@@ -43,8 +43,20 @@ impl Base for Packet {
 impl Base for Conversation {
     type Fibre = crate::types::Flow;
 }
+/// Чем ключуется цель (§4, слой расслоения). Ключ РАССЛОЁН: имя — если цепочка его дала, адрес —
+/// если нет (`Awaited ⊑ Silent ⊑ Spoken`, §5). Плоский адрес был бы ложью: он утверждает, что имя
+/// есть всегда. Это §2 на оси ключа — потребитель не ключует тем, чего цепочка не различает.
+///
+/// Ширина безымянной ветви приходит снаружи (`net_of` для записи, `host_of` для действия): один тип
+/// с названной проекцией ловит расхождение компилятором.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TargetKey<N> {
+    Named(N),
+    Unnamed(crate::types::Addr),
+}
+
 impl Base for Target {
-    type Fibre = std::net::IpAddr;
+    type Fibre = TargetKey<Box<str>>;
 }
 impl Base for Nobody {
     type Fibre = ();

@@ -12,9 +12,9 @@ pub mod row;
 pub mod step;
 pub mod watch;
 
-// TODO(#299): IPv6 мимо плоскости — сперва замер доли, потом ключ
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Addr(pub u32);
+// Адрес переехал в `reflex-core` (09.09.2026): им ключуется область цели (`Base::Fibre`), а ключ
+// области не может ссылаться вверх по зависимостям. Здесь — реэкспорт: потребители не тронуты.
+pub use reflex_core::types::Addr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Tick(pub u64);
@@ -325,16 +325,6 @@ pub enum Noticed {
     Talk(Sighting),
     /// О цели целиком.
     Loss(Lost),
-}
-
-/// Адрес словами. Четыре байта, старший первым: `Addr` держит адрес в порядке хоста, `a.b.c.d`
-/// берётся из `to_be_bytes` — тем же способом, каким его берёт край (`petlya::identity_of`). Второй
-/// способ печати завёл бы вторую правду о том, какой байт старший.
-impl core::fmt::Display for Addr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let [a, b, c, d] = self.0.to_be_bytes();
-        write!(f, "{a}.{b}.{c}.{d}")
-    }
 }
 
 impl core::fmt::Display for Basis {
