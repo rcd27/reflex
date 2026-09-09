@@ -130,17 +130,6 @@ impl reflex_core::CanRewrite for NfqueueBackend {
 /// молча отбрасывает (RFC 5961) — оттого извещение предмет ЗАКОНА, изнутри процесса «сказали» и
 /// «услышали» неразличимы. Человек: ядро извещённой стороны закрывает сокет немедленно
 /// (`ECONNRESET`) вместо таймаута. Законность обрыва решает домен (`pipe::still_carries`), не здесь.
-/// Спросить контур очередь netfilter НЕ УМЕЕТ, и это заявлено, а не умолчано. Дверь у неё одна —
-/// вердикт удержанному пакету; наружу, к постороннему собеседнику, она не говорит. `None` здесь не
-/// заглушка: докблок способности прямо велит движку узнать «спросить нечем» ДО решения спрашивать,
-/// и узнаёт он это отсюда. Носитель, у которого контур есть, вернёт пакет-вопрос и получит ответ
-/// буквой ленты.
-impl reflex_core::capability::CanAsk for NfqueueBackend {
-    fn question(_token: u64, _about: &[u8]) -> Option<InjectablePacket> {
-        None
-    }
-}
-
 impl reflex_core::CanSever for NfqueueBackend {
     fn notice(seen: &[u8], toward: Toward) -> Option<InjectablePacket> {
         parse_tcp_from_ip(seen).map(|segment| {
