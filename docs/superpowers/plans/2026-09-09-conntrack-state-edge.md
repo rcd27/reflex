@@ -701,17 +701,31 @@ git commit -m "feat(instrument): кодек края — фаза, оттиск,
 - Test: `instrument/tests/edge_word.rs`
 
 **Interfaces:**
-- Consumes: `Memo` (Task 5), `CtView` (Task 2), `Word`/`Descends`/`Conversation`/`Packet` из `reflex-core`.
+- Consumes: `Memo` (Task 5), `Word`/`Descends`/`Conversation`/`Packet` из `reflex-core`.
 - Produces:
 
 ```rust
+// --- в reflex-core: ЗАКОН, носителя не знающий ---
+/// Величины, которые ведёт КРАЙ, кто бы им ни был: conntrack, карта eBPF, чужая ОС.
+pub trait EdgeView {
+    fn down_packets(&self) -> Option<u64>;   // от клиента к цели
+    fn up_packets(&self) -> Option<u64>;     // от цели к клиенту
+    fn idle(&self) -> Option<Duration>;      // сколько прошло с последнего пакета
+    fn mark(&self) -> u32;                   // слово состояния, как его хранит край
+}
 impl Word for Memo { type Of = Conversation; }        // состояние принадлежит разговору
 pub struct Told(pub u32);                              // то же состояние, сказанное о пакете
 impl Word for Told { type Of = Packet; }
 impl Descends<Told> for Memo { fn descends(self) -> Told; }
-impl Reads<(Reading, CtView)> for Seen { ... }         // прибор провода проецирует .0
-impl Reads<(Reading, CtView)> for CtView { ... }       // прибор края проецирует .1
+impl<V> Reads<(Reading, V)> for Seen { ... }           // прибор провода проецирует .0
+
+// --- в reflex-linux: НОСИТЕЛЬ ---
+impl EdgeView for CtView { ... }                       // conntrack как один из краёв
 ```
+
+**Почему трейт, а не `CtView` напрямую.** `reflex-instrument` знает ровно `reflex-core` и `smallvec` (проверено `cargo tree`); `impl Reads<(Reading, CtView)>` в нём заставил бы алфавит беды зависеть от `reflex-linux`, то есть привязал бы kernel-агностичные приборы к conntrack — против раздела «Закон и его носитель» спеки. Плюс орфан-правило: трейт и `Self` оба чужие, кортеж не fundamental, `E0117`.
+
+Отсюда: закон (`EdgeView`) живёт в `core`, носитель (`CtView`) реализует его в `linux`, приборы сужаются generic-ом по `V: EdgeView` и о conntrack не знают. Карта eBPF встанет тем же законом, другим `impl`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -775,14 +789,14 @@ git commit -m "feat(instrument): слово края в области разг�
 - Test: `instrument/tests/edge_detect.rs`
 
 **Interfaces:**
-- Consumes: `CtView` (Task 2), `Layout`/`Memo`/`Phase`/`Recall` (Task 5).
+- Consumes: `EdgeView` (Task 6, трейт в `core`), `Layout`/`Memo`/`Phase`/`Recall` (Task 5). `CtView` НЕ упоминается: прибор о носителе не знает.
 - Produces:
 
 ```rust
-pub struct EdgeSilence { after: Duration, layout: Layout, base: TimeoutBase }
-impl EdgeSilence { pub fn new(after: Duration, layout: Layout, base: TimeoutBase) -> EdgeSilence; }
-impl Mealy for EdgeSilence {
-    type In = DetectorEvent<(Seen, CtView)>;
+pub struct EdgeSilence<V> { after: Duration, layout: Layout, base: TimeoutBase, edge: PhantomData<fn() -> V> }
+impl<V: EdgeView> EdgeSilence<V> { pub fn new(after: Duration, layout: Layout, base: TimeoutBase) -> EdgeSilence<V>; }
+impl<V: EdgeView> Mealy for EdgeSilence<V> {
+    type In = DetectorEvent<(Seen, V)>;   // край абстрактен: conntrack, eBPF-карта, чужая ОС
     type Out = SmallVec<[(Distress, Memo); 2]>;   // слово беды и слово края — обе Of = Conversation
     type Log = ();
 }
@@ -846,7 +860,7 @@ Expected: FAIL — `EdgeSilence` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-Величины берутся из `CtView`: «не ответила вовсе» = `up.packets == 0`; «сколько молчит» = `base − expires_in`, где `base` — таймаут ядра для состояния из `view.tcp`, прочитанный при старте (Task 7). Фаза и оттиск читаются `Layout::read`; `Recall::Foreign` даёт `Distress::Diverged`. На выходе — пара слов: беда и памятка края, обе `Of = Conversation`.
+Величины берутся через `EdgeView`: «не ответила вовсе» = `up.packets == 0`; «сколько молчит» = `base − expires_in`, где `base` — таймаут ядра для состояния из `view.tcp`, прочитанный при старте (Task 7). Фаза и оттиск читаются `Layout::read`; `Recall::Foreign` даёт `Distress::Diverged`. На выходе — пара слов: беда и памятка края, обе `Of = Conversation`.
 
 Добавить в `instrument/src/distress.rs` вариант `Diverged { theirs: u32 }`.
 
