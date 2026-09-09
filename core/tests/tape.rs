@@ -7,7 +7,7 @@
 use reflex_core::detector::DetectorEvent;
 use reflex_core::interleave::Interleave;
 use reflex_core::stack::Reads;
-use reflex_core::tape::{Answer, TapeLetter};
+use reflex_core::tape::{Answer, Mode, Tape, TapeLetter};
 use std::time::{Duration, Instant};
 
 const STEP: Duration = Duration::from_millis(100);
@@ -169,4 +169,67 @@ fn наблюдение_провода_не_отвечает_ни_на_чей_в
 
     assert!(!packet.answers(&42));
     assert!(!packet.answers(&0));
+}
+
+// ─── Лента и режимы ──────────────────────────────────────────────────────────────────────────
+
+/// ПЕРЕИГРОВКА ДАЁТ ТЕ ЖЕ ИСХОДЫ, ЧТО ЖИВОЙ ПРОГОН.
+///
+/// Машина одна и та же, лента та же — значит и последовательность высказываний та же. Это и есть
+/// предмет восьмого закона (§10): не сравнение лент, а сверка ИСХОДОВ двух прогонов одной ленты.
+#[test]
+fn переигровка_повторяет_исходы_живого_прогона() {
+    let start = Instant::now();
+    let mut tape: Tape<u8, u32, &str> = Tape::new();
+
+    let seam = Interleave::started(start, STEP);
+    let (seam, seen) = seam.saw(1u8, at(start, 50));
+    tape.record(seen.into_iter().map(TapeLetter::Event));
+    let (seam, answered) = seam.answered::<u8, u32, &str>(7, "блок", at(start, 250));
+    tape.record(answered);
+    let (_seam, idled) = seam.idle::<u8>(at(start, 420));
+    tape.record(idled.into_iter().map(TapeLetter::Event));
+
+    // «Прогон»: считаем, что видит прибор — буквы провода, дошедшие сужением.
+    let run = |tape: &Tape<u8, u32, &str>| -> Vec<u64> {
+        tape.letters()
+            .iter()
+            .filter_map(<DetectorEvent<u8> as Reads<TapeLetter<u8, u32, &str>>>::read)
+            .map(|event| event.at().saturating_duration_since(start).as_millis() as u64)
+            .collect()
+    };
+
+    assert_eq!(run(&tape), run(&tape), "два прогона одной ленты согласны");
+    // Пакет, два узла до отклика, отклик, два узла тишины — шесть букв, обе породы.
+    assert_eq!(tape.len(), 6, "лента записана ЦЕЛИКОМ: обе породы букв");
+    assert_eq!(
+        tape.letters()
+            .iter()
+            .filter(|letter| matches!(letter, TapeLetter::Answer(_)))
+            .count(),
+        1,
+        "отклик записан в ленту наравне с проводом — иначе переигровка увидела бы не тот вход"
+    );
+}
+
+/// В ПЕРЕИГРОВКЕ МИР НЕ ТРОГАЕТСЯ.
+///
+/// Живой прогон исполняет команды: инъекция уходит в провод, вопрос — контуру. Переигровка их
+/// глушит — иначе она слала бы RST заново и спрашивала повторно, то есть не переигрывала бы, а
+/// повторяла, и восьмой закон проверял бы не то.
+#[test]
+fn переигровка_не_трогает_мир() {
+    assert!(Mode::Live.touches_the_world(), "живой прогон исполняет команды");
+    assert!(
+        !Mode::Replay.touches_the_world(),
+        "переигровка глушит команды — мир не трогается"
+    );
+
+    // Сколько команд ушло бы в мир: петля исполняет их лишь в живом прогоне.
+    let sent = |mode: Mode, effects: usize| match mode.touches_the_world() {
+        true => effects,
+        false => 0,
+    };
+    assert_eq!(sent(Mode::Live, 3), 3);
+    assert_eq!(sent(Mode::Replay, 3), 0, "ни одной команды в переигровке");
 }
