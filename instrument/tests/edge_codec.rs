@@ -16,14 +16,14 @@ fn layout() -> Layout {
 fn foreign_bits_survive_the_write() {
     let layout = layout();
     let foreign = 0x2000_00FF;
-    let written = layout.write(foreign, Memo::new(layout, Phase::Suspected, 3));
+    let written = Memo::new(layout, Phase::Suspected, 3).apply_to(foreign);
     assert_eq!(written & !layout.mask(), foreign, "вне маски — байт в байт");
 }
 
 /// Записанное читается обратно.
 #[test]
 fn what_was_written_is_read_back() {
-    let word = layout().write(0, Memo::new(layout(), Phase::Confirmed, 200));
+    let word = Memo::new(layout(), Phase::Confirmed, 200).apply_to(0);
     match layout().read(word) {
         Recall::Ours(memo) => {
             assert_eq!(memo.phase, Phase::Confirmed);
@@ -37,7 +37,7 @@ fn what_was_written_is_read_back() {
 /// состоянием ради проверки, что состояния не держит.
 #[test]
 fn another_writer_is_recognised_without_memory() {
-    let alien = layout().write(0, Memo::new(layout(), Phase::Suspected, 1)) ^ 0x0000_2000;
+    let alien = Memo::new(layout(), Phase::Suspected, 1).apply_to(0) ^ 0x0000_2000;
     assert!(matches!(layout().read(alien), Recall::Foreign { .. }));
 }
 

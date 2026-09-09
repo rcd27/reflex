@@ -53,21 +53,6 @@ fn descent_preserves_foreign_bits() {
     assert_eq!(written & !told.mask, foreign, "вне маски спуска чужие биты целы");
 }
 
-/// Один кодек: `Layout::write` и спуск дают ОДНО слово. Второй кодек в `write` (упаковка мимо `Told`)
-/// разошёлся бы с этим утверждением.
-#[test]
-fn write_and_descent_are_one_codec() {
-    let layout = layout();
-    let memo = Memo::new(layout, Phase::Confirmed, 200);
-    let word = 0x1234_5678;
-    let told = memo.descends();
-    assert_eq!(
-        layout.write(word, memo),
-        (word & !told.mask) | told.under,
-        "write и спуск — один кодек"
-    );
-}
-
 /// `Edged` несёт ОБЕ половины: провод (`narrow`) и вид края (`edge`). Прибору тишины нужны обе.
 #[test]
 fn edged_carries_both_wire_and_view() {

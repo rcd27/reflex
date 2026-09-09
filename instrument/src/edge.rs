@@ -65,7 +65,7 @@ impl Memo {
         }
     }
 
-    /// Наши биты, уложенные под маской (без чужого слова — его добавит край read-modify-write).
+    /// Наши биты, уложенные под маской (без чужого слова — его добавит `apply_to` read-modify-write).
     pub fn under(&self) -> u32 {
         under_bits(&self.layout, self.phase, self.imprint)
     }
@@ -73,6 +73,13 @@ impl Memo {
     /// Маска, под которой лежат наши биты.
     pub fn mask(&self) -> u32 {
         self.layout.mask
+    }
+
+    /// Наложить памятку на прочитанное слово (read-modify-write): чужие биты вне маски целы.
+    /// Пишет ПАМЯТКА, не `Layout`: раскладка одна — та, с которой памятка родилась, второй взяться
+    /// неоткуда, потому разойтись нечему (прежний `Layout::write` держал две — свою и памятки).
+    pub fn apply_to(self, word: u32) -> u32 {
+        (word & !self.mask()) | self.under()
     }
 }
 
@@ -144,13 +151,6 @@ impl Layout {
 
     fn shift(&self) -> u32 {
         self.mask.trailing_zeros()
-    }
-
-    /// Записать памятку под маской, сохранив чужие биты (read-modify-write). Один кодек со спуском
-    /// (`under_bits`): пакует по СВОЕЙ раскладке фазу/оттиск памятки (её собственная раскладка — для
-    /// спуска, здесь не участвует).
-    pub fn write(&self, word: u32, memo: Memo) -> u32 {
-        (word & !self.mask) | under_bits(self, memo.phase, memo.imprint)
     }
 
     /// Прочесть марку. Сперва тег: не наш — `Foreign` (остальным полям веры нет, они чужие).
