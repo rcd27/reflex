@@ -28,6 +28,8 @@
 //!   несёт свой широкий словарь провода и свой порт.
 //! * `.detect(D)` — ПРИБОР: любой, читающий свой алфавит из широкого через `Reads` (канон §4).
 //!   Приборы разных алфавитов встают в одну дверь; несовместимый транспорту прибор не соберётся.
+//! * терминал — НАБЛЮДАТЬ (`.on`) или ДЕЙСТВОВАТЬ (`.act`, реакция возвращает [`Act`]: `Sever`
+//!   инжектит RST — тихий дроп обрывается за ~300мс вместо вечной крутилки).
 //!
 //! Склейку сигналов в вывод пишет потребитель — фреймворк описывает МИР, лечение живёт у него.
 //!
@@ -44,7 +46,7 @@ use reflex_core::serves::Served;
 use reflex_core::tls;
 use reflex_core::DetectorEvent;
 use reflex_core::Reads;
-use reflex_core::Serves;
+use reflex_core::{CanSever, Serves, Toward};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::{Addr, FlowKey};
 use reflex_engine_nfq::parse::{self, Read};
@@ -54,6 +56,7 @@ use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::retransmit::RetransmitInstrument;
 use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend};
+use reflex_linux::rawsend::RawSender;
 use smallvec::SmallVec;
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
@@ -448,7 +451,8 @@ impl<T: Transport> Detecting<T> {
         self
     }
 
-    /// Что делать на срабатывание любого прибора. `target` — имя цели, `distress` — что случилось.
+    /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
+    /// случилось. Пакет идёт как шёл.
     pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
         Running {
             queue: self.queue,
@@ -458,6 +462,29 @@ impl<T: Transport> Detecting<T> {
             transport: PhantomData,
         }
     }
+
+    /// ДЕЙСТВОВАТЬ: реакция возвращает [`Act`], движок его исполняет. `Act::Sever` инжектит RST тому,
+    /// кто прислал ПАКЕТ-улику, — так тихий дроп обрывается за ~300мс (по повтору) вместо вечной
+    /// крутилки. Действует на сигналы, ПРИШЕДШИЕ С ПАКЕТОМ (повтор, сброс, стук): у тика носителя нет
+    /// — рвать нечем, и тишина обрывается следующим повтором, а не тиком.
+    pub fn act<F: FnMut(&str, Distress) -> Act>(self, react: F) -> Acting<T, F> {
+        Acting {
+            queue: self.queue,
+            probes: self.probes,
+            longest: self.longest,
+            react,
+            transport: PhantomData,
+        }
+    }
+}
+
+/// Что движок делает с целью после срабатывания. Словарь эффектов; пополняется по мере use-case'ов.
+pub enum Act {
+    /// Только смотреть — пакет идёт как шёл.
+    Observe,
+    /// Оборвать: инжектить RST тому, кто прислал улику (клиенту при тихом дропе). Пакет всё равно
+    /// пропускается — обрыв делает инъекция, а не дроп.
+    Sever,
 }
 
 /// Цепочка собрана — готова к запуску.
@@ -540,6 +567,93 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 }
                 // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
                 targets.retain(|flow, _| table.get(flow).is_some());
+            }
+        }
+    }
+}
+
+/// Метка на инъекциях движка: ядро ставит её (SO_MARK) на впрыснутый RST, чтобы он не вернулся в
+/// свою же очередь. Правило очереди обязано пропускать помеченное (`meta mark != INJECT_MARK`).
+pub const INJECT_MARK: u32 = 0xBB;
+
+/// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
+pub struct Acting<T: Transport, F> {
+    queue: u16,
+    probes: Vec<Box<dyn Probe<T::Wire>>>,
+    longest: Duration,
+    react: F,
+    transport: PhantomData<fn() -> T>,
+}
+
+impl<T: Transport, F: FnMut(&str, Distress) -> Act> Acting<T, F> {
+    /// Ведущий цикл с эффектом. Как [`Running::run`], но реакция возвращает [`Act`]: на `Sever`
+    /// движок строит RST отправителю улики (`CanSever::notice`) и шлёт своим сокетом (`RawSender`).
+    /// Обрыв делает ИНЪЕКЦИЯ, пакет всё равно пропускается. Рвать можно лишь сигнал, пришедший с
+    /// пакетом (у тика носителя нет) — потому тик здесь только копит имена и убирает ключи.
+    pub fn run(mut self) -> Report {
+        let mut backend = match NfqueueBackend::open(self.queue) {
+            Ok(backend) => backend,
+            Err(why) => return Report::not_started(self.queue, why),
+        };
+        // Свой сокет инъекции: RST уходит мимо очереди, помеченный, чтобы не вернуться в неё.
+        let sender = match RawSender::open(INJECT_MARK) {
+            Ok(sender) => sender,
+            Err(why) => return Report::not_started(self.queue, format!("сокет инъекции: {why}")),
+        };
+
+        let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
+        let templates = self.probes;
+        let mut table = FlowTable::<Probes<T::Wire>, FlowKey>::new(idle, move |_flow| {
+            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
+        });
+        let mut state = T::State::default();
+        let mut last_tick = Instant::now();
+
+        loop {
+            let now = Instant::now();
+
+            let outcome = {
+                let table = &mut table;
+                let state = &mut state;
+                let react = &mut self.react;
+                let sender = &sender;
+                backend.serve(|held| {
+                    if let Some(observed) = T::observe(state, parse::read(held.seen(), T::PORT)) {
+                        let (signals, ()) = table.process(observed.flow, &observed.wire, now);
+                        for signal in &signals {
+                            match react(&observed.target, signal.clone()) {
+                                Act::Observe => {}
+                                // Обрыв — тому, кто прислал улику (клиенту при тихом дропе). Байты
+                                // улики уже в руках (`held`), из них движок и строит RST.
+                                Act::Sever => {
+                                    if let Some(rst) =
+                                        NfqueueBackend::notice(held.seen(), Toward::Sender)
+                                    {
+                                        if let Err(why) = sender.send(&rst.serialize_ip()) {
+                                            eprintln!("[reflex] RST не ушёл: {why}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Пакет идёт как шёл: обрыв делает инъекция, не дроп.
+                    Answer::Pass
+                })
+            };
+
+            match outcome {
+                Served::Answered(_) => {}
+                Served::Idle => {
+                    let _ = backend.wait(POLL_MS);
+                }
+                Served::Blind => std::thread::sleep(Duration::from_millis(1)),
+            }
+
+            if now.duration_since(last_tick) >= TICK {
+                last_tick = now;
+                // Тик двигает эвикт (беспороговым приборам он не нужен, но ключи чистит).
+                let _ = table.tick(now);
             }
         }
     }

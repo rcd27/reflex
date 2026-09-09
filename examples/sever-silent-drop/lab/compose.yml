@@ -1,0 +1,10 @@
+# Стенд sever-silent-drop: боевая верификация ЭФФЕКТА (инъекция RST) на реальном ТСПУ вантажа.
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/sever-silent-drop/lab/engine/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TARGET: rutracker.org

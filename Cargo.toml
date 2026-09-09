@@ -36,5 +36,6 @@ members = [
     "examples/detect-silent-drop",
     "examples/detect-syn-drop",
     "examples/detect-dns-poisoning",
+    "examples/sever-silent-drop",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately

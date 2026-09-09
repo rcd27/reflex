@@ -1,0 +1,13 @@
+[package]
+name = "sever-silent-drop"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case ЭФФЕКТА: оборвать тихий дроп RST'ом по повтору — вместо вечной крутилки"
+
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "sever-silent-drop"
+path = "src/main.rs"
