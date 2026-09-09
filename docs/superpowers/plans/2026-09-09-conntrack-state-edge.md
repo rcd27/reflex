@@ -396,6 +396,15 @@ pub fn incoming_of(buffer: &[u8]) -> Vec<Incoming>;               // одно с
 ```rust
 use reflex_linux::queue::{incoming_of, verdict_message, conntrack_flag_request, Incoming};
 
+/// Длины тел — то, что ядро не прощает: две структуры упакованы, и лишний байт выравнивания
+/// делает сообщение непонятным молча.
+#[test]
+fn message_bodies_have_the_sizes_the_kernel_expects() {
+    assert_eq!(params_body(0xFFFF).len(), 5, "copy_range be32 + copy_mode u8, БЕЗ выравнивания");
+    assert_eq!(cmd_body(1).len(), 4, "command u8 + _pad u8 + pf be16");
+    assert_eq!(verdict_body(1, 42).len(), 8, "verdict be32 + id be32");
+}
+
 /// Флаг conntrack — то, чем включается NFQA_CT. Без него ядро вида края не приложит, и все
 /// приборы на ядерных величинах молча увидят пустоту.
 #[test]
@@ -468,7 +477,18 @@ NF_DROP                0     NF_ACCEPT              1
 
 **Осторожно с двумя:** `NFQA_MARK` — **3**, а не 8 (8 — это `CTA_MARK` из ctnetlink, другое пространство имён); `NFQA_CFG_MASK` — **4**, а не 6. Обе ошибки не ловятся ничем, кроме живого ядра: сообщение уйдёт, ядро молча не поймёт атрибут.
 
-Заголовок сообщения — `nlmsghdr` (16 байт) + `nfgenmsg` (`family = AF_UNSPEC`, `version = 0`, `res_id` = номер очереди в **big-endian**). Тип сообщения — `(NFNL_SUBSYS_QUEUE << 8) | msg`.
+Заголовок сообщения — `nlmsghdr` (16 байт) + `nfgenmsg` (4 байта: `family: u8`, `version: u8` = `NFNETLINK_V0` = 0, `res_id: be16` = номер очереди). Тип сообщения — `(NFNL_SUBSYS_QUEUE << 8) | msg`, где `NFNL_SUBSYS_QUEUE` = 3.
+
+**Тела атрибутов — сверены с uapi, две УПАКОВАННЫЕ.** Писать их как обычные структуры Rust нельзя: выравнивание добавит байт, и ядро молча не поймёт сообщение.
+
+```
+nfqnl_msg_packet_hdr    packed, 7 байт:  packet_id be32, hw_protocol be16, hook u8
+nfqnl_msg_verdict_hdr           8 байт:  verdict be32, id be32
+nfqnl_msg_config_cmd            4 байта: command u8, _pad u8, pf be16
+nfqnl_msg_config_params packed, 5 байт:  copy_range be32, copy_mode u8
+```
+
+`config_params` в пять байт — самая вероятная ошибка этой задачи: рука пишет восемь. Собирать их байтами (`Vec<u8>` через `extend_from_slice`), а не `repr(C)`-структурами: длина тела тогда видна глазом и проверяется тестом.
 
 Разбор `incoming_of` — рекурсивный обход сообщений буфера по образцу `chunk_of` из `conntrack/wire.rs`: длина из заголовка, `NLMSG_DONE`/`NLMSG_ERROR` как отдельные исходы, иначе — атрибуты через `attrs`, где `NFQA_CT` отдаётся в `view_of` (Task 2), а не разбирается на месте.
 
