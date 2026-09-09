@@ -78,6 +78,10 @@ pub(crate) fn attrs(body: &[u8]) -> Attrs<'_> {
 
 /// Один атрибут: заголовок и тело, выровненные до четырёх. Длина в заголовке паддинг НЕ считает —
 /// эта разница стоила апстриму `nfq` отдельного исправления, и обход выше её ждёт.
+///
+/// Сборка — путь ЗАПИСИ (вердикт/конфигурация очереди), потому под `nfqueue`; дамп только читает.
+/// `test` — чтобы законы обратимости жили в этом же модуле и под `--features conntrack`.
+#[cfg(any(test, feature = "nfqueue"))]
 pub(crate) fn tlv(kind: u16, body: &[u8]) -> Vec<u8> {
     let len = (ATTR_HDR + body.len()) as u16;
     len.to_ne_bytes()
@@ -89,6 +93,7 @@ pub(crate) fn tlv(kind: u16, body: &[u8]) -> Vec<u8> {
 }
 
 /// Вложенный атрибут — тот же TLV с объявленной вложенностью (бит снимается на чтении в [`Attrs`]).
+#[cfg(any(test, feature = "nfqueue"))]
 pub(crate) fn nested(kind: u16, body: &[u8]) -> Vec<u8> {
     tlv(kind | NESTED, body)
 }

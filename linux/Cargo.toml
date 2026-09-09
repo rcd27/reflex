@@ -16,7 +16,10 @@ certify = ["reflex-core/pcap", "nfqueue"]
 # `src/lib.rs`, так что включивший услышит компилятор. Не снесена: там техника (eBPF-steering с
 # картами действий), и полезное из неё достанут разбором, а не сносом вслепую.
 tc = ["dep:aya", "dep:reflex-linux-common"]
-nfqueue = ["dep:nfq"]
+# Очередь читает вид края из `NFQA_CT` — то есть зависит от разбора `conntrack` (`view_of`). Потому
+# `nfqueue` тянет `conntrack`: очередь БЕЗ conntrack не соберётся, и «--features nfqueue» обязан дать
+# рабочую очередь. (План тестировал `--features nfqueue` в предположении этой связи.)
+nfqueue = ["dep:nfq", "conntrack"]
 # conntrack: чтение счётчиков ядра по каждому разговору через ctnetlink. Зависимостей сверх `libc`
 # нет намеренно: дверь узкая (один дамп-запрос), а крейты netlink тянут рантайм ради того же.
 conntrack = []

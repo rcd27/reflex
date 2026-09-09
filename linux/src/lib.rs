@@ -13,6 +13,10 @@ pub(crate) mod netlink;
 mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
+// Свой сокет к NFNL_SUBSYS_QUEUE: разбирает NFQA_CT и кладёт его в вердикт — чего крейт `nfq` не
+// умеет. Читает вид края через `conntrack::view_of` (потому `nfqueue` тянет `conntrack`).
+#[cfg(feature = "nfqueue")]
+pub mod queue;
 pub mod rawsend;
 
 /// Единственный потребитель закрыт. eBPF-загрузчик со steering-картами: 809 строк, 20 публичных
