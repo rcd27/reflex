@@ -1098,26 +1098,23 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
         loop {
             let now = Instant::now();
 
-            match socket.wait(POLL_MS) {
-                Waited::Ready => {}
-                // Пусто либо ждать не на чем — идём к тику: часы проводных приборов не должны
-                // стоять оттого, что провод молчит. Именно молчание им и предмет.
-                Waited::Idle | Waited::Blind => {
-                    if now.duration_since(last_tick) < TICK {
-                        continue;
+            // Приём зовётся ТОЛЬКО на готовом сокете: он блокирующий, и на пустой очереди
+            // повис бы до следующего пакета — вместе с ним встали бы тики, то есть часы
+            // проводных приборов. Их предмет как раз молчание: замри они, и тишина стала бы
+            // ненаблюдаемой ровно тогда, когда наступила.
+            let batch = match socket.wait(POLL_MS) {
+                Waited::Ready => match socket.recv() {
+                    Ok(batch) => batch,
+                    // Переполнение — ВЕЛИЧИНА, а не молчание: ядро сказало, что пакеты потеряны,
+                    // и прибор вправе знать, что разрыв объявлен. Глотать его значило бы
+                    // сравнивать наблюдения через необъявленную дыру.
+                    Err(why) => {
+                        report!("очередь {}: {why:?}", self.queue);
+                        Vec::new()
                     }
-                }
-            }
-
-            let batch = match socket.recv() {
-                Ok(batch) => batch,
-                // Переполнение — ВЕЛИЧИНА, а не молчание: ядро сказало, что пакеты потеряны, и
-                // прибор вправе знать, что разрыв объявлен. Глотать его значило бы сравнивать
-                // наблюдения через необъявленную дыру.
-                Err(why) => {
-                    report!("очередь {}: {why:?}", self.queue);
-                    Vec::new()
-                }
+                },
+                // Пусто либо ждать не на чем — сразу к тику.
+                Waited::Idle | Waited::Blind => Vec::new(),
             };
 
             for incoming in batch {
@@ -1319,21 +1316,17 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act<QueueSocket>> Acting<T, F> {
         loop {
             let now = Instant::now();
 
-            match socket.wait(POLL_MS) {
-                Waited::Ready => {}
-                Waited::Idle | Waited::Blind => {
-                    if now.duration_since(last_tick) < TICK {
-                        continue;
+            // Приём — только на готовом сокете: блокирующий вызов на пустой очереди остановил бы
+            // и тик, чистящий ключи.
+            let batch = match socket.wait(POLL_MS) {
+                Waited::Ready => match socket.recv() {
+                    Ok(batch) => batch,
+                    Err(why) => {
+                        report!("очередь {}: {why:?}", self.queue);
+                        Vec::new()
                     }
-                }
-            }
-
-            let batch = match socket.recv() {
-                Ok(batch) => batch,
-                Err(why) => {
-                    report!("очередь {}: {why:?}", self.queue);
-                    Vec::new()
-                }
+                },
+                Waited::Idle | Waited::Blind => Vec::new(),
             };
 
             for incoming in batch {
