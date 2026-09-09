@@ -562,7 +562,11 @@ Expected: FAIL — `QueueSocket` не найден.
 
 - [ ] **Step 3: Реализовать сокет**
 
-Открытие — по образцу `conntrack/dump.rs::open` (`socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER)`, без явного `bind`), затем три сообщения конфигурации из Task 3 подряд. Дескриптор хранится СВОЙ — `/proc/self/fd` не используется. `wait` — `libc::poll` на нём. `recv` — `libc::recv` в буфер 64 КиБ, затем `incoming_of`; `errno == ENOBUFS` → `QueueError::Overrun`. `verdict` — `libc::send` собранного сообщения.
+Открытие — по образцу `conntrack/dump.rs::open` (`socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER)`, без явного `bind`), затем три сообщения конфигурации из Task 3 подряд.
+
+**`ENOBUFS` НЕ глушить — здесь мы расходимся с крейтом намеренно.** `nfq 0.2.5` в `open()` зовёт `set_recv_enobufs(false)`, то есть выставляет `NETLINK_NO_ENOBUFS` и просит ядро о переполнении не сообщать: очередь переполнилась — пакеты потерялись молча. Нам нужно обратное, и не из аккуратности: провал приёма делает сравнение оттиска через разрыв недоверенным (см. связку рисков в спеке). Не сообщённое переполнение превратится в «цель вдруг перестала отвечать» — то есть в ложную беду, неотличимую от настоящей.
+
+Поэтому: `NETLINK_NO_ENOBUFS` не трогаем (умолчание ядра — сообщать), а `recv`, вернувший `ENOBUFS`, отдаёт `QueueError::Overrun` — букву, а не ошибку. Дескриптор хранится СВОЙ — `/proc/self/fd` не используется. `wait` — `libc::poll` на нём. `recv` — `libc::recv` в буфер 64 КиБ, затем `incoming_of`; `errno == ENOBUFS` → `QueueError::Overrun`. `verdict` — `libc::send` собранного сообщения.
 
 `Terminal::apply` разбирает `Answer` в один вызов `verdict`: `Pass` → accept без `NFQA_CT`, `Stop` → drop, `Remembered { accept, state }` → вердикт с `NFQA_CT{CTA_MARK}`.
 
