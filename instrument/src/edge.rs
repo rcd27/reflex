@@ -13,11 +13,15 @@ const IMPRINT_BITS: u32 = 8;
 const FIELD: u32 = (1 << (TAG_BITS + PHASE_BITS + IMPRINT_BITS)) - 1;
 
 /// Раскладка марки: какие биты наши (`mask`) и чем подписан их писатель (`tag`, 4 бита, ненулевой).
-/// Маска — параметр цепочки, не константа фреймворка.
+/// Маска — параметр цепочки, не константа фреймворка. Поля приватны: единственная дверь — [`new`],
+/// проверяющая предпосылки. `Layout { .. }` мимо неё непредставимо, потому `write`/`read` чисты и
+/// невозможного состояния не встречают (в отличие от `debug_assert`, исчезающего в release).
+///
+/// [`new`]: Layout::new
 #[derive(Debug, Clone, Copy)]
 pub struct Layout {
-    pub mask: u32,
-    pub tag: u8,
+    mask: u32,
+    tag: u8,
 }
 
 /// Фаза наблюдения за разговором. Значения плотные от нуля — укладываются в 3 бита.
@@ -65,30 +69,39 @@ impl Phase {
     }
 }
 
+/// Все 15 бит полей (тег+фаза+оттиск).
+const FIELD_BITS: u32 = TAG_BITS + PHASE_BITS + IMPRINT_BITS;
+
 impl Layout {
+    /// Единственная дверь. Отказ — ЗНАЧЕНИЕ (`None`), не тихое обрезание: тег обязан быть ненулевым
+    /// и 4-битным (иначе пустое слово прочлось бы «нашим», а широкий тег залез бы в фазу); маска
+    /// обязана вмещать все 15 бит полей ОДНИМ куском от своего младшего бита. `field & mask == field`
+    /// ловит и узкую маску, и ПРЕРЫВИСТУЮ (дырка в маске — данные писались бы мимо, читались мусором).
+    /// Проверка здесь, а не в `write`/`read`: это свойство ПАРАМЕТРА, проверяемое при рождении, а не
+    /// на каждом пакете горячего пути.
+    pub fn new(mask: u32, tag: u8) -> Option<Layout> {
+        let tag_ok = tag != 0 && (tag as u32) < (1 << TAG_BITS);
+        let shift = mask.trailing_zeros();
+        // 15 бит обязаны уместиться выше младшего бита маски, иначе сдвиг вышел бы за `u32`.
+        let fits = shift + FIELD_BITS <= u32::BITS;
+        let mask_ok = fits && {
+            let field = FIELD << shift;
+            field & mask == field
+        };
+        (tag_ok && mask_ok).then_some(Layout { mask, tag })
+    }
+
+    /// Наши биты марки — для края (сохранить чужое вне маски он умеет по этому же числу).
+    pub fn mask(&self) -> u32 {
+        self.mask
+    }
+
     fn shift(&self) -> u32 {
         self.mask.trailing_zeros()
     }
 
-    /// Предпосылки раскладки — не тихое обрезание, а отказ (`debug_assert`, как согласовано): тег
-    /// ненулевой и 4-битный, маска вмещает все 15 бит полей от своего младшего бита.
-    fn checked(&self) {
-        debug_assert!(
-            self.tag != 0 && (self.tag as u32) < (1 << TAG_BITS),
-            "тег писателя обязан быть ненулевым и 4-битным: нулевой прочёл бы пустое слово \
-             «нашим», широкий залез бы в фазу"
-        );
-        let field = FIELD << self.shift();
-        debug_assert!(
-            field & self.mask == field,
-            "маска обязана вмещать 15 бит (тег 4 + фаза 3 + оттиск 8); у́же — молча обрезала бы \
-             старший бит оттиска"
-        );
-    }
-
     /// Записать памятку под маской, сохранив чужие биты (read-modify-write). Тег писателя — наш.
     pub fn write(&self, word: u32, memo: Memo) -> u32 {
-        self.checked();
         let packed = (self.tag as u32)
             | (memo.phase.code() << TAG_BITS)
             | ((memo.imprint as u32) << (TAG_BITS + PHASE_BITS));
@@ -97,7 +110,6 @@ impl Layout {
 
     /// Прочесть марку. Сперва тег: не наш — `Foreign` (остальным полям веры нет, они чужие).
     pub fn read(&self, word: u32) -> Recall {
-        self.checked();
         let packed = (word & self.mask) >> self.shift();
         let tag = (packed & ((1 << TAG_BITS) - 1)) as u8;
         if tag != self.tag {
