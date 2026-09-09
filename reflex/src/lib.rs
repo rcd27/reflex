@@ -103,7 +103,9 @@ pub fn engine(backend: Nfqueue) -> Engine {
 /// Наблюдение из кадра: ключ разговора, имя цели (для реакции) и широкое слово провода.
 pub struct Observed<W> {
     flow: Flow,
-    target: String,
+    /// Ключ цели — расслоение §4 (`Named | Unnamed`). Им цель ключуется в слое; ярлык для человека
+    /// получается из него [`label`], а не наоборот: обратный ход терял бы тег.
+    key: TargetKey<Box<str>>,
     wire: W,
 }
 
@@ -132,13 +134,21 @@ struct Ident {
 }
 
 impl Ident {
-    /// Как назвать цель: имя, если есть; иначе адрес (`keyed` — то же расслоение, каким цель ключует
-    /// движок, §4). Безымянная цель (Телеграм, чистый IP) опознаётся по IP, не теряется.
-    fn target(&self) -> String {
-        match keyed(self.naming.clone(), self.dst, host_of) {
-            TargetKey::Named(name) => name.to_string(),
-            TargetKey::Unnamed(addr) => addr.to_string(),
-        }
+    /// Ключ цели — расслоение §4: имя, если цепочка его дала, иначе адрес. Отдаём КЛЮЧ, а не строку:
+    /// строка теряет тег, и безымянная цель метилась бы `Named` — тег стал бы ложным, а крафт-SNI,
+    /// равный записи адреса, схлопнулся бы с настоящей безымянной целью того же адреса. Источник
+    /// имени под контролем противника, значит коллизия достижима, а не редка.
+    fn key(&self) -> TargetKey<Box<str>> {
+        keyed(self.naming.clone(), self.dst, host_of)
+    }
+}
+
+/// Как назвать цель человеку. Ярлык для реакции — не ключ: у него нет тега, и различать им цели
+/// нельзя. Безымянная цель (Телеграм, чистый IP) показывается адресом, а не теряется.
+fn label(key: &TargetKey<Box<str>>) -> String {
+    match key {
+        TargetKey::Named(name) => name.to_string(),
+        TargetKey::Unnamed(addr) => addr.to_string(),
     }
 }
 
@@ -166,10 +176,10 @@ impl Transport for Tcp {
         if let Some(sni) = tls::extract_sni(wire.payload) {
             ident.naming = Naming::Spoken(sni.into());
         }
-        let target = ident.target();
+        let key = ident.key();
         state.talks.read(&wire).map(|tcp| Observed {
             flow: wire.flow,
-            target,
+            key,
             wire: Reading::Tcp(tcp),
         })
     }
@@ -193,15 +203,16 @@ impl Transport for Udp {
             return None;
         };
         let message = DnsMessage::parse(datagram.payload)?;
-        // Цель — имя из вопроса (оно же и отравляют); без имени — по адресу резолвера.
-        let target = message
+        // Цель — имя из вопроса (оно же и отравляют); вопроса нет — цель безымянна, и ключуется
+        // адресом резолвера. Тег сохраняется: `Unnamed` не притворяется именем.
+        let key = message
             .queries
             .first()
-            .map(|query| query.name.clone())
-            .unwrap_or_else(|| datagram.dst.to_string());
+            .map(|query| TargetKey::Named(query.name.clone().into_boxed_str()))
+            .unwrap_or(TargetKey::Unnamed(datagram.dst));
         Some(Observed {
             flow: datagram.flow,
-            target,
+            key,
             wire: message,
         })
     }
@@ -581,8 +592,9 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
             Probes(templates.iter().map(|probe| probe.clone_box()).collect())
         });
         let mut state = T::State::default();
-        // Имя цели на ключ — для сигналов, рождённых тиком (у тика пакета с именем нет).
-        let mut targets: HashMap<Flow, String> = HashMap::new();
+        // Ключ цели на разговор — для сигналов, рождённых тиком (у тика пакета с личностью нет).
+        // Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
+        let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
         // Слова разговоров, разложенные по цели: из них рождается слово О ЦЕЛИ, когда потребитель
         // принёс свёртку (`.about(…)`). Ключ цели здесь — её имя, каким его назвал `extract`: фасад
         // уже свёл `Named`/`Unnamed` в одну строку (имя либо адрес), и различение живёт выше, в
@@ -601,16 +613,12 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 backend.serve(|held| {
                     if let Some(observed) = T::observe(state, parse::read(held.seen(), T::PORT)) {
                         let (signals, ()) = table.process(observed.flow, &observed.wire, now);
+                        let named = label(&observed.key);
                         for signal in &signals {
-                            react(&observed.target, signal.clone());
-                            layer.saw(
-                                TargetKey::Named(observed.target.clone().into()),
-                                observed.flow,
-                                signal.clone(),
-                                now,
-                            );
+                            react(&named, signal.clone());
+                            layer.saw(observed.key.clone(), observed.flow, signal.clone(), now);
                         }
-                        targets.insert(observed.flow, observed.target);
+                        targets.insert(observed.flow, observed.key);
                     }
                     // Наблюдаем, не вмешиваемся: пакет идёт как шёл.
                     Answer::Pass
@@ -628,15 +636,11 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
             if now.duration_since(last_tick) >= TICK {
                 last_tick = now;
                 for (flow, (signals, ())) in table.tick(now) {
-                    if let Some(target) = targets.get(&flow) {
+                    if let Some(key) = targets.get(&flow) {
+                        let named = label(key);
                         for signal in &signals {
-                            (self.react)(target, signal.clone());
-                            layer.saw(
-                                TargetKey::Named(target.clone().into()),
-                                flow,
-                                signal.clone(),
-                                now,
-                            );
+                            (self.react)(&named, signal.clone());
+                            layer.saw(key.clone(), flow, signal.clone(), now);
                         }
                     }
                 }
@@ -714,8 +718,9 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act> Acting<T, F> {
                 backend.serve(|held| {
                     if let Some(observed) = T::observe(state, parse::read(held.seen(), T::PORT)) {
                         let (signals, ()) = table.process(observed.flow, &observed.wire, now);
+                        let named = label(&observed.key);
                         for signal in &signals {
-                            match react(&observed.target, signal.clone()) {
+                            match react(&named, signal.clone()) {
                                 Act::Observe => {}
                                 // Обрыв — тому, кто прислал улику (клиенту при тихом дропе). Байты
                                 // улики уже в руках (`held`), из них движок и строит RST.
@@ -791,18 +796,45 @@ mod tests {
             dst: Addr(0x0A00_0001),
             naming: Naming::Awaited,
         };
-        assert_eq!(awaited.target(), "10.0.0.1");
+        assert_eq!(label(&awaited.key()), "10.0.0.1");
 
         let silent = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
         };
-        assert_eq!(silent.target(), "10.0.0.1");
+        assert_eq!(label(&silent.key()), "10.0.0.1");
 
         let named = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("rutracker.org".into()),
         };
-        assert_eq!(named.target(), "rutracker.org");
+        assert_eq!(label(&named.key()), "rutracker.org");
+    }
+
+    /// Безымянная цель ключуется `Unnamed`, а не `Named` с адресом-строкой. Тег — не украшение:
+    /// строка теряет его, и тогда крафт-SNI, равный записи адреса, схлопнулся бы с настоящей
+    /// безымянной целью того же адреса. Имя приходит от противника — коллизия достижима, не редка.
+    #[test]
+    fn безымянная_цель_ключуется_адресом_а_не_именем_похожим_на_адрес() {
+        let nameless = Ident {
+            dst: Addr(0x0A00_0001),
+            naming: Naming::Silent,
+        };
+        let crafted = Ident {
+            dst: Addr(0x0A00_0001),
+            naming: Naming::Spoken("10.0.0.1".into()),
+        };
+
+        assert_eq!(nameless.key(), TargetKey::Unnamed(Addr(0x0A00_0001)));
+        assert_ne!(
+            nameless.key(),
+            crafted.key(),
+            "цель без имени и цель с именем «10.0.0.1» — разные цели"
+        );
+        assert_eq!(
+            label(&nameless.key()),
+            label(&crafted.key()),
+            "человеку они выглядят одинаково — тем важнее, что ключ их различает"
+        );
     }
 }
