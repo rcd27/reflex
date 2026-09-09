@@ -35,5 +35,6 @@ members = [
     # примеру нужно что-то, кроме `reflex`, — дефект фасада, а не примера.
     "examples/detect-silent-drop",
     "examples/detect-syn-drop",
+    "examples/detect-dns-poisoning",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately

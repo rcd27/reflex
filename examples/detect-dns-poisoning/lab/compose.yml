@@ -1,0 +1,13 @@
+# Стенд detect-dns-poisoning: боевая верификация инжекта NXDOMAIN на реальном ТСПУ вантажа.
+# Транспорт Udp (порт 53) — первая цель, где .from не TCP.
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/detect-dns-poisoning/lab/engine/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TARGET: nnmclub.to
+      CONTROL: vk.com
+      RESOLVER: 8.8.8.8

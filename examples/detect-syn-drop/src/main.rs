@@ -25,16 +25,11 @@ fn main() -> Report {
         .from(Tcp)
         .extract(Sni)
         .detect(SynDrop::unreachable())
-        .on(|target, distress| match distress {
-            Distress::Blackhole { after_ms } => {
+        // Один прибор — один сигнал: `if let`, не `match`.
+        .on(|target, distress| {
+            if let Distress::Blackhole { after_ms } = distress {
                 report!("IP-blackhole: {target} (SYN без ответа, повтор через {after_ms}мс)")
             }
-            // Прочие беды — не этому пайпу: тут стоит только прибор blackhole.
-            Distress::Rst
-            | Distress::Silence { .. }
-            | Distress::Throttled { .. }
-            | Distress::NoBytes
-            | Distress::Retransmit { .. } => {}
         })
         .run()
 }

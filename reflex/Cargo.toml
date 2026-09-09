@@ -8,7 +8,7 @@ description = "Единственная дверь фреймворка: engine(
 # ФАСАД. Прячет core/engine/engine-nfq/instrument/linux целиком — наружу торчит только синтаксис
 # движка. Потребитель зависит от ОДНОГО крейта и не знает ни Plane, ни Interleave, ни DetectorEvent.
 [dependencies]
-reflex-core = { path = "../core" }
+reflex-core = { path = "../core", features = ["dns"] }
 reflex-engine = { path = "../engine" }
 reflex-engine-nfq = { path = "../engine-nfq" }
 reflex-instrument = { path = "../instrument" }

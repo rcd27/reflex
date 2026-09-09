@@ -21,6 +21,9 @@ pub enum Distress {
     /// состоялось вовсе — отдельная буква, не `NoBytes`/`Silence` (те про УЖЕ открытое соединение).
     /// Блок по адресу, до всякого имени; `after_ms` — от первого `SYN` до повтора (RTO ядра).
     Blackhole { after_ms: u32 },
+    /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
+    /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
+    Poisoned,
 }
 
 impl Distress {
@@ -34,6 +37,7 @@ impl Distress {
             Distress::NoBytes => "no_bytes",
             Distress::Retransmit { .. } => "retransmit",
             Distress::Blackhole { .. } => "blackhole",
+            Distress::Poisoned => "poisoned",
         }
     }
 
@@ -53,7 +57,7 @@ impl Distress {
             Distress::Throttled { bps } => format!("{} КБ/с", bps / 1024),
             Distress::Retransmit { after_ms } => format!("повтор через {after_ms} мс"),
             Distress::Blackhole { after_ms } => format!("SYN без ответа через {after_ms} мс"),
-            Distress::Rst | Distress::NoBytes => String::new(),
+            Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
         }
     }
 }
@@ -75,6 +79,7 @@ impl core::fmt::Display for Distress {
             Distress::NoBytes => f.write_str("no_bytes"),
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
             Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
+            Distress::Poisoned => f.write_str("poisoned"),
         }
     }
 }

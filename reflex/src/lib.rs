@@ -15,23 +15,29 @@
 //!             }
 //!             Distress::Silence { ms } => report!("подтверждено: {target} молчит {ms}мс"),
 //!             Distress::NoBytes => report!("подтверждено: {target} не ответил вовсе"),
-//!             Distress::Rst | Distress::Throttled { .. } | Distress::Blackhole { .. } => {}
+//!             _ => {}
 //!         })
 //!         .run()
 //! }
 //! ```
 //!
-//! Ни `Plane`, ни `Interleave`, ни `DetectorEvent`, ни `parse` наружу не торчат: цепочка
-//! разворачивается в алгебру движка (`разбор провода → приборы на ключ → реакция`) внутри [`run`].
-//! Приборы КОМПОНУЮТСЯ: `.detect(A).detect(B)` гоняет оба над одним проводом, реакция получает их
-//! общий алфавит [`Distress`]. Склейку сигналов в вывод (подозрение → подтверждение) пишет
-//! потребитель — фреймворк описывает МИР, лечение живёт у него.
+//! Ни `Plane`, ни `Interleave`, ни `DetectorEvent`, ни `parse` наружу не торчат. Две оси
+//! полиморфизма закрыты в движке:
+//!
+//! * `.from(T)` — ТРАНСПОРТ: `Tcp` даёт словарь соединения, `Udp` — датаграммы (DNS). Каждый
+//!   несёт свой широкий словарь провода и свой порт.
+//! * `.detect(D)` — ПРИБОР: любой, читающий свой алфавит из широкого через `Reads` (канон §4).
+//!   Приборы разных алфавитов встают в одну дверь; несовместимый транспорту прибор не соберётся.
+//!
+//! Склейку сигналов в вывод пишет потребитель — фреймворк описывает МИР, лечение живёт у него.
 //!
 //! [`run`]: Running::run
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
+use reflex_core::dns::DnsMessage;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
@@ -41,9 +47,10 @@ use reflex_core::Reads;
 use reflex_core::Serves;
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::{Addr, FlowKey};
-use reflex_engine_nfq::parse::{self, Read, SERVER_PORT};
+use reflex_engine_nfq::parse::{self, Read};
 use reflex_engine_nfq::talk::Talks;
 use reflex_instrument::detect::{SilenceInstrument, SynDropInstrument};
+use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::retransmit::RetransmitInstrument;
 use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend};
@@ -85,25 +92,42 @@ pub fn engine(backend: Nfqueue) -> Engine {
     }
 }
 
-/// Транспорт разговоров, за которым смотрим. Пока — только TCP.
+// ─── Транспорт: ось `.from` ───────────────────────────────────────────────────────────────────
+
+/// Наблюдение из кадра: ключ разговора, имя цели (для реакции) и широкое слово провода.
+pub struct Observed<W> {
+    flow: FlowKey,
+    target: String,
+    wire: W,
+}
+
+/// Транспорт `.from(…)`. Несёт свой широкий словарь провода [`Transport::Wire`], порт сервера и своё
+/// состояние разбора. Ось полиморфизма: `Tcp` и `Udp` дают РАЗНЫЕ пайпы, и прибор чужого алфавита в
+/// пайп не соберётся (проверяет компилятор).
+pub trait Transport {
+    /// Широкий словарь наблюдений этого транспорта (из него приборы сужают свой алфавит).
+    type Wire: Clone + 'static;
+    /// Порт сервера: очередь ядра приносит и другой трафик.
+    const PORT: u16;
+    /// Состояние разбора (память разговоров, личность цели) — своё у каждого транспорта.
+    type State: Default;
+    /// Из разобранного кадра — наблюдение, либо ничего (не наш кадр).
+    fn observe(state: &mut Self::State, read: Read<'_>) -> Option<Observed<Self::Wire>>;
+}
+
+/// Транспорт TCP: словарь соединения (`Reading`), порт 443, личность по SNI.
 pub struct Tcp;
 
-/// Чем ключуется цель: именем из `ClientHello`, а при его ОТСУТСТВИИ — адресом. Отсутствие имени
-/// не теряется (MTProto/Телеграм, коннект по чистому IP, ECH — имени нет вовсе): такая цель
-/// опознаётся по IP, а не пропадает молча. Это расслоение движка (`TargetKey::Named | Unnamed`,
-/// канон §4): имя — верхний слой, адрес — нижний, и слово всегда есть.
-pub struct Sni;
-
-/// Личность цели разговора, копимая по ходу: адрес известен с первого пакета, имя — если пришло
-/// приветствие с SNI. Отсюда рождается [`TargetKey`] цели.
+/// Личность цели TCP-разговора, копимая по ходу: адрес с первого пакета, имя — если пришло
+/// приветствие с SNI. Отсюда рождается [`TargetKey`].
 struct Ident {
     dst: Addr,
     naming: Naming<Box<str>>,
 }
 
 impl Ident {
-    /// Как назвать цель человеку: имя, если оно есть; иначе адрес. `keyed` — то же расслоение, каким
-    /// цель ключует движок (`host_of` — точный адрес: какой именно сервер, не сеть).
+    /// Как назвать цель: имя, если есть; иначе адрес (`keyed` — то же расслоение, каким цель ключует
+    /// движок, §4). Безымянная цель (Телеграм, чистый IP) опознаётся по IP, не теряется.
     fn target(&self) -> String {
         match keyed(self.naming.clone(), self.dst, host_of) {
             TargetKey::Named(name) => name.to_string(),
@@ -111,6 +135,73 @@ impl Ident {
         }
     }
 }
+
+/// Память TCP-разбора: разговоры (граница/повтор) и личность целей.
+#[derive(Default)]
+pub struct TcpState {
+    talks: Talks,
+    idents: HashMap<FlowKey, Ident>,
+}
+
+impl Transport for Tcp {
+    type Wire = Reading;
+    const PORT: u16 = 443;
+    type State = TcpState;
+
+    fn observe(state: &mut TcpState, read: Read<'_>) -> Option<Observed<Reading>> {
+        let Read::Tcp(wire) = read else {
+            return None;
+        };
+        // Личность копится; отсутствие SNI не теряется — цель по адресу.
+        let ident = state.idents.entry(wire.flow).or_insert(Ident {
+            dst: wire.dst,
+            naming: Naming::Awaited,
+        });
+        if let Some(sni) = tls::extract_sni(wire.payload) {
+            ident.naming = Naming::Spoken(sni.into());
+        }
+        let target = ident.target();
+        state.talks.read(&wire).map(|tcp| Observed {
+            flow: wire.flow,
+            target,
+            wire: Reading::Tcp(tcp),
+        })
+    }
+}
+
+/// Транспорт UDP: датаграммы, порт 53 (DNS). Имя цели — имя из DNS-запроса (оно в каждом сообщении,
+/// потому память не нужна).
+pub struct Udp;
+
+/// У DNS имя в самом сообщении — состояния разбора нет.
+#[derive(Default)]
+pub struct UdpState;
+
+impl Transport for Udp {
+    type Wire = DnsMessage;
+    const PORT: u16 = 53;
+    type State = UdpState;
+
+    fn observe(_state: &mut UdpState, read: Read<'_>) -> Option<Observed<DnsMessage>> {
+        let Read::Udp(datagram) = read else {
+            return None;
+        };
+        let message = DnsMessage::parse(datagram.payload)?;
+        // Цель — имя из вопроса (оно же и отравляют); без имени — по адресу резолвера.
+        let target = message
+            .queries
+            .first()
+            .map(|query| query.name.clone())
+            .unwrap_or_else(|| datagram.dst.to_string());
+        Some(Observed {
+            flow: datagram.flow,
+            target,
+            wire: message,
+        })
+    }
+}
+
+// ─── Приборы: ось `.detect` ───────────────────────────────────────────────────────────────────
 
 /// Детектор тихого дропа по окну ТИШИНЫ: цель молчит дольше `after` — медленное подтверждение.
 pub struct Silence {
@@ -124,9 +215,8 @@ impl Silence {
     }
 }
 
-/// Детектор тихого дропа по ПОВТОРУ клиента: просьба ушла, ответа нет, ядро клиента ретрансмитит —
-/// самая ранняя улика (порог — RTO клиента под реальный RTT, не наш тик). Подозрение, не приговор:
-/// обычная сетевая потеря даёт тот же повтор, потому автора не называем.
+/// Детектор тихого дропа по ПОВТОРУ клиента: просьба ушла, ответа нет — самая ранняя улика (порог —
+/// RTO клиента). Подозрение: обычная потеря даёт тот же повтор.
 pub struct Retransmit;
 
 impl Retransmit {
@@ -136,9 +226,8 @@ impl Retransmit {
     }
 }
 
-/// Детектор IP-blackhole: `SYN` ушёл, `SYN+ACK` не пришёл, клиент повторяет `SYN` — блок по адресу,
-/// соединение не состоялось вовсе. Читает `SeenTcp` (не `Seen`): это ОТДЕЛЬНЫЙ пайп, через
-/// `Silence`/`Retransmit` его не выразить — там соединение уже открыто, здесь его нет.
+/// Детектор IP-blackhole: `SYN` без `SYN+ACK`, клиент повторяет `SYN` — блок по адресу, соединения
+/// нет вовсе. Отдельный пайп: через `Silence`/`Retransmit` не выразить.
 pub struct SynDrop;
 
 impl SynDrop {
@@ -148,20 +237,31 @@ impl SynDrop {
     }
 }
 
-/// Настроенный прибор — то, что кладут в `.detect(…)`. Внутренний тип: наружу торчат `Silence`
-/// и `Retransmit`, а не он (скрыт из доков, потребитель его не называет).
-#[doc(hidden)]
-#[derive(Clone, Copy)]
-pub enum Probe {
-    Retransmit(RetransmitInstrument),
-    Silence(SilenceInstrument),
-    SynDrop(SynDropInstrument),
+/// Детектор отравления DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ). Подозрение: легитимный
+/// `NXDOMAIN` даёт то же. Транспорт — `Udp`.
+pub struct DnsPoison;
+
+impl DnsPoison {
+    /// Инжект отказа на запрос.
+    pub fn injected() -> DnsPoison {
+        DnsPoison
+    }
 }
 
-/// Сузить широкое событие провода до алфавита прибора (канон §4, `Reads`). Пакет — по букве прибора
-/// (`None` — буква не его, шаг пропускается); тик и непонятое идут всем. Так разноалфавитные приборы
-/// (`Seen`-тишина и `SeenTcp`-blackhole) встают в одну дверь.
-fn narrow<N: Reads<Reading>>(event: &DetectorEvent<Reading>) -> Option<DetectorEvent<N>> {
+/// Прибор в пайпе: шагает над ШИРОКИМ словом транспорта, сам сузив его до своего алфавита. `dyn` —
+/// чтобы приборы разных алфавитов лежали одним списком; шаг дёшев, диспетч не на горячем счёте.
+/// Скрыт из доков: потребитель его не называет (кладёт `Silence`/`SynDrop`/… через `IntoProbe`).
+#[doc(hidden)]
+pub trait Probe<W>: Send {
+    /// Слова беды за этот шаг (пусто — прибору сказать нечего).
+    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[Distress; 2]>;
+    /// Свежая копия шаблона — `FlowTable` заводит прибор на каждый ключ.
+    fn clone_box(&self) -> Box<dyn Probe<W>>;
+}
+
+/// Сузить широкое событие до алфавита прибора (§4, `Reads`). Пакет — по букве прибора (`None` —
+/// буква не его, шаг пропускается); тик и непонятое идут всем.
+fn narrow<W, N: Reads<W>>(event: &DetectorEvent<W>) -> Option<DetectorEvent<N>> {
     match event {
         DetectorEvent::Packet { input, at } => {
             N::read(input).map(|input| DetectorEvent::Packet { input, at: *at })
@@ -174,40 +274,43 @@ fn narrow<N: Reads<Reading>>(event: &DetectorEvent<Reading>) -> Option<DetectorE
     }
 }
 
-impl Probe {
-    /// Один шаг прибора над широким событием: прибор сам сужает его до своего алфавита. Лог
-    /// отбрасываем — наружу идёт только слово беды.
-    fn step(self, event: &DetectorEvent<Reading>) -> (Probe, SmallVec<[Distress; 2]>) {
-        match self {
-            Probe::Retransmit(machine) => match narrow::<Seen>(event) {
-                Some(event) => {
-                    let (machine, signals, ()) = machine.step(event);
-                    (Probe::Retransmit(machine), signals)
-                }
-                None => (Probe::Retransmit(machine), SmallVec::new()),
-            },
-            Probe::Silence(machine) => match narrow::<Seen>(event) {
-                Some(event) => {
-                    let (machine, signals, _log) = machine.step(event);
-                    (Probe::Silence(machine), signals)
-                }
-                None => (Probe::Silence(machine), SmallVec::new()),
-            },
-            Probe::SynDrop(machine) => match narrow::<SeenTcp>(event) {
-                Some(event) => {
-                    let (machine, signals, ()) = machine.step(event);
-                    (Probe::SynDrop(machine), signals)
-                }
-                None => (Probe::SynDrop(machine), SmallVec::new()),
-            },
+/// Подъём прибора-машины `M` над своим алфавитом `N` в пайп широкого слова `W`: сужение через
+/// [`Reads`]. Так любой прибор парка (и чужой) встаёт в дверь, не зная о транспорте.
+struct Lift<M, N> {
+    machine: M,
+    alphabet: PhantomData<fn() -> N>,
+}
+
+impl<W, N, M> Probe<W> for Lift<M, N>
+where
+    W: 'static,
+    N: Reads<W> + 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+{
+    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[Distress; 2]> {
+        match narrow::<W, N>(event) {
+            Some(event) => {
+                let (machine, signals, _log) = self.machine.step(event);
+                self.machine = machine;
+                signals
+            }
+            None => SmallVec::new(),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Probe<W>> {
+        Box::new(Lift {
+            machine: self.machine,
+            alphabet: PhantomData,
+        })
     }
 }
 
-/// Прибор, кладущийся в `.detect(…)`. Реализуют `Silence` и `Retransmit`.
-pub trait IntoProbe {
+/// Прибор, кладущийся в `.detect(…)` для транспорта с широким словом `W`. Реализуют конкретные
+/// детекторы; несовместимый транспорту прибор не соберётся (нет `IntoProbe<W>`).
+pub trait IntoProbe<W> {
     #[doc(hidden)]
-    fn into_probe(self) -> Probe;
+    fn into_probe(self) -> Box<dyn Probe<W>>;
     /// Временно́е окно прибора (ноль у беспороговых) — по нему движок выбирает срок эвикта ключа.
     #[doc(hidden)]
     fn window(&self) -> Duration {
@@ -215,52 +318,69 @@ pub trait IntoProbe {
     }
 }
 
-impl IntoProbe for Silence {
-    fn into_probe(self) -> Probe {
-        Probe::Silence(SilenceInstrument::after(self.after))
+/// Собрать прибор-машину в лифт над `W`.
+fn lift<W, N, M>(machine: M) -> Box<dyn Probe<W>>
+where
+    W: 'static,
+    N: Reads<W> + 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+{
+    Box::new(Lift {
+        machine,
+        alphabet: PhantomData,
+    })
+}
+
+impl IntoProbe<Reading> for Silence {
+    fn into_probe(self) -> Box<dyn Probe<Reading>> {
+        lift::<Reading, Seen, _>(SilenceInstrument::after(self.after))
     }
     fn window(&self) -> Duration {
         self.after
     }
 }
 
-impl IntoProbe for Retransmit {
-    fn into_probe(self) -> Probe {
-        Probe::Retransmit(RetransmitInstrument::new())
+impl IntoProbe<Reading> for Retransmit {
+    fn into_probe(self) -> Box<dyn Probe<Reading>> {
+        lift::<Reading, Seen, _>(RetransmitInstrument::new())
     }
 }
 
-impl IntoProbe for SynDrop {
-    fn into_probe(self) -> Probe {
-        Probe::SynDrop(SynDropInstrument::new())
+impl IntoProbe<Reading> for SynDrop {
+    fn into_probe(self) -> Box<dyn Probe<Reading>> {
+        lift::<Reading, SeenTcp, _>(SynDropInstrument::new())
     }
 }
 
-/// Приборы разговора, гоняемые ВМЕСТЕ над одним проводом. Композиция: пакет и тик фанаутятся в
-/// каждый, слова беды сливаются в один алфавит [`Distress`]. Это `alongside` парка, свёрнутый в
-/// список одинакового входа/выхода.
-#[derive(Clone)]
-struct Probes(Vec<Probe>);
+impl IntoProbe<DnsMessage> for DnsPoison {
+    fn into_probe(self) -> Box<dyn Probe<DnsMessage>> {
+        lift::<DnsMessage, DnsMessage, _>(DnsPoisonInstrument::new())
+    }
+}
 
-impl Mealy for Probes {
-    type In = DetectorEvent<Reading>;
+/// Приборы разговора, гоняемые ВМЕСТЕ над одним словом провода. Пакет и тик фанаутятся в каждый,
+/// слова беды сливаются в один алфавит [`Distress`].
+struct Probes<W>(Vec<Box<dyn Probe<W>>>);
+
+impl<W: Clone + 'static> Mealy for Probes<W> {
+    type In = DetectorEvent<W>;
     type Out = SmallVec<[Distress; 2]>;
     type Log = ();
 
-    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+    fn step(mut self, event: Self::In) -> (Self, Self::Out, ()) {
         let mut said: SmallVec<[Distress; 2]> = SmallVec::new();
-        let stepped = self
-            .0
-            .into_iter()
-            .map(|probe| {
-                let (probe, signals) = probe.step(&event);
-                said.extend(signals);
-                probe
-            })
-            .collect();
-        (Probes(stepped), said, ())
+        for probe in self.0.iter_mut() {
+            said.extend(probe.observe(&event));
+        }
+        (self, said, ())
     }
 }
+
+// ─── Цепочка сборки ───────────────────────────────────────────────────────────────────────────
+
+/// Чем ключуется цель: именем из `ClientHello`, при его отсутствии — адресом (§4). Отсутствие имени
+/// не теряется: Телеграм, чистый IP, ECH опознаются по IP.
+pub struct Sni;
 
 /// Движок над носителем — ждёт выбора транспорта.
 pub struct Engine {
@@ -268,105 +388,116 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Поток разговоров этого транспорта.
-    pub fn from(self, _transport: Tcp) -> Watching {
-        Watching { queue: self.queue }
+    /// Поток разговоров этого транспорта (`Tcp` — соединения, `Udp` — датаграммы/DNS).
+    pub fn from<T: Transport>(self, _transport: T) -> Watching<T> {
+        Watching {
+            queue: self.queue,
+            transport: PhantomData,
+        }
     }
 }
 
 /// Транспорт выбран — ждёт ключа разговора.
-pub struct Watching {
+pub struct Watching<T> {
     queue: u16,
+    transport: PhantomData<fn() -> T>,
 }
 
-impl Watching {
-    /// Чем ключуется разговор.
-    pub fn extract(self, _key: Sni) -> Keyed {
-        Keyed { queue: self.queue }
+impl<T: Transport> Watching<T> {
+    /// Чем ключуется цель.
+    pub fn extract(self, _key: Sni) -> Keyed<T> {
+        Keyed {
+            queue: self.queue,
+            transport: PhantomData,
+        }
     }
 }
 
 /// Ключ выбран — ждёт хотя бы одного детектора.
-pub struct Keyed {
+pub struct Keyed<T> {
     queue: u16,
+    transport: PhantomData<fn() -> T>,
 }
 
-impl Keyed {
-    /// Установить первый детектор. Дальше можно `.detect(…)` ещё — они гоняются вместе.
-    pub fn detect(self, detector: impl IntoProbe) -> Detecting {
+impl<T: Transport> Keyed<T> {
+    /// Установить первый детектор. Прибор обязан читать словарь этого транспорта (`IntoProbe<Wire>`)
+    /// — иначе не соберётся.
+    pub fn detect(self, detector: impl IntoProbe<T::Wire>) -> Detecting<T> {
         Detecting {
             queue: self.queue,
             longest: detector.window(),
             probes: vec![detector.into_probe()],
+            transport: PhantomData,
         }
     }
 }
 
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
-pub struct Detecting {
+pub struct Detecting<T: Transport> {
     queue: u16,
-    probes: Vec<Probe>,
+    probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
+    transport: PhantomData<fn() -> T>,
 }
 
-impl Detecting {
-    /// Установить ещё один детектор поверх — они гоняются ВМЕСТЕ над одним проводом.
-    pub fn detect(mut self, detector: impl IntoProbe) -> Detecting {
+impl<T: Transport> Detecting<T> {
+    /// Ещё прибор поверх — они гоняются ВМЕСТЕ над одним проводом.
+    pub fn detect(mut self, detector: impl IntoProbe<T::Wire>) -> Detecting<T> {
         self.longest = self.longest.max(detector.window());
         self.probes.push(detector.into_probe());
         self
     }
 
     /// Что делать на срабатывание любого прибора. `target` — имя цели, `distress` — что случилось.
-    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<F> {
+    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
         Running {
             queue: self.queue,
             probes: self.probes,
             longest: self.longest,
             react,
+            transport: PhantomData,
         }
     }
 }
 
 /// Цепочка собрана — готова к запуску.
-pub struct Running<F> {
+pub struct Running<T: Transport, F> {
     queue: u16,
-    probes: Vec<Probe>,
+    probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
     react: F,
+    transport: PhantomData<fn() -> T>,
 }
 
-/// Как часто движок будит приборы в тишине. Молчание видно только тиком — без него окно тишины не
-/// закрылось бы. Меньше окна детектора; выбрано, не замерено.
+/// Как часто движок будит приборы в тишине. Меньше окна детектора; выбрано, не замерено.
 const TICK: Duration = Duration::from_millis(200);
 
 /// Сколько ждать на пустой очереди, прежде чем вернуться к тику. Ожидание ведёт цикл, не бэкенд.
 const POLL_MS: i32 = 100;
 
-/// Нижний предел срока эвикта ключа: даже беспороговым приборам (повтор) нужно пережить типичный
-/// разговор.
+/// Нижний предел срока эвикта ключа: даже беспороговым приборам нужно пережить типичный разговор.
 const MIN_IDLE: Duration = Duration::from_secs(10);
 
-impl<F: FnMut(&str, Distress)> Running<F> {
+impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
     /// Ведущий цикл. Возвращается только исходом настройки (`Report`) — работает, пока жив процесс.
     ///
-    /// Внутри: разбор провода (`parse`) → память разговора (`Talks`) → приборы на ключ
-    /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на общий
-    /// алфавит [`Distress`]. Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
+    /// Внутри: разбор провода (`parse`) → наблюдение транспорта (`T::observe`) → приборы на ключ
+    /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на [`Distress`].
+    /// Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
     pub fn run(mut self) -> Report {
         let mut backend = match NfqueueBackend::open(self.queue) {
             Ok(backend) => backend,
             Err(why) => return Report::not_started(self.queue, why),
         };
 
-        // Ключ живёт до эвикта дольше самого долгого окна: снятый раньше потерял бы его беду.
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
-        let probes = self.probes;
-        let mut table =
-            FlowTable::<Probes, FlowKey>::new(idle, move |_flow| Probes(probes.clone()));
-        let mut talks = Talks::new();
-        // Личность цели живёт вне приборов: они мерят провод, а `extract(Sni)` копит имя+адрес.
-        let mut idents: HashMap<FlowKey, Ident> = HashMap::new();
+        let templates = self.probes;
+        let mut table = FlowTable::<Probes<T::Wire>, FlowKey>::new(idle, move |_flow| {
+            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
+        });
+        let mut state = T::State::default();
+        // Имя цели на ключ — для сигналов, рождённых тиком (у тика пакета с именем нет).
+        let mut targets: HashMap<FlowKey, String> = HashMap::new();
         let mut last_tick = Instant::now();
 
         loop {
@@ -374,27 +505,16 @@ impl<F: FnMut(&str, Distress)> Running<F> {
 
             let outcome = {
                 let table = &mut table;
-                let talks = &mut talks;
-                let idents = &mut idents;
+                let state = &mut state;
+                let targets = &mut targets;
                 let react = &mut self.react;
                 backend.serve(|held| {
-                    if let Read::Tcp(wire) = parse::read(held.seen(), SERVER_PORT) {
-                        // Личность копится: адрес с первого пакета, имя — если пришло приветствие.
-                        // Отсутствие SNI не теряется — цель опознаётся по адресу (Телега/чистый IP).
-                        let ident = idents.entry(wire.flow).or_insert(Ident {
-                            dst: wire.dst,
-                            naming: Naming::Awaited,
-                        });
-                        if let Some(sni) = tls::extract_sni(wire.payload) {
-                            ident.naming = Naming::Spoken(sni.into());
+                    if let Some(observed) = T::observe(state, parse::read(held.seen(), T::PORT)) {
+                        let (signals, ()) = table.process(observed.flow, &observed.wire, now);
+                        for signal in &signals {
+                            react(&observed.target, signal.clone());
                         }
-                        // Провод → ШИРОКИЙ словарь; каждый прибор сузит его до своего алфавита
-                        // (`Seen` — тишина/повтор, `SeenTcp` — blackhole). Кормим широким, не узким.
-                        if let Some(tcp) = talks.read(&wire) {
-                            let reading = Reading::Tcp(tcp);
-                            let (signals, ()) = table.process(wire.flow, &reading, now);
-                            fire(react, idents, wire.flow, &signals);
-                        }
+                        targets.insert(observed.flow, observed.target);
                     }
                     // Наблюдаем, не вмешиваемся: пакет идёт как шёл.
                     Answer::Pass
@@ -403,40 +523,24 @@ impl<F: FnMut(&str, Distress)> Running<F> {
 
             match outcome {
                 Served::Answered(_) => {}
-                // Пусто — подождём на дескрипторе, чтобы не жечь процессор пустым циклом.
                 Served::Idle => {
                     let _ = backend.wait(POLL_MS);
                 }
-                // Ждать не на чем — короткий сон, чтобы не крутиться вслепую.
                 Served::Blind => std::thread::sleep(Duration::from_millis(1)),
             }
 
-            // Тик будит приборы в тишине — там рождается подтверждение по окну тишины.
             if now.duration_since(last_tick) >= TICK {
                 last_tick = now;
                 for (flow, (signals, ())) in table.tick(now) {
-                    fire(&mut self.react, &idents, flow, &signals);
+                    if let Some(target) = targets.get(&flow) {
+                        for signal in &signals {
+                            (self.react)(target, signal.clone());
+                        }
+                    }
                 }
-                // Личность уходит вместе с ключом: эвикт таблицы по простою, зеркалим его, чтобы
-                // карта личностей не росла с числом ВИДЕННЫХ разговоров.
-                idents.retain(|flow, _| table.get(flow).is_some());
+                // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
+                targets.retain(|flow, _| table.get(flow).is_some());
             }
-        }
-    }
-}
-
-/// Отдать слова беды реакции по личности цели. Личность есть ВСЕГДА (имя или адрес), потому
-/// безымянная цель — Телеграм, чистый IP — не теряется. Что делать с каждым словом — решает потребитель.
-fn fire<F: FnMut(&str, Distress)>(
-    react: &mut F,
-    idents: &HashMap<FlowKey, Ident>,
-    flow: FlowKey,
-    signals: &[Distress],
-) {
-    if let Some(ident) = idents.get(&flow) {
-        let target = ident.target();
-        for signal in signals {
-            react(&target, signal.clone());
         }
     }
 }
@@ -472,34 +576,25 @@ impl std::process::Termination for Report {
 mod tests {
     use super::*;
 
-    /// `extract(Sni)` не теряет безымянную цель: нет имени — личность по адресу. Телеграм, коннект
-    /// по чистому IP, ECH — у всех имени нет, и все опознаются по IP, а не пропадают молча.
+    /// `extract(Sni)` не теряет безымянную цель: нет имени — по адресу. Телеграм, чистый IP, ECH.
     #[test]
     fn target_falls_back_to_address_when_there_is_no_name() {
         let awaited = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Awaited,
         };
-        assert_eq!(
-            awaited.target(),
-            "10.0.0.1",
-            "приветствия не было — по адресу"
-        );
+        assert_eq!(awaited.target(), "10.0.0.1");
 
         let silent = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
         };
-        assert_eq!(
-            silent.target(),
-            "10.0.0.1",
-            "приветствие без имени (ECH/не-TLS) — тоже по адресу"
-        );
+        assert_eq!(silent.target(), "10.0.0.1");
 
         let named = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("rutracker.org".into()),
         };
-        assert_eq!(named.target(), "rutracker.org", "имя есть — по имени");
+        assert_eq!(named.target(), "rutracker.org");
     }
 }

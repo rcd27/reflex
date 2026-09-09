@@ -55,6 +55,7 @@ pub fn here() -> Vec<Passport> {
         of::<crate::detect::ThrottledInstrument>(),
         of::<crate::detect::ChokedInstrument>(),
         of::<crate::detect::SynDropInstrument>(),
+        of::<crate::poison::DnsPoisonInstrument>(),
         of::<crate::retransmit::RetransmitInstrument>(),
         of::<crate::agreement::AgreementInstrument>(),
         of::<crate::drift::HistoryInstrument>(),

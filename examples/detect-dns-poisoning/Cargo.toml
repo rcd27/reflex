@@ -1,0 +1,13 @@
+[package]
+name = "detect-dns-poisoning"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: поймать отравление DNS (инжект NXDOMAIN) на NFQUEUE — транспорт Udp"
+
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "detect-dns-poisoning"
+path = "src/main.rs"

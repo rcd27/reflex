@@ -23,6 +23,7 @@ pub mod fate;
 pub mod leg;
 pub mod pace;
 pub mod park;
+pub mod poison;
 pub mod resolve;
 pub mod retransmit;
 pub mod sag;
