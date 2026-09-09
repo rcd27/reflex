@@ -5,14 +5,13 @@ pub mod capability;
 pub mod certify;
 pub mod checksum;
 pub mod clock;
+pub mod colimit;
 pub mod command;
 pub mod debounce;
 pub mod detector;
 pub mod disclosure;
 pub mod edge;
-pub mod colimit;
 pub mod effect;
-pub mod tape;
 pub mod expiring_set;
 pub mod fibre;
 pub mod flow_table;
@@ -23,9 +22,11 @@ pub mod interleave;
 pub mod l7;
 pub mod mealy;
 pub mod meter;
+pub mod notice;
 pub mod parse;
 pub mod serves;
 pub mod stack;
+pub mod tape;
 // ЗАПИСАННЫЙ ПРОВОД — симуляционный источник (#295, срез 0). Под фичей, потому что читать файлы
 // нужно не всякому потребителю: на коробке провод живой. Зависимостей нет — только `std`.
 #[cfg(feature = "pcap")]

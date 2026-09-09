@@ -8,12 +8,9 @@
 //! значения, ниже мир.
 
 use nfq::Verdict;
-use reflex_core::builder::TcpBuilder;
 use reflex_core::capability::Toward;
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Answered, Delivered, Observed, Refused, Terminal};
-use reflex_core::parse::parse_tcp_from_ip;
-use reflex_core::types::TcpFlags;
 
 use super::backend::NfqueueBackend;
 
@@ -132,32 +129,9 @@ impl reflex_core::CanRewrite for NfqueueBackend {
 /// (`ECONNRESET`) вместо таймаута. Законность обрыва решает домен (`pipe::still_carries`), не здесь.
 impl reflex_core::CanSever for NfqueueBackend {
     fn notice(seen: &[u8], toward: Toward) -> Option<InjectablePacket> {
-        parse_tcp_from_ip(seen).map(|segment| {
-            // Сколько байт занял удержанный пакет в потоке своего отправителя.
-            let taken = segment.seq.wrapping_add(segment.payload.len() as u32);
-
-            let (flow, seq, ack) = match toward {
-                // Говорим отправителю от имени получателя: концы меняются местами, наш `seq` — то,
-                // что отправитель подтвердил, а подтверждаем всё, что он послал.
-                Toward::Sender => (segment.flow.reversed(), segment.ack, taken),
-                // Говорим получателю от имени отправителя: концы как есть, наш `seq` продолжает
-                // поток отправителя, а подтверждаем то, что он подтверждал.
-                Toward::Receiver => (segment.flow.clone(), taken, segment.ack),
-            };
-
-            InjectablePacket::Tcp(
-                TcpBuilder::new()
-                    .flow(&flow)
-                    .seq(seq)
-                    .ack(ack)
-                    // `RST|ACK`, а не голый `RST`: сброс без подтверждения многие стеки
-                    // отбрасывают как несогласованный.
-                    .flags(TcpFlags::RST | TcpFlags::ACK)
-                    // Окно нулевое: принимать больше нечего, разговор кончен.
-                    .window(0)
-                    .build(),
-            )
-        })
+        // Таблица живёт в ядре (`core::notice`): предмет её — протокол, а не очередь, и второй
+        // носитель взял бы копию, а копии расходятся молча.
+        reflex_core::notice::rst_for(seen, toward)
     }
 }
 

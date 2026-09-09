@@ -75,15 +75,18 @@ impl<K: Eq + Hash + Clone> ExpiringSet<K> {
     /// новое, имея место.
     pub fn mark(&mut self, key: K, now: Instant) -> Marking {
         // Своя истёкшая — не отметка; снимаем до всякого суждения.
-        if self.marked.get(&key).is_some_and(|at| self.expired(*at, now)) {
+        if self
+            .marked
+            .get(&key)
+            .is_some_and(|at| self.expired(*at, now))
+        {
             self.marked.remove(&key);
         }
         // Полная чистка стоит обхода набора, потому делается лишь на границе потолка — там, где
         // цена ошибки (отказ живому ключу) выше цены обхода.
         if !self.marked.contains_key(&key) && self.marked.len() >= self.capacity {
             let ttl = self.ttl;
-            self.marked
-                .retain(|_key, at| now.duration_since(*at) < ttl);
+            self.marked.retain(|_key, at| now.duration_since(*at) < ttl);
         }
         match self.marked.insert(key.clone(), now) {
             Some(_previous) => Marking::Renewed,
@@ -177,7 +180,10 @@ mod tests {
         let mut set = ExpiringSet::new(TTL, 8);
         assert_eq!(set.mark("популярная", t0), Marking::Fresh);
         (1..10).for_each(|i| {
-            assert!(set.contains(&"популярная", t0 + TTL / 2), "тик {i}: пока жива");
+            assert!(
+                set.contains(&"популярная", t0 + TTL / 2),
+                "тик {i}: пока жива"
+            );
         });
         assert_eq!(set.sweep(t0 + TTL), vec!["популярная"]);
     }

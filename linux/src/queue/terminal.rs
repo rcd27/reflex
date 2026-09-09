@@ -84,3 +84,32 @@ impl CanRemember for QueueSocket {
         Answer::Remembered { accept, state }
     }
 }
+
+/// Удержание: слово отпускания у очереди — «пропустить как есть». Сама способность держать пакет
+/// есть у неё по построению — вердикт всегда отложен: ядро ждёт ответа, пока мы решаем.
+impl reflex_core::capability::CanHold for QueueSocket {
+    fn release() -> Answer {
+        Answer::Pass
+    }
+}
+
+/// Отказ: удержанный не пойдёт дальше. Слово ОДНОМУ пакету, не правило на поток — снимать нечего,
+/// потому пары «снять обратно» у него нет.
+impl reflex_core::capability::CanRefuse for QueueSocket {
+    fn refuse() -> Answer {
+        Answer::Stop
+    }
+}
+
+/// Обрыв: не пропустить И сказать об этом. Таблица извещения живёт в ядре ([`reflex_core::notice`])
+/// — предмет её протокол, а не носитель; здесь способность лишь называет её своим словом (§9.1).
+/// Копия таблицы у второго носителя разошлась бы с первой молча: `RST` вне окна получатель
+/// отбрасывает без звука, и «сказали» с «услышали» перестали бы различаться.
+impl reflex_core::CanSever for QueueSocket {
+    fn notice(
+        seen: &[u8],
+        toward: reflex_core::capability::Toward,
+    ) -> Option<reflex_core::command::InjectablePacket> {
+        reflex_core::notice::rst_for(seen, toward)
+    }
+}

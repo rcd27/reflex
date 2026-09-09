@@ -53,15 +53,14 @@ where
         Err(_not_taken) => Verdict::Invalid(Invalid::AnswerNotTaken),
         Ok(_delivered) => match recaller.recall() {
             None => Verdict::Invalid(Invalid::NoConntrack),
-            Some(found) if found & state != state => {
-                Verdict::Broken(Broken::StateLost { asked: state, found })
-            }
-            Some(found) if found & foreign != foreign => {
-                Verdict::Broken(Broken::Clobbered {
-                    asked: foreign,
-                    found,
-                })
-            }
+            Some(found) if found & state != state => Verdict::Broken(Broken::StateLost {
+                asked: state,
+                found,
+            }),
+            Some(found) if found & foreign != foreign => Verdict::Broken(Broken::Clobbered {
+                asked: foreign,
+                found,
+            }),
             Some(_found) => Verdict::Held,
         },
     }

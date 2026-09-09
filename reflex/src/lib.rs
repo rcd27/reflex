@@ -589,9 +589,10 @@ impl<T: Transport> Detecting<T> {
 /// ```compile_fail,E0599
 /// use reflex::Act;
 /// use reflex_linux::queue::QueueSocket;
-/// // `QueueSocket` — терминал, но обрывать не умеет: `CanSever` он не несёт, и `sever` у его акта
-/// // просто нет.
-/// let _ = Act::<QueueSocket>::sever();
+/// // Очередь ядра — терминал, она держит, рвёт и помнит, но СПРОСИТЬ не умеет: дверь у неё одна,
+/// // вердикт удержанному пакету, и наружу к постороннему собеседнику она не говорит. `CanAsk` не
+/// // заявлен, и конструктора `ask` у её акта просто нет.
+/// let _ = Act::<QueueSocket>::ask(1);
 /// ```
 pub fn emit<T>(act: Act<T>, seen: &[u8]) -> (T::Answer, SmallVec<[Effect; 2]>)
 where
