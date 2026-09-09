@@ -1,4 +1,4 @@
-//! Опознание цели с провода — здесь и в [`crate::quic`]:
+//! Опознание цели с провода — здесь и в `crate::quic`:
 //!
 //! ```text
 //! TLS    crate::tls    sni · extract_sni · rewrite_sni · RecordAssembler
