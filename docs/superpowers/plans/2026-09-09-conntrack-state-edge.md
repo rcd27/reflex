@@ -244,7 +244,8 @@ git commit -m "refactor(linux): обход и сборка TLV netlink — од�
 ```rust
 pub struct CtView {
     pub id: u32,
-    pub tuple: Option<Tuple>,          // None — адреса не IPv4: ключ не куётся
+    pub ends: CtEnds,                  // V4 ключуется, V6 разбирается и НЕ ключуется
+    pub tuple: Option<Tuple>,          // Some только для V4: то, что умеет ковка ключа
     pub down: Counts,      // от клиента к цели (orig)
     pub up: Counts,        // от цели к клиенту (reply)
     pub started_ago: Option<Duration>,   // из CTA_TIMESTAMP
@@ -253,6 +254,11 @@ pub struct CtView {
     pub mark: u32,
 }
 pub enum CtTcp { SynSent, SynRecv, Established, FinWait, CloseWait, LastAck, TimeWait, Close, Other(u8) }
+pub enum CtEnds {
+    V4 { src: u32, dst: u32, src_port: u16, dst_port: u16, proto: u8 },
+    V6 { src: [u8; 16], dst: [u8; 16], src_port: u16, dst_port: u16, proto: u8 },
+    Unknown,                            // семейства нет в кортеже вовсе
+}
 pub fn view_of(body: &[u8]) -> CtView;   // тело = ТОЛЬКО атрибуты CTA_*, без nfgenmsg
 ```
 
@@ -295,15 +301,26 @@ fn missing_attributes_are_unknown_not_zero() {
     assert!(view.tcp.is_none());
 }
 
-/// Кортеж не-IPv4 — «не знаю», а не нули. Разбор читает только `CTA_IP_V4_*`; отдай он на
-/// IPv6-потоке четвёрку по умолчанию — ВСЕ они схлопнулись бы в один ключ, и сборка осталась бы
-/// зелёной. Незнание обитаемо (§7), молчаливая порча — нет.
+/// IPv6 РАЗБИРАЕТСЯ, но ключом не становится. Отдай разбор на IPv6-потоке четвёрку по умолчанию
+/// — ВСЕ они схлопнулись бы в один ключ при зелёной сборке. Отказ назван причиной, а не пустотой:
+/// незнание обитаемо (§7). Читать шестнадцать байт вместо четырёх стоит нуля и оставляет будущей
+/// работе ровно одно место — ковку ключа.
 #[test]
-fn a_non_ipv4_tuple_is_unknown_not_zeroes() {
+fn ipv6_ends_are_read_but_never_keyed() {
     // CTA_TUPLE_IP = 1, внутри CTA_IP_V6_SRC = 3 / CTA_IP_V6_DST = 4.
-    let ipv6 = nested_raw(1, &[tlv_bytes(3, &[0x20; 16]), tlv_bytes(4, &[0x20; 16])].concat());
+    let ipv6 = nested_raw(1, &[tlv_bytes(3, &[0x20; 16]), tlv_bytes(4, &[0x21; 16])].concat());
     let view = view_of(&nested_raw(1, &ipv6));
-    assert!(view.tuple.is_none(), "четвёрки нет — ключ не куётся, пакет уйдёт непонятым");
+    assert!(
+        matches!(view.ends, CtEnds::V6 { src, .. } if src == [0x20; 16]),
+        "адреса разобраны, а не потеряны"
+    );
+    assert!(view.tuple.is_none(), "ключ из них не куётся: пакет уйдёт непонятым");
+}
+
+/// Кортежа нет вовсе — тоже названное состояние, не нули.
+#[test]
+fn absent_ends_are_named_unknown() {
+    assert!(matches!(view_of(&[]).ends, CtEnds::Unknown));
 }
 ```
 
@@ -316,7 +333,7 @@ Expected: FAIL — `view_of` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-`view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` (be32, секунды), `CTA_TIMESTAMP` (вложенный, `CTA_TIMESTAMP_START` = be64 наносекунд), `CTA_PROTOINFO` → `CTA_PROTOINFO_TCP` → `CTA_PROTOINFO_TCP_STATE` (u8).
+`addressed` учится читать `CTA_IP_V6_SRC` (3) и `CTA_IP_V6_DST` (4) наравне с `CTA_IP_V4_*` и отдаёт `CtEnds`; `tuple` выводится из `CtEnds::V4` и только из неё. `view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` (be32, секунды), `CTA_TIMESTAMP` (вложенный, `CTA_TIMESTAMP_START` = be64 наносекунд), `CTA_PROTOINFO` → `CTA_PROTOINFO_TCP` → `CTA_PROTOINFO_TCP_STATE` (u8).
 
 **Отсутствие — `None`, не ноль.** Ядро без `nf_conntrack_acct` счётчиков не шлёт; ноль пакетов неотличим от «не считали».
 
