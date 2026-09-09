@@ -49,7 +49,7 @@ pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::{CanSever, Serves, Toward};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
-use reflex_engine::{Addr, FlowKey};
+use reflex_engine::{Addr, Flow};
 use reflex_engine_nfq::parse::{self, Read};
 use reflex_engine_nfq::talk::Talks;
 use reflex_instrument::detect::{SilenceInstrument, SynDropInstrument};
@@ -100,7 +100,7 @@ pub fn engine(backend: Nfqueue) -> Engine {
 
 /// Наблюдение из кадра: ключ разговора, имя цели (для реакции) и широкое слово провода.
 pub struct Observed<W> {
-    flow: FlowKey,
+    flow: Flow,
     target: String,
     wire: W,
 }
@@ -144,7 +144,7 @@ impl Ident {
 #[derive(Default)]
 pub struct TcpState {
     talks: Talks,
-    idents: HashMap<FlowKey, Ident>,
+    idents: HashMap<Flow, Ident>,
 }
 
 impl Transport for Tcp {
@@ -553,12 +553,12 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
         let templates = self.probes;
-        let mut table = FlowTable::<Probes<T::Wire>, FlowKey>::new(idle, move |_flow| {
+        let mut table = FlowTable::<Probes<T::Wire>, Flow>::new(idle, move |_flow| {
             Probes(templates.iter().map(|probe| probe.clone_box()).collect())
         });
         let mut state = T::State::default();
         // Имя цели на ключ — для сигналов, рождённых тиком (у тика пакета с именем нет).
-        let mut targets: HashMap<FlowKey, String> = HashMap::new();
+        let mut targets: HashMap<Flow, String> = HashMap::new();
         let mut last_tick = Instant::now();
 
         loop {
@@ -637,7 +637,7 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act> Acting<T, F> {
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
         let templates = self.probes;
-        let mut table = FlowTable::<Probes<T::Wire>, FlowKey>::new(idle, move |_flow| {
+        let mut table = FlowTable::<Probes<T::Wire>, Flow>::new(idle, move |_flow| {
             Probes(templates.iter().map(|probe| probe.clone_box()).collect())
         });
         let mut state = T::State::default();

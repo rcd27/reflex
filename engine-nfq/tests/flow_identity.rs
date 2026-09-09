@@ -5,6 +5,7 @@
 //! Каждый тест обязан УМЕТЬ УПАСТЬ на сломанной ковке (Global Constraint плана): тавтология вида
 //! `f(x) == f(x)` зелена на любой реализации и охраняет пустоту.
 
+use reflex_core::types::Protocol;
 use reflex_engine_nfq::parse::{datagrammed, keyed, keyed_of_orig, wired, Ends, Header, Payload, Segment};
 use reflex_linux::conntrack::Tuple;
 
@@ -48,7 +49,7 @@ fn payload_from(src_ip: u32, src_port: u16, dst_ip: u32, dst_port: u16) -> Paylo
 /// Ловит поломку: перепутай стороны в `keyed_of_orig` — ключ разойдётся с проводным, тест краснеет.
 #[test]
 fn kernel_tuple_and_wire_forge_the_same_key() {
-    let wire_key = keyed(0x0A00_0001, 44321, 0x5DB8_D822, 443);
+    let wire_key = keyed(0x0A00_0001, 44321, 0x5DB8_D822, 443, Protocol::Tcp);
     let tuple = Tuple {
         src: 0x0A00_0001,
         dst: 0x5DB8_D822,
@@ -105,25 +106,23 @@ fn both_sources_agree_while_both_exist() {
     );
 }
 
-/// Протокол в ключ не входит — и проверяется это ТАМ, ГДЕ ПРОТОКОЛ ЕСТЬ: ключ TCP-сегмента и
-/// ключ UDP-датаграммы к одной цели совпадают, как объявляет докблок `datagrammed` («иначе знание
-/// о цели разъедется по транспортам»). Сравнивать два вызова ковки, которая протокол не принимает, —
-/// тавтология: такой тест зелен и на сломанной обёртке.
+/// Протокол ВХОДИТ в личность разговора: беседа по TCP и беседа по QUIC к одной цели — разные
+/// разговоры, и одна машина на два транспорта была бы двумя машинами на одном ключе (§4).
+///
+/// Прежняя редакция утверждала обратное — ключи совпадают, «иначе знание о цели разъедется по
+/// транспортам». Претензия была верной, а место ей не то: слив нужен ЦЕЛИ, а не разговору. Как
+/// только цель стала отдельным слоем (`TargetKey` протокола не несёт), сведение переехало туда —
+/// его делает копредел по слою, а не общий ключ разговора.
 #[test]
-fn tcp_and_udp_to_one_target_share_the_conversation() {
-    let (src, src_port, dst, dst_port) = (0x0A00_0001, 44321, 0x5DB8_D822, 443);
-    let over_tcp = wired(syn_from(src, src_port, dst, dst_port), true).flow;
-    let over_udp = datagrammed(payload_from(src, src_port, dst, dst_port), true).flow;
-    assert_eq!(over_tcp, over_udp, "один разговор, два транспорта");
-    // И ключ из UDP-кортежа ядра (proto=17) совпадает с проводным TCP-ключом — proto роняется.
+fn tcp_and_udp_are_different_conversations_of_one_target() {
+    let ends = (0x0A00_0001u32, 44321u16, 0x5DB8_D822u32, 443u16);
+    let over_tcp = keyed(ends.0, ends.1, ends.2, ends.3, Protocol::Tcp);
+    let over_udp = keyed(ends.0, ends.1, ends.2, ends.3, Protocol::Udp);
+
+    assert_ne!(over_tcp, over_udp, "разные транспорты — разные разговоры");
     assert_eq!(
-        keyed_of_orig(Tuple {
-            src,
-            dst,
-            src_port,
-            dst_port,
-            proto: 17,
-        }),
-        over_tcp
+        (over_tcp.src, over_tcp.dst),
+        (over_udp.src, over_udp.dst),
+        "цель у них одна: сводит слой ЦЕЛИ, а не ключ разговора"
     );
 }

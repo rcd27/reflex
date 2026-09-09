@@ -242,19 +242,26 @@ fn a_truncated_frame_of_our_protocol_is_named_truncated() {
     assert_eq!(read(&datagram[..16], SERVER_PORT), Read::Truncated);
 }
 
-/// ДАТАГРАММА РАЗБИРАЕТСЯ И КЛЮЧУЕТСЯ ТЕМ ЖЕ КЛЮЧОМ, что и соединение к той же паре концов.
+/// ДАТАГРАММА РАЗБИРАЕТСЯ КАК СОЕДИНЕНИЕ И ВЕДЁТ К ТОЙ ЖЕ ЦЕЛИ, но разговором остаётся ДРУГИМ:
+/// протокол входит в личность (§4).
 ///
-/// Разойдись ключи по транспортам — знание о цели раздвоилось бы: QUIC-разговор к YouTube и
-/// TCP-разговор к нему же попали бы в разные ячейки памяти, и лечение, заработанное одним, не
-/// досталось бы другому.
+/// Прежде тест требовал совпадения ключей, и требование было верным по намерению: разойдись
+/// знание о цели по транспортам — лечение, заработанное на TCP, не досталось бы QUIC. Но место
+/// намерению не то. Сводить транспорты — работа слоя ЦЕЛИ (`TargetKey` протокола не несёт), а не
+/// общего ключа разговора; слитый ключ брал у личности разговора взаймы для нужд цели.
 #[test]
-fn a_datagram_is_keyed_exactly_like_a_connection_to_the_same_ends() {
+fn a_datagram_leads_to_the_same_target_but_is_another_conversation() {
     let quic = udp_frame(CLIENT, SERVER, 51000, SERVER_PORT, b"initial");
     let tcp = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x18, b"hello");
 
     match (read(&quic, SERVER_PORT), read(&tcp, SERVER_PORT)) {
         (Read::Udp(datagram), Read::Tcp(wire)) => {
-            assert_eq!(datagram.flow, wire.flow, "ключ разошёлся по транспортам");
+            assert_ne!(datagram.flow, wire.flow, "разные транспорты — разные разговоры");
+            assert_eq!(
+                (datagram.flow.src, datagram.flow.dst),
+                (wire.flow.src, wire.flow.dst),
+                "концы те же: цель одна, сводит её слой цели"
+            );
             assert_eq!(datagram.dst, wire.dst);
             assert_eq!(datagram.payload, b"initial");
         }

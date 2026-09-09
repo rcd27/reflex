@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use reflex_engine::{Dir, FlowKey};
+use reflex_engine::{Dir, Flow};
 use reflex_instrument::wire::{ResetBy, Seen, SeenTcp};
 
 use crate::parse::{Datagram, Wire};
@@ -160,7 +160,7 @@ fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> 
 /// стало бы два, и сработавший первым уронил бы наблюдение у второго молча.
 #[derive(Debug, Clone, Default)]
 pub struct Talks {
-    talks: BTreeMap<FlowKey, Talk>,
+    talks: BTreeMap<Flow, Talk>,
 }
 
 impl Talks {
@@ -219,7 +219,7 @@ impl Talks {
 
     /// Разговора больше нет — память о нём уходит. Зовётся и на открытии: четвёрка переиспользуется,
     /// граница прошлого разговора объявила бы повтором первый сегмент нового.
-    pub fn forget(&mut self, flow: FlowKey) {
+    pub fn forget(&mut self, flow: Flow) {
         self.talks.remove(&flow);
     }
 

@@ -1,5 +1,6 @@
+use reflex_core::types::Protocol;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, FlowKey, Interest, Lost, Mark, Noticed, Programme, Sighting, Tick,
+    Act, Addr, Basis, Cursor, Flow, Interest, Lost, Mark, Noticed, Programme, Sighting, Tick,
 };
 use reflex_engine_nfq::parse::{keyed, read, Read, SERVER_PORT};
 use reflex_engine_nfq::plane::Plane;
@@ -15,8 +16,8 @@ fn as_seen(host: &str) -> &str {
 
 /// Ключ разговора считается ТЕМ ЖЕ способом, что и в плоскости: посчитай тест его по-своему —
 /// проверял бы он свою арифметику, а не её память.
-fn flow_of(port: u16) -> FlowKey {
-    keyed(CLIENT, port, SERVER, SERVER_PORT)
+fn flow_of(port: u16) -> Flow {
+    keyed(CLIENT, port, SERVER, SERVER_PORT, Protocol::Tcp)
 }
 
 fn frame(src: u32, dst: u32, sport: u16, dport: u16, flags: u8, body: &[u8]) -> Vec<u8> {

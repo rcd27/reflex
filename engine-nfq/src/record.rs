@@ -66,12 +66,7 @@ pub fn record(plane: &Plane, seen: &[Entry], server_port: u16) -> Record {
         .fold(
             BTreeMap::<TargetKey<Box<str>>, BTreeMap<Addr, Node>>::new(),
             |mut so_far, entry| {
-                let flow = parse::keyed(
-                    entry.orig.src,
-                    entry.orig.src_port,
-                    entry.orig.dst,
-                    entry.orig.dst_port,
-                );
+                let flow = parse::keyed_of_orig(entry.orig);
                 // Различитель берётся целиком, а не через имя. Для КЛЮЧА это сегодня всё равно
                 // (`keyed` проецирует `Silent` и `Awaited` в один `Unnamed` — теорема, краснеет
                 // тестом `ozhidanie_imeni_i_ego_otsutstvie_dayut_odnu_stroku`). Целиком тем не

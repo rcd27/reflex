@@ -2,7 +2,7 @@ use reflex_engine::meter::{
     bucket_span, charged_target, expired, fresh_target, horizon, slower_than, target_pace, Charged,
     Pace, Target, BUCKET_SHIFT,
 };
-use reflex_engine::{Addr, Dir, FlowKey, Packet, Tick};
+use reflex_engine::{Addr, Dir, Flow, Packet, Tick};
 
 fn at(bucket: u64) -> Tick {
     Tick(bucket << BUCKET_SHIFT)
@@ -15,7 +15,7 @@ fn down(bytes: usize) -> Vec<u8> {
 fn feed(target: Target, bucket: u64, bytes: usize) -> Charged {
     let payload = down(bytes);
     let packet = Packet {
-        flow: FlowKey(1),
+        flow: flow_of(1),
         dst: Addr(1),
         dir: Dir::Down,
         opens: false,
@@ -89,4 +89,13 @@ fn a_pace_of_zero_bytes_is_never_reported_as_faster_than_a_real_one() {
     };
 
     assert_eq!(reflex_engine::meter::faster(nothing, real), real);
+}
+
+fn flow_of(n: u32) -> Flow {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    Flow {
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
+        protocol: reflex_core::types::Protocol::Tcp,
+    }
 }

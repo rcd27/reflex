@@ -4,7 +4,7 @@ use reflex_engine::row::{Answered, Naming};
 use reflex_engine::step::{sever, step, RETELL_HORIZON};
 use reflex_engine::Span;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Mark, Noticed, Packet, Plan,
+    Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Mark, Noticed, Packet, Plan,
     Programme, Sighting, Stepped, Tick,
 };
 
@@ -47,7 +47,7 @@ fn plan(programme: Programme, epoch: u32) -> Plan {
 
 fn packet(dir: Dir, payload: &[u8]) -> Packet {
     Packet {
-        flow: FlowKey(1),
+        flow: flow_of(1),
         dst: Addr(7),
         dir,
         opens: false,
@@ -742,4 +742,13 @@ fn a_hello_without_a_name_is_told_apart_from_no_hello_at_all() {
         None,
         "пакет, ничего не сказавший о личности, выпустил наблюдение о ней"
     );
+}
+
+fn flow_of(n: u32) -> Flow {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    Flow {
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
+        protocol: reflex_core::types::Protocol::Tcp,
+    }
 }

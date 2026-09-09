@@ -1,4 +1,6 @@
-use reflex_engine::{Addr, Dir, FlowKey};
+use reflex_core::types::{Flow, Protocol};
+use reflex_engine::{Addr, Dir};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use reflex_linux::conntrack::Tuple;
 
 pub const SERVER_PORT: u16 = 443;
@@ -49,7 +51,7 @@ pub struct Wire<'a> {
     pub header: Header,
     pub dst: Addr,
     pub dir: Dir,
-    pub flow: FlowKey,
+    pub flow: Flow,
     pub opens: bool,
     /// Цель ответила на стук — `SYN+ACK`. Отдельно от [`Wire::opens`] (`SYN` без `ACK`): вердикту
     /// разница безразлична, наблюдению нет — без неё блокировка по адресу (рукопожатия не было) и по
@@ -68,7 +70,7 @@ pub struct Wire<'a> {
 pub struct Datagram<'a> {
     pub dst: Addr,
     pub dir: Dir,
-    pub flow: FlowKey,
+    pub flow: Flow,
     pub payload: &'a [u8],
 }
 
@@ -244,7 +246,7 @@ pub fn wired(segment: Segment<'_>, upward: bool) -> Wire<'_> {
             true => Dir::Up,
             false => Dir::Down,
         },
-        flow: keyed(client, client_port, server, server_seen),
+        flow: keyed(client, client_port, server, server_seen, Protocol::Tcp),
         opens: segment.opens,
         handshakes: segment.handshakes,
         closes: segment.closes,
@@ -259,8 +261,12 @@ pub fn wired(segment: Segment<'_>, upward: bool) -> Wire<'_> {
     }
 }
 
-/// Датаграмма плюс названная сторона. Ключ считает та же [`keyed`], что и у соединения: разговор по
-/// QUIC и по TCP к одной цели ключуются одинаково, иначе знание о цели разъедется по транспортам.
+/// Датаграмма плюс названная сторона. Ключ считает та же [`keyed`], что и у соединения, но протокол
+/// в личность ВХОДИТ: разговор по QUIC и разговор по TCP — разные разговоры. Прежняя редакция
+/// сливала их одним ключом, чтобы знание о цели не разъехалось по транспортам; после того как цель
+/// стала отдельным слоем (`TargetKey` протокола не несёт), слив живёт ТАМ — сводит разговоры
+/// копредел по слою, а не общий ключ. Слитый ключ разговора был удобством знания о цели, взятым в
+/// долг у личности разговора.
 pub fn datagrammed(payload: Payload<'_>, upward: bool) -> Datagram<'_> {
     let ends = payload.ends;
     let (server, client, server_seen, client_port) = match upward {
@@ -273,7 +279,7 @@ pub fn datagrammed(payload: Payload<'_>, upward: bool) -> Datagram<'_> {
             true => Dir::Up,
             false => Dir::Down,
         },
-        flow: keyed(client, client_port, server, server_seen),
+        flow: keyed(client, client_port, server, server_seen, Protocol::Udp),
         payload: payload.payload,
     }
 }
@@ -361,9 +367,26 @@ fn tcp(segment: &[u8], src_ip: u32, dst_ip: u32) -> Framed<'_> {
     }
 }
 
-pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> FlowKey {
-    let tuple = ((client as u64) << 32) | ((client_port as u64) << 16) | (server_port as u64);
-    FlowKey(mixed(mixed(tuple) ^ (server as u64)))
+/// Личность разговора из названных сторон. Возвращает ЧЕТВЁРКУ, а не её отпечаток: ключ области —
+/// то, чем она расслаивается (§4), а сжатие в `u64` было лосси — две разные четвёрки с одним хэшем
+/// становились одним разговором, то есть одна машина держала два (§4, «машина на двух ключах —
+/// две машины»), и молча. Замер цены: карта по четвёрке против карты по отпечатку — 1–4 нс на
+/// операцию против микросекунд на пакет, то есть отпечаток покупал доли процента ценой коллизии.
+///
+/// Протокол входит в личность: разговор по TCP и разговор по QUIC к одной цели — РАЗНЫЕ разговоры.
+/// Сводит их слой ЦЕЛИ (`TargetKey` протокола не несёт), а не общий ключ разговора.
+pub fn keyed(
+    client: u32,
+    client_port: u16,
+    server: u32,
+    server_port: u16,
+    protocol: Protocol,
+) -> Flow {
+    Flow {
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(client)), client_port),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(server)), server_port),
+        protocol,
+    }
 }
 
 /// Ключ из ORIG-кортежа ядра (`CTA_TUPLE_ORIG`). Принимает кортеж ЦЕЛИКОМ, и имя кричит, какой:
@@ -371,15 +394,19 @@ pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> Fl
 /// ловит тест. Тело — та же [`keyed`], что и у провода: инициатор ORIG'а есть клиент, и это
 /// единственное знание, что добавляет обёртка. Своей арифметики нет — иначе была бы вторая ковка,
 /// и два ключа одного разговора разошлись бы молча.
-pub fn keyed_of_orig(orig: Tuple) -> FlowKey {
-    keyed(orig.src, orig.src_port, orig.dst, orig.dst_port)
+pub fn keyed_of_orig(orig: Tuple) -> Flow {
+    keyed(
+        orig.src,
+        orig.src_port,
+        orig.dst,
+        orig.dst_port,
+        match orig.proto {
+            17 => Protocol::Udp,
+            _tcp_or_other => Protocol::Tcp,
+        },
+    )
 }
 
-fn mixed(word: u64) -> u64 {
-    let spread = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    let folded = (spread ^ (spread >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    folded ^ (folded >> 31)
-}
 
 pub fn head_of(payload: &[u8]) -> Head {
     match hello_at(payload) {

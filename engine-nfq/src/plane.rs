@@ -1,3 +1,4 @@
+use std::ops::Bound;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reflex_core::mealy::{Mealy, MealyExt, Pair};
@@ -9,7 +10,7 @@ use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::step::{sever, Advancing};
 use reflex_engine::watch::{watched, Watch};
 use reflex_engine::{
-    About, Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Lost, Noted, Noticed, Packet,
+    About, Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Lost, Noted, Noticed, Packet,
     Plan, Programme, Said, Sighting, Tick,
 };
 
@@ -43,6 +44,8 @@ pub const RETENTION_HORIZONS: u64 = 2;
 /// (две вставки в карты против поиска), смешивать значит мерить состав трафика, а не плоскость.
 /// `Copy` снят с приходом наблюдения: `SeenTcp` его не имеет (у сброса автор, у имени длина).
 #[derive(Debug, Clone, PartialEq, Eq)]
+
+
 pub struct Fed {
     pub act: Act,
     pub opened: bool,
@@ -67,12 +70,12 @@ pub struct Plane {
     narrow: fn(&str) -> &str,
     fallback: Programme,
     epoch: Epoch,
-    cursors: HashMap<FlowKey, Cursor>,
+    cursors: HashMap<Flow, Cursor>,
     /// Память ради наблюдения — граница клиента и выданные головы. Убирается той же уборкой, что и
     /// курсоры (иначе работа стала бы пропорциональна числу целей). Тот же тип, что у края (#320):
     /// перевод пакета в показание жил здесь, край не мог его взять и написал свой; теперь один.
     talks: Talks,
-    seen_at: BTreeMap<FlowKey, Tick>,
+    seen_at: BTreeMap<Flow, Tick>,
     targets: BTreeMap<Addr, Target>,
     ring: Ring,
     tally: Tally,
@@ -86,7 +89,7 @@ pub struct Plane {
     /// принадлежит соединению (на общем адресе CDN каждый разговор носит своё имя). Три состояния
     /// (#300): `Silent` («приветствие без имени») — знаменатель слепой зоны именного ключа, который
     /// #317 требует печатать числом; сводным счётчиком его знать по коробке, а не по разговору.
-    flow_names: BTreeMap<FlowKey, Naming<Box<str>>>,
+    flow_names: BTreeMap<Flow, Naming<Box<str>>>,
     /// Как зовут цель по этому адресу (#302). Отдельно от `names` (там счётчик имён): здесь
     /// соответствие, без которого беда по адресу не ложится на знание, ключёванное именем. Одна
     /// запись на цель, тот же потолок и вытеснение, что у `targets`.
@@ -115,7 +118,7 @@ pub struct Plane {
     marked_packets: BTreeMap<u32, u64>,
     /// С какого места продолжить обход — иначе потолок смотрел бы вечно первые записи, а хвост не
     /// убирался бы никогда.
-    sweep_from: FlowKey,
+    sweep_after: Option<Flow>,
     sweep_from_target: Addr,
     swept: u64,
     sweeps: u64,
@@ -165,7 +168,7 @@ impl Plane {
             unparsed: 0,
             marked: BTreeSet::new(),
             marked_packets: BTreeMap::new(),
-            sweep_from: FlowKey(0),
+            sweep_after: None,
             sweep_from_target: Addr(0),
             swept: 0,
             sweeps: 0,
@@ -411,7 +414,7 @@ impl Plane {
 
     /// Что плоскость знает об этом разговоре. `Cursor::Fresh` значит «не видели вовсе» — законный, не
     /// пограничный случай: разговор, не дошедший до очереди, существует, и строка обязана его показать.
-    pub fn cursor_of(&self, flow: FlowKey) -> Cursor {
+    pub fn cursor_of(&self, flow: Flow) -> Cursor {
         match self.cursors.get(&flow) {
             Some(held) => *held,
             None => Cursor::Fresh,
@@ -426,7 +429,7 @@ impl Plane {
     /// соберётся RST) — обрыв остаётся свойством шага (`step::sever` чистая).
     pub fn sever_named(&mut self, name: &str) -> usize {
         let narrowed = (self.narrow)(name);
-        let doomed: Vec<FlowKey> = self
+        let doomed: Vec<Flow> = self
             .flow_names
             .iter()
             .filter(|(_, said)| match said {
@@ -454,13 +457,13 @@ impl Plane {
     /// Когда плоскость видела этот разговор в последний раз. Нужен строке для слепоты второго рода,
     /// которую счёт не ловит: счета сошлись, а наблюдения прекратились (живая и застывшая строки
     /// выглядят одинаково).
-    pub fn seen_at_of(&self, flow: FlowKey) -> Option<Tick> {
+    pub fn seen_at_of(&self, flow: Flow) -> Option<Tick> {
         self.seen_at.get(&flow).copied()
     }
 
     /// Как зовут цель в этом разговоре. `None` — имени нет; две причины различает `naming_of_flow`,
     /// здесь слиты намеренно (вызывающему, которому нужно имя, обе одинаковы).
-    pub fn name_of_flow(&self, flow: FlowKey) -> Option<&str> {
+    pub fn name_of_flow(&self, flow: Flow) -> Option<&str> {
         match self.flow_names.get(&flow) {
             Some(Naming::Spoken(name)) => Some(name.as_ref()),
             Some(Naming::Silent) | Some(Naming::Awaited) | None => None,
@@ -469,7 +472,7 @@ impl Plane {
 
     /// Что известно о личности цели в этом разговоре — все три состояния. Отсюда доля безымянных ПО
     /// РАЗГОВОРУ, а не сводным счётчиком по коробке.
-    pub fn naming_of_flow(&self, flow: FlowKey) -> Naming<Box<str>> {
+    pub fn naming_of_flow(&self, flow: Flow) -> Naming<Box<str>> {
         match self.flow_names.get(&flow) {
             Some(known) => known.clone(),
             None => Naming::Awaited,
@@ -568,7 +571,7 @@ impl Plane {
     /// `Cursor::Fresh`, оболочка переводила в `Ended` — у `Fresh` было два смысла, державшихся
     /// комментарием, и с ним терялся ответ цели. Теперь шаг называет закрытие сам, оболочка кладёт
     /// что получила; `Fresh` сюда не приходит вовсе.
-    fn remember(&mut self, flow: FlowKey, cursor: Cursor, now: Tick) {
+    fn remember(&mut self, flow: Flow, cursor: Cursor, now: Tick) {
         match cursor {
             Cursor::Fresh => (),
             Cursor::Running(_) | Cursor::Ended(_) | Cursor::Lost => {
@@ -687,19 +690,22 @@ impl Plane {
             {
                 self.sweeps += 1;
 
-                let looked: Vec<FlowKey> = self
+                let looked: Vec<Flow> = self
                     .seen_at
-                    .range(self.sweep_from..)
+                    .range(match self.sweep_after {
+                        Some(after) => (Bound::Excluded(after), Bound::Unbounded),
+                        None => (Bound::Unbounded, Bound::Unbounded),
+                    })
                     .take(SWEEP_BUDGET)
                     .map(|(flow, _seen)| *flow)
                     .collect();
                 self.swept += looked.len() as u64;
                 self.backlog = self.seen_at.len().saturating_sub(looked.len());
-                self.sweep_from = match looked.last() {
-                    Some(FlowKey(last)) => FlowKey(last.saturating_add(1)),
-                    None => FlowKey(0),
-                };
-                let stale: Vec<FlowKey> = looked
+                // Следующий батч начинается СТРОГО ПОСЛЕ последнего осмотренного. Прежде курсор
+                // прибавлял единицу к отпечатку — с личностью-четвёркой такой арифметики нет и не
+                // должно быть: «следующий разговор» не вычисляется, он берётся границей диапазона.
+                self.sweep_after = looked.last().copied();
+                let stale: Vec<Flow> = looked
                     .into_iter()
                     .filter(|flow| match self.seen_at.get(flow) {
                         Some(seen) => expired(*seen, now),
@@ -790,8 +796,9 @@ impl Plane {
                 // Цель потеряна — и об этом говорят, а не только забывают. Прежде выселение было
                 // чистой уборкой памяти, следом оставался лишь счётчик `evicted_targets` (ни ЧТО, ни
                 // КОГДА), оттого у `Lost` не было производителя. Разговора у наблюдения нет, сказано
-                // БУКВОЙ (`About::Target`): потеряна ЦЕЛЬ, её разговоры выселены выше; прежний
-                // `FlowKey(0)` был честен по смыслу и неотличим по типу от настоящего ключа.
+                // БУКВОЙ (`About::Target`): потеряна ЦЕЛЬ, её разговоры выселены выше; прежде
+                // здесь стоял выдуманный «нулевой» разговор — честный по смыслу и неотличимый по типу
+                // от настоящего ключа.
                 gone.into_iter().for_each(|dst| {
                     self.tell(Noted {
                         at: now,
@@ -902,3 +909,4 @@ impl Plane {
         horizon().0
     }
 }
+

@@ -14,7 +14,7 @@ use reflex_engine::meter::Counting;
 use reflex_engine::row::Naming;
 use reflex_engine::step::Advancing;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Packet, Plan, Programme, Tick,
+    Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Packet, Plan, Programme, Tick,
 };
 
 fn plan() -> Plan {
@@ -28,7 +28,7 @@ fn plan() -> Plan {
 
 fn packet(dir: Dir, bytes: usize, opens: bool) -> Packet {
     Packet {
-        flow: FlowKey(7),
+        flow: flow_of(7),
         dst: Addr(0x0A00_0001),
         dir,
         opens,
@@ -89,7 +89,16 @@ fn the_sighting_survives_the_neighbour() {
     assert_eq!(noted.at, Tick(5), "момент наблюдения");
     assert_eq!(
         noted.about,
-        reflex_engine::About::Talk(FlowKey(7)),
+        reflex_engine::About::Talk(flow_of(7)),
         "адресат наблюдения"
     );
+}
+
+fn flow_of(n: u32) -> Flow {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    Flow {
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
+        protocol: reflex_core::types::Protocol::Tcp,
+    }
 }

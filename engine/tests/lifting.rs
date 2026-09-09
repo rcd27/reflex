@@ -11,7 +11,7 @@ use reflex_core::word::{Base, Word};
 use reflex_engine::row::Naming;
 use reflex_engine::step::Advancing;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, Dir, Epoch, FlowKey, Interest, Packet, Plan, Programme, Tick,
+    Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Packet, Plan, Programme, Tick,
 };
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -43,7 +43,7 @@ fn plan() -> Plan {
 
 fn opening(payload: &[u8]) -> Packet {
     Packet {
-        flow: FlowKey(7),
+        flow: flow_of(7),
         dst: Addr(0x0A00_0001),
         dir: Dir::Up,
         opens: true,
@@ -161,4 +161,13 @@ fn one_machine_eats_packets_borrowed_for_their_own_turn() {
         matches!(machine.cursor, Cursor::Running(_)),
         "состояние пережило все три оборота, хотя байты каждого умерли на своём"
     );
+}
+
+fn flow_of(n: u32) -> Flow {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    Flow {
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
+        protocol: reflex_core::types::Protocol::Tcp,
+    }
 }
