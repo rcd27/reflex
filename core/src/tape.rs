@@ -19,8 +19,14 @@ use std::time::Instant;
 use crate::detector::DetectorEvent;
 
 /// Отклик на спрошенное. Содержимое `C` — потребителя: фреймворк несёт конверт, а не смысл ответа.
+///
+/// `key` — ключ ОБЛАСТИ (§4), и он несущий: отклик приходит позже вопроса и сам по себе не говорит,
+/// чей он. Без ключа драйверу осталось бы отдать его «первой попавшейся» машине либо всем — и то и
+/// другое сделало бы ответ чужим наблюдением, а машину — держащей два разговора (§4: «машина на
+/// двух ключах — две машины»).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Answer<C> {
+pub struct Answer<K, C> {
+    pub key: K,
     pub input: C,
     pub at: Instant,
 }
@@ -31,12 +37,12 @@ pub struct Answer<C> {
 /// Равенства не выводит: буква провода (`DetectorEvent`) его не имеет — там лежит носитель, чьё
 /// равенство не наше дело. Лента сравнивается по моментам и по породе, а не побуквенно.
 #[derive(Debug, Clone)]
-pub enum TapeLetter<T, C> {
+pub enum TapeLetter<T, K, C> {
     Event(DetectorEvent<T>),
-    Answer(Answer<C>),
+    Answer(Answer<K, C>),
 }
 
-impl<T, C> TapeLetter<T, C> {
+impl<T, K, C> TapeLetter<T, K, C> {
     /// Момент буквы — общий для обеих пород: лента упорядочена временем, чем бы буква ни была.
     pub fn at(&self) -> Instant {
         match self {
@@ -46,10 +52,25 @@ impl<T, C> TapeLetter<T, C> {
     }
 }
 
+impl<T, K: PartialEq, C> TapeLetter<T, K, C> {
+    /// Адресована ли буква машине этого ключа. Наблюдение провода адресовано ТОЙ машине, которой
+    /// его отдал разбор, — здесь о нём не судят; отклик адресован ровно машине своего ключа.
+    ///
+    /// Тем корреляция и держится: ответ приходит позже вопроса, и «чей он» знает только ключ. Отдай
+    /// драйвер отклик первой попавшейся машине — она получила бы чужое наблюдение и стала бы
+    /// машиной на двух ключах, то есть двумя машинами (§4).
+    pub fn answers(&self, key: &K) -> bool {
+        match self {
+            TapeLetter::Event(_wire) => false,
+            TapeLetter::Answer(answer) => &answer.key == key,
+        }
+    }
+}
+
 /// Сужение ленты к алфавиту прибора (§4): прибор читает наблюдения провода и НЕ читает откликов.
 /// Отклик роняется здесь — без ветки «не моя буква» у каждого прибора.
-impl<T: Clone, C> crate::stack::Reads<TapeLetter<T, C>> for DetectorEvent<T> {
-    fn read(wide: &TapeLetter<T, C>) -> Option<DetectorEvent<T>> {
+impl<T: Clone, K, C> crate::stack::Reads<TapeLetter<T, K, C>> for DetectorEvent<T> {
+    fn read(wide: &TapeLetter<T, K, C>) -> Option<DetectorEvent<T>> {
         match wide {
             TapeLetter::Event(event) => Some(event.clone()),
             TapeLetter::Answer(_not_ours) => None,

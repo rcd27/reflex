@@ -71,17 +71,18 @@ impl Interleave {
     /// что отвечает нашему контуру, пока провод молчит, — это тихий дроп, и он обязан выглядеть
     /// тихим; отодвигай отклик тишину, дропнутый поток, чей контур сказал «блок», выглядел бы
     /// НЕ-тихим, то есть ровно наоборот правде.
-    pub fn answered<T, C>(
+    pub fn answered<T, K, C>(
         self,
+        key: K,
         input: C,
         at: Instant,
-    ) -> (Self, Vec<crate::tape::TapeLetter<T, C>>) {
+    ) -> (Self, Vec<crate::tape::TapeLetter<T, K, C>>) {
         let at = at.max(self.last);
         let events = self
             .nodes_up_to(at)
             .map(crate::tape::TapeLetter::Event)
             .chain(core::iter::once(crate::tape::TapeLetter::Answer(
-                crate::tape::Answer { input, at },
+                crate::tape::Answer { key, input, at },
             )))
             .collect();
         (Self { last: at, ..self }, events)

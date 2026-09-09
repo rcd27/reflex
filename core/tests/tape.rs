@@ -17,7 +17,7 @@ fn at(start: Instant, millis: u64) -> Instant {
 }
 
 /// Буквы ленты в виде, читаемом глазами.
-fn shape<T, C>(letters: &[TapeLetter<T, C>], start: Instant) -> Vec<(char, u64)> {
+fn shape<T, K, C>(letters: &[TapeLetter<T, K, C>], start: Instant) -> Vec<(char, u64)> {
     letters
         .iter()
         .map(|letter| {
@@ -44,11 +44,11 @@ fn three_sources_make_one_tape_ordered_by_time() {
     let seam = Interleave::started(start, STEP);
 
     let (seam, seen) = seam.saw("запрос", at(start, 50));
-    let (seam, answered) = seam.answered::<&str, &str>("ответ контура", at(start, 250));
+    let (seam, answered) = seam.answered::<&str, u8, &str>(7, "ответ контура", at(start, 250));
     let (_seam, idled) = seam.idle::<&str>(at(start, 420));
 
-    let wire: Vec<TapeLetter<&str, &str>> = seen.into_iter().map(TapeLetter::Event).collect();
-    let after: Vec<TapeLetter<&str, &str>> = idled.into_iter().map(TapeLetter::Event).collect();
+    let wire: Vec<TapeLetter<&str, u8, &str>> = seen.into_iter().map(TapeLetter::Event).collect();
+    let after: Vec<TapeLetter<&str, u8, &str>> = idled.into_iter().map(TapeLetter::Event).collect();
 
     assert_eq!(shape(&wire, start), vec![('p', 50)], "пакет внутри окна тиков не родил");
     assert_eq!(
@@ -75,24 +75,25 @@ fn three_sources_make_one_tape_ordered_by_time() {
 #[test]
 fn an_answer_never_reaches_an_instrument_that_does_not_read_it() {
     let start = Instant::now();
-    let packet: TapeLetter<u8, &str> = TapeLetter::Event(DetectorEvent::Packet {
+    let packet: TapeLetter<u8, u8, &str> = TapeLetter::Event(DetectorEvent::Packet {
         input: 7,
         at: start,
     });
-    let answer: TapeLetter<u8, &str> = TapeLetter::Answer(Answer {
+    let answer: TapeLetter<u8, u8, &str> = TapeLetter::Answer(Answer {
+        key: 1,
         input: "контур сказал: блок",
         at: start,
     });
 
     assert!(
         matches!(
-            <DetectorEvent<u8> as Reads<TapeLetter<u8, &str>>>::read(&packet),
+            <DetectorEvent<u8> as Reads<TapeLetter<u8, u8, &str>>>::read(&packet),
             Some(DetectorEvent::Packet { input: 7, .. })
         ),
         "провод до прибора доходит"
     );
     assert!(
-        <DetectorEvent<u8> as Reads<TapeLetter<u8, &str>>>::read(&answer).is_none(),
+        <DetectorEvent<u8> as Reads<TapeLetter<u8, u8, &str>>>::read(&answer).is_none(),
         "отклик до прибора не доходит — сужение его роняет"
     );
 }
@@ -107,7 +108,7 @@ fn an_answer_moves_the_grid_but_not_the_silence() {
     let start = Instant::now();
     let seam = Interleave::started(start, STEP);
 
-    let (seam, answered) = seam.answered::<u8, &str>("блок", at(start, 250));
+    let (seam, answered) = seam.answered::<u8, u8, &str>(3, "блок", at(start, 250));
     let (_seam, idled) = seam.idle::<u8>(at(start, 320));
 
     assert_eq!(
@@ -115,7 +116,7 @@ fn an_answer_moves_the_grid_but_not_the_silence() {
         vec![('t', 100), ('t', 200), ('a', 250)],
         "узлы до отклика выданы"
     );
-    let after: Vec<TapeLetter<u8, &str>> = idled.into_iter().map(TapeLetter::Event).collect();
+    let after: Vec<TapeLetter<u8, u8, &str>> = idled.into_iter().map(TapeLetter::Event).collect();
     assert_eq!(
         shape(&after, start),
         vec![('t', 300)],
@@ -124,7 +125,7 @@ fn an_answer_moves_the_grid_but_not_the_silence() {
 
     let seen_by_instrument: Vec<DetectorEvent<u8>> = answered
         .iter()
-        .filter_map(<DetectorEvent<u8> as Reads<TapeLetter<u8, &str>>>::read)
+        .filter_map(<DetectorEvent<u8> as Reads<TapeLetter<u8, u8, &str>>>::read)
         .collect();
     assert!(
         seen_by_instrument
@@ -132,4 +133,40 @@ fn an_answer_moves_the_grid_but_not_the_silence() {
             .all(|event| matches!(event, DetectorEvent::Tick { .. })),
         "прибору достались только узлы сетки — отклика он не видел"
     );
+}
+
+/// ОТКЛИК ДОХОДИТ ДО МАШИНЫ СВОЕГО КЛЮЧА И НЕ ДОХОДИТ ДО ЧУЖОЙ.
+///
+/// Ответ приходит позже вопроса, и «чей он» знает только ключ. Отдай драйвер отклик первой
+/// попавшейся машине — она получила бы чужое наблюдение и стала бы машиной на двух ключах, то есть
+/// двумя машинами (§4).
+#[test]
+fn отклик_адресован_машине_своего_ключа() {
+    let start = Instant::now();
+    let (_seam, letters) =
+        Interleave::started(start, STEP).answered::<u8, u32, &str>(42, "блок", start);
+
+    let answer = letters
+        .iter()
+        .find(|letter| matches!(letter, TapeLetter::Answer(_)))
+        .expect("отклик в ленте");
+
+    assert!(answer.answers(&42), "своей машине адресован");
+    assert!(!answer.answers(&43), "чужой машине не адресован");
+}
+
+/// НАБЛЮДЕНИЕ ПРОВОДА НИКОМУ НЕ «ОТВЕЧАЕТ».
+///
+/// Пакет адресован той машине, которой его отдал разбор, и вопрос «чей ответ» к нему не применим.
+/// Скажи `answers` иначе — и пакет начал бы конкурировать с откликом за адресата.
+#[test]
+fn наблюдение_провода_не_отвечает_ни_на_чей_вопрос() {
+    let start = Instant::now();
+    let packet: TapeLetter<u8, u32, &str> = TapeLetter::Event(DetectorEvent::Packet {
+        input: 1,
+        at: start,
+    });
+
+    assert!(!packet.answers(&42));
+    assert!(!packet.answers(&0));
 }
