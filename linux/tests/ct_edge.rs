@@ -38,10 +38,7 @@ fn base() -> TimeoutBase {
 /// idle = база(состояние) − остаток. established: 120 − 110 = 10.
 #[test]
 fn idle_is_base_minus_remaining() {
-    let edge = CtEdge {
-        view: view(2, 3, 110, Some(CtTcp::Established)),
-        base: base(),
-    };
+    let edge = CtEdge::seen(view(2, 3, 110, Some(CtTcp::Established)), base());
     assert_eq!(edge.idle(), Some(Duration::from_secs(10)));
     assert_eq!(edge.down_packets(), Some(2));
     assert_eq!(edge.up_packets(), Some(3));
@@ -50,9 +47,30 @@ fn idle_is_base_minus_remaining() {
 /// Базы для состояния нет — idle не выдумывается (None), а не считается по чужой базе.
 #[test]
 fn idle_is_unknown_without_a_base_for_the_state() {
-    let edge = CtEdge {
-        view: view(1, 0, 30, Some(CtTcp::TimeWait)),
-        base: base(),
-    };
+    let edge = CtEdge::seen(view(1, 0, 30, Some(CtTcp::TimeWait)), base());
     assert_eq!(edge.idle(), None);
+}
+
+/// Возраст — СНИМОК на приходе (`seen`), не запрос часов при вызове: два обращения к одному виду за
+/// разное настенное время дают ОДНО значение. Иначе часы жили бы под шагом прибора (§2), и переигровка
+/// одной записи расходилась бы (§10). Мутируй `age()` обратно на `SystemTime::now()` при вызове — и
+/// пауза между обращениями разведёт значения, тест покраснеет.
+#[test]
+fn age_is_a_snapshot_stable_across_calls() {
+    let mut v = view(2, 1, 110, Some(CtTcp::SynSent));
+    // Начало — 10 с назад от эпохи (абсолютные ns, как кладёт ядро).
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    v.started_at = Some(now_ns - 10_000_000_000);
+    let edge = CtEdge::seen(v, base());
+    let first = edge.age();
+    std::thread::sleep(Duration::from_millis(20));
+    let second = edge.age();
+    assert_eq!(first, second, "возраст замер на приходе, часов в шаге нет");
+    assert!(
+        first.is_some_and(|age| age >= Duration::from_secs(10)),
+        "снимок реален — поток открыт ~10 с назад"
+    );
 }

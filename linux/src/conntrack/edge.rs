@@ -69,10 +69,33 @@ impl TimeoutBase {
     }
 }
 
-/// Носитель `EdgeView`: вид ядра плюс база таймаута, которой виду не хватает для `idle`.
+/// Носитель `EdgeView`: вид ядра плюс база таймаута, которой виду не хватает для `idle`, плюс СНИМОК
+/// возраста, снятый на приходе пакета. Возраст — поле, не запрос: часы дёргает `seen` (край/драйвер,
+/// §9), а прибор их уже не видит (§2 — ни скрытых часов в шаге) и переигровка одной записи сходится
+/// (§10). Собирается ТОЛЬКО через [`seen`] — литерала нет (поле `age` приватно), оттого второму
+/// источнику времени взяться неоткуда.
+///
+/// [`seen`]: CtEdge::seen
 pub struct CtEdge {
     pub view: CtView,
     pub base: TimeoutBase,
+    age: Option<Duration>,
+}
+
+impl CtEdge {
+    /// Собрать вид на приходе пакета. ЕДИНСТВЕННОЕ место, где мир (часы) входит в систему для края:
+    /// возраст = `сейчас − начало`, замирает величиной. Начало conntrack кладёт абсолютным
+    /// (`ktime_get_real_ns`, наносекунды эпохи), потому свои часы берём из той же эпохи
+    /// (`SystemTime`), а не из монотонного `Instant` буквы: его не вычесть из абсолютного начала.
+    /// `None` — ядро без `timestamp` начала не дало, тогда возраста нет, и прибор честно не подтвердит
+    /// по времени, а не соврёт нулём.
+    pub fn seen(view: CtView, base: TimeoutBase) -> CtEdge {
+        let age = view.started_at.and_then(|started| {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_nanos() as u64;
+            now.checked_sub(started).map(Duration::from_nanos)
+        });
+        CtEdge { view, base, age }
+    }
 }
 
 impl EdgeView for CtEdge {
@@ -100,17 +123,10 @@ impl EdgeView for CtEdge {
         base.checked_sub(remaining)
     }
 
-    /// `сейчас − начало`. Начало conntrack кладёт абсолютным (`ktime_get_real_ns`, наносекунды
-    /// эпохи), потому свои часы берём из той же эпохи (`SystemTime`), а не монотонные `Instant` буквы:
-    /// их не вычесть из абсолютного начала. `None` — ядро без `timestamp` начала не дало, тогда
-    /// возраста нет, и прибор честно не подтвердит по времени, а не соврёт нулём.
+    /// Снимок возраста, снятый `seen` на приходе пакета — ПОЛЕ, не запрос часов: в шаге прибора
+    /// часов нет (§2), переигровка сходится (§10).
     fn age(&self) -> Option<Duration> {
-        let started = self.view.started_at?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()?
-            .as_nanos() as u64;
-        now.checked_sub(started).map(Duration::from_nanos)
+        self.age
     }
 
     fn mark(&self) -> u32 {
