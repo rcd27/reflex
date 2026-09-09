@@ -3,11 +3,8 @@
 use std::fmt;
 use std::fs;
 use std::process::Command;
-use std::time::Duration;
 
 use tracing::info;
-
-use crate::conntrack::CtTcp;
 
 #[derive(Debug)]
 pub enum PreflightError {
@@ -124,36 +121,6 @@ fn check_timestamps() -> Result<(), PreflightError> {
     }
 }
 
-/// Имя sysctl-таймаута по состоянию TCP. `Other` файла не имеет — пусто (базы для него не читаем).
-fn sysctl_name(state: CtTcp) -> &'static str {
-    match state {
-        CtTcp::SynSent => "nf_conntrack_tcp_timeout_syn_sent",
-        CtTcp::SynRecv => "nf_conntrack_tcp_timeout_syn_recv",
-        CtTcp::Established => "nf_conntrack_tcp_timeout_established",
-        CtTcp::FinWait => "nf_conntrack_tcp_timeout_fin_wait",
-        CtTcp::CloseWait => "nf_conntrack_tcp_timeout_close_wait",
-        CtTcp::LastAck => "nf_conntrack_tcp_timeout_last_ack",
-        CtTcp::TimeWait => "nf_conntrack_tcp_timeout_time_wait",
-        CtTcp::Close => "nf_conntrack_tcp_timeout_close",
-        CtTcp::Other(_) => "",
-    }
-}
-
-/// База таймаута ядра для состояния — читается при старте (конфигурация машины, не приезжает с
-/// пакетом). Из неё носитель считает `idle = база − остаток`.
-pub(crate) fn tcp_timeout_base(state: CtTcp) -> Option<Duration> {
-    let leaf = sysctl_name(state);
-    if leaf.is_empty() {
-        return None;
-    }
-    let secs: u64 = fs::read_to_string(format!("/proc/sys/net/netfilter/{leaf}"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    Some(Duration::from_secs(secs))
-}
-
 fn check_capabilities() -> Result<(), PreflightError> {
     let is_root = unsafe { libc::geteuid() } == 0;
     if is_root {
@@ -239,22 +206,4 @@ mod tests {
         assert!(format!("{}", PreflightError::NoTimestamps).contains("nf_conntrack_timestamp"));
     }
 
-    /// У безымянного состояния базы нет: `tcp_timeout_base` отдаёт `None`, /proc не трогая.
-    #[test]
-    fn an_unnamed_state_has_no_base() {
-        assert_eq!(tcp_timeout_base(CtTcp::Other(9)), None);
-    }
-
-    /// База таймаута читается по состоянию: «сколько молчит» без неё не посчитать.
-    #[test]
-    fn timeout_base_is_named_per_state() {
-        assert_eq!(
-            sysctl_name(CtTcp::SynSent),
-            "nf_conntrack_tcp_timeout_syn_sent"
-        );
-        assert_eq!(
-            sysctl_name(CtTcp::Established),
-            "nf_conntrack_tcp_timeout_established"
-        );
-    }
 }
