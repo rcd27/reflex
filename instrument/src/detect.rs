@@ -1,4 +1,4 @@
-//! Четыре прибора провода: сброс, тишина, троттлинг, захлёбывание. Каждый — машина Мили `Mealy`:
+//! Пять приборов провода: сброс, тишина, троттлинг, захлёбывание, IP-blackhole. Каждый — машина Мили `Mealy`:
 //! состояние в подписи, часы буквой `DetectorEvent::Tick`, доменное знание надевается снаружи
 //! комбинаторами (`lmap`/`contextual`). Слово у всех — `Distress` (что видно, без слова о лечении),
 //! адресовано разговору. Отсутствие беды сигналом не является: прибор молчит.
@@ -1053,5 +1053,184 @@ mod rst_tests {
         );
 
         assert_eq!(said, Vec::<Distress>::new());
+    }
+}
+
+/// Детектор IP-blackhole. Читает `SeenTcp` (там `Syn`/`Handshaken`) — `Seen`-приборам это
+/// невыразимо: соединения ещё нет. `SYN` ушёл, `SYN+ACK` не пришёл, клиент повторяет `SYN` — блок по
+/// АДРЕСУ, до всякого имени. Отдельный прибор, отдельный пайп: через `SilentBlock` не выразить.
+/// Порог — RTO ядра клиента (повтор SYN), не наш тик. Подозрение, не приговор: перегруженный канал
+/// теряет `SYN` так же.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SynDropInstrument {
+    /// Первый `SYN`. `None` — стука не видели.
+    asked: Option<Instant>,
+    /// `SYN+ACK` пришёл — путь жив, подозрение снято навсегда.
+    handshaken: bool,
+    fired: bool,
+}
+
+impl SynDropInstrument {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl reflex_core::mealy::Mealy for SynDropInstrument {
+    /// Словарь соединения: стук и рукопожатие — улики TCP; в поток датаграмм прибор не собирается.
+    type In = reflex_core::DetectorEvent<SeenTcp>;
+    type Out = smallvec::SmallVec<[Distress; 2]>;
+    type Log = ();
+
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        let (state, signals) = match event {
+            reflex_core::DetectorEvent::Packet { input, at } => match input {
+                // Стук открывает отсчёт; повтор стука без рукопожатия — предмет.
+                SeenTcp::Syn => match (self.asked, self.handshaken || self.fired) {
+                    (None, _) => (
+                        Self {
+                            asked: Some(at),
+                            ..self
+                        },
+                        smallvec::SmallVec::new(),
+                    ),
+                    // Путь жив либо уже сообщали.
+                    (Some(_), true) => (self, smallvec::SmallVec::new()),
+                    // Повторил стук, а рукопожатия так и нет — IP-blackhole.
+                    (Some(asked), false) => (
+                        Self {
+                            fired: true,
+                            ..self
+                        },
+                        smallvec::smallvec![Distress::Blackhole {
+                            after_ms: at.saturating_duration_since(asked).as_millis() as u32,
+                        }],
+                    ),
+                },
+                // Цель ответила на стук — путь жив, подозрение снято.
+                SeenTcp::Handshaken => (
+                    Self {
+                        handshaken: true,
+                        ..self
+                    },
+                    smallvec::SmallVec::new(),
+                ),
+                // Сброс, окно, полезная нагрузка — не про достижимость адреса.
+                SeenTcp::Rst { .. } | SeenTcp::AskedToWait { .. } | SeenTcp::Anywhere(_) => {
+                    (self, smallvec::SmallVec::new())
+                }
+            },
+            // Порог даёт RTO клиентского ядра, не наш тик.
+            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
+                (self, smallvec::SmallVec::new())
+            }
+        };
+        (state, signals, ())
+    }
+}
+
+impl crate::Instrument for SynDropInstrument {
+    type Signal = Distress;
+
+    const INSTRUMENT: &'static str = "syn_drop";
+
+    /// О мире: адрес недостижим — свойство пути.
+    const SUBJECT: crate::Subject = crate::Subject::World;
+
+    /// Транспорт: стук и рукопожатие — флаги TCP.
+    const LAYER: crate::Layer = crate::Layer::Transport;
+
+    /// Только TCP: у датаграмм рукопожатия нет.
+    const PROTOCOLS: &'static [crate::Protocol] = &[crate::Protocol::Tcp];
+
+    /// Раньше ответа: прибор о том, состоялось ли рукопожатие вообще.
+    const RUNG: Option<crate::Rung> = None;
+
+    /// Чужой темп: порог — RTO ядра клиента. Свои часы сделали бы третью копию прибора тишины.
+    const CADENCE: crate::Cadence = crate::Cadence::Foreign;
+
+    /// Событие: повтор стука уже случился.
+    const SHAPE: crate::Shape = crate::Shape::Event;
+
+    /// Прибор смотрел: стук был, повтора без рукопожатия не случилось.
+    const SILENCE: Option<crate::Silence> = Some(crate::Silence::Nothing);
+
+    const LIES: &'static [&'static str] = &[
+        "НЕ РАЗЛИЧАЕТ БЛОКИРОВКУ ОТ ПОТЕРИ SYN В КАНАЛЕ. Перегруженный путь роняет `SYN` так же, и \
+         повтор при отсутствии `SYN+ACK` выйдет тем же словом. Показание — ПОДОЗРЕНИЕ: действие по \
+         нему обязано иметь своё предусловие.",
+        "СТУК, ПОДХВАЧЕННЫЙ С СЕРЕДИНЫ, ДАЁТ ЛОЖНУЮ ВЕЛИЧИНУ. Первый `SYN` мы могли не видеть \
+         (правило встало после), и `after_ms` тогда мерен от повтора, а не от начала — занижен.",
+    ];
+
+    const ORACLES: &'static [&'static str] = &["syn_drop(149.154.167.50)", "pass"];
+
+    const DEATH: &'static str =
+        "заведён различитель «блок по адресу против потери SYN в канале»; подозрение стало приговором";
+
+    const EVENTS: &'static [&'static str] = &["blackhole"];
+
+    fn name(signal: &Self::Signal) -> &'static str {
+        signal.name()
+    }
+
+    fn alarming(signal: &Self::Signal) -> bool {
+        signal.alarming()
+    }
+
+    fn detail(signal: &Self::Signal) -> String {
+        signal.detail()
+    }
+}
+
+#[cfg(test)]
+mod syn_drop_tests {
+    use super::*;
+    use reflex_core::mealy::Mealy;
+    use reflex_core::DetectorEvent;
+    use std::time::{Duration, Instant};
+
+    fn run(script: Vec<(Option<SeenTcp>, u64)>) -> Vec<Distress> {
+        let start = Instant::now();
+        script
+            .into_iter()
+            .fold(
+                (SynDropInstrument::new(), Vec::new()),
+                |(state, said), (seen, ms)| {
+                    let at = start + Duration::from_millis(ms);
+                    let event = match seen {
+                        Some(seen) => DetectorEvent::Packet { input: seen, at },
+                        None => DetectorEvent::Tick { node: ms, at },
+                    };
+                    let (stepped, signals, ()) = state.step(event);
+                    (stepped, said.into_iter().chain(signals).collect())
+                },
+            )
+            .1
+    }
+
+    /// Повтор стука без рукопожатия — IP-blackhole, и величина от первого стука.
+    #[test]
+    fn a_repeated_syn_without_handshake_is_a_blackhole() {
+        let said = run(vec![(Some(SeenTcp::Syn), 0), (Some(SeenTcp::Syn), 1_000)]);
+        assert_eq!(said, vec![Distress::Blackhole { after_ms: 1_000 }]);
+    }
+
+    /// Рукопожатие состоялось — путь жив, повтор потом беды не даёт.
+    #[test]
+    fn a_completed_handshake_clears_the_suspicion() {
+        let said = run(vec![
+            (Some(SeenTcp::Syn), 0),
+            (Some(SeenTcp::Handshaken), 30),
+            (Some(SeenTcp::Syn), 1_000),
+        ]);
+        assert!(said.is_empty(), "путь жив, а прибор объявил blackhole");
+    }
+
+    /// Один стук — ещё не беда: повтора не было.
+    #[test]
+    fn a_single_syn_is_not_yet_a_blackhole() {
+        let said = run(vec![(Some(SeenTcp::Syn), 0), (None, 5_000)]);
+        assert!(said.is_empty());
     }
 }

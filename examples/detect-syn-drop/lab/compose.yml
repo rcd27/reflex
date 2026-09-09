@@ -1,0 +1,12 @@
+# Стенд detect-syn-drop: боевая верификация IP-blackhole на реальном ТСПУ вантажа.
+# Отдельный пайп для отдельного феномена (SYN-дроп невыразим через SilentBlock).
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/detect-syn-drop/lab/engine/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TARGET: 149.154.167.50
+      CONTROL: vk.com

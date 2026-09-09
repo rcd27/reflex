@@ -17,6 +17,10 @@ pub enum Distress {
     /// различает их ЧЕЙ ПОРОГ сработал — `NoBytes` по нашему терпению, повтор по RTO клиентского
     /// ядра под фактический RTT. Слей — и замер «360 мс против 1500» станет ненаблюдаем.
     Retransmit { after_ms: u32 },
+    /// IP-blackhole: `SYN` ушёл, `SYN+ACK` не пришёл, клиент повторяет `SYN`. Соединение НЕ
+    /// состоялось вовсе — отдельная буква, не `NoBytes`/`Silence` (те про УЖЕ открытое соединение).
+    /// Блок по адресу, до всякого имени; `after_ms` — от первого `SYN` до повтора (RTO ядра).
+    Blackhole { after_ms: u32 },
 }
 
 impl Distress {
@@ -29,6 +33,7 @@ impl Distress {
             Distress::Throttled { .. } => "throttled",
             Distress::NoBytes => "no_bytes",
             Distress::Retransmit { .. } => "retransmit",
+            Distress::Blackhole { .. } => "blackhole",
         }
     }
 
@@ -47,6 +52,7 @@ impl Distress {
             Distress::Silence { ms } => format!("{ms} мс без байтов"),
             Distress::Throttled { bps } => format!("{} КБ/с", bps / 1024),
             Distress::Retransmit { after_ms } => format!("повтор через {after_ms} мс"),
+            Distress::Blackhole { after_ms } => format!("SYN без ответа через {after_ms} мс"),
             Distress::Rst | Distress::NoBytes => String::new(),
         }
     }
@@ -68,6 +74,7 @@ impl core::fmt::Display for Distress {
             Distress::Throttled { bps } => write!(f, "throttled bps={bps}"),
             Distress::NoBytes => f.write_str("no_bytes"),
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
+            Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
         }
     }
 }

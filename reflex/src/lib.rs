@@ -15,7 +15,7 @@
 //!             }
 //!             Distress::Silence { ms } => report!("подтверждено: {target} молчит {ms}мс"),
 //!             Distress::NoBytes => report!("подтверждено: {target} не ответил вовсе"),
-//!             Distress::Rst | Distress::Throttled { .. } => {}
+//!             Distress::Rst | Distress::Throttled { .. } | Distress::Blackhole { .. } => {}
 //!         })
 //!         .run()
 //! }
@@ -37,14 +37,15 @@ use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tls;
 use reflex_core::DetectorEvent;
+use reflex_core::Reads;
 use reflex_core::Serves;
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::{Addr, FlowKey};
 use reflex_engine_nfq::parse::{self, Read, SERVER_PORT};
 use reflex_engine_nfq::talk::Talks;
-use reflex_instrument::detect::SilenceInstrument;
+use reflex_instrument::detect::{SilenceInstrument, SynDropInstrument};
 use reflex_instrument::retransmit::RetransmitInstrument;
-use reflex_instrument::wire::{Reading, Seen};
+use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend};
 use smallvec::SmallVec;
 
@@ -135,6 +136,18 @@ impl Retransmit {
     }
 }
 
+/// Детектор IP-blackhole: `SYN` ушёл, `SYN+ACK` не пришёл, клиент повторяет `SYN` — блок по адресу,
+/// соединение не состоялось вовсе. Читает `SeenTcp` (не `Seen`): это ОТДЕЛЬНЫЙ пайп, через
+/// `Silence`/`Retransmit` его не выразить — там соединение уже открыто, здесь его нет.
+pub struct SynDrop;
+
+impl SynDrop {
+    /// Адрес недостижим: повтор стука без рукопожатия.
+    pub fn unreachable() -> SynDrop {
+        SynDrop
+    }
+}
+
 /// Настроенный прибор — то, что кладут в `.detect(…)`. Внутренний тип: наружу торчат `Silence`
 /// и `Retransmit`, а не он (скрыт из доков, потребитель его не называет).
 #[doc(hidden)]
@@ -142,20 +155,51 @@ impl Retransmit {
 pub enum Probe {
     Retransmit(RetransmitInstrument),
     Silence(SilenceInstrument),
+    SynDrop(SynDropInstrument),
+}
+
+/// Сузить широкое событие провода до алфавита прибора (канон §4, `Reads`). Пакет — по букве прибора
+/// (`None` — буква не его, шаг пропускается); тик и непонятое идут всем. Так разноалфавитные приборы
+/// (`Seen`-тишина и `SeenTcp`-blackhole) встают в одну дверь.
+fn narrow<N: Reads<Reading>>(event: &DetectorEvent<Reading>) -> Option<DetectorEvent<N>> {
+    match event {
+        DetectorEvent::Packet { input, at } => {
+            N::read(input).map(|input| DetectorEvent::Packet { input, at: *at })
+        }
+        DetectorEvent::Tick { node, at } => Some(DetectorEvent::Tick {
+            node: *node,
+            at: *at,
+        }),
+        DetectorEvent::Opaque { why, at } => Some(DetectorEvent::Opaque { why: *why, at: *at }),
+    }
 }
 
 impl Probe {
-    /// Один шаг прибора; лог отбрасываем — наружу идёт только слово беды.
-    fn step(self, event: DetectorEvent<Seen>) -> (Probe, SmallVec<[Distress; 2]>) {
+    /// Один шаг прибора над широким событием: прибор сам сужает его до своего алфавита. Лог
+    /// отбрасываем — наружу идёт только слово беды.
+    fn step(self, event: &DetectorEvent<Reading>) -> (Probe, SmallVec<[Distress; 2]>) {
         match self {
-            Probe::Retransmit(machine) => {
-                let (machine, signals, ()) = machine.step(event);
-                (Probe::Retransmit(machine), signals)
-            }
-            Probe::Silence(machine) => {
-                let (machine, signals, _log) = machine.step(event);
-                (Probe::Silence(machine), signals)
-            }
+            Probe::Retransmit(machine) => match narrow::<Seen>(event) {
+                Some(event) => {
+                    let (machine, signals, ()) = machine.step(event);
+                    (Probe::Retransmit(machine), signals)
+                }
+                None => (Probe::Retransmit(machine), SmallVec::new()),
+            },
+            Probe::Silence(machine) => match narrow::<Seen>(event) {
+                Some(event) => {
+                    let (machine, signals, _log) = machine.step(event);
+                    (Probe::Silence(machine), signals)
+                }
+                None => (Probe::Silence(machine), SmallVec::new()),
+            },
+            Probe::SynDrop(machine) => match narrow::<SeenTcp>(event) {
+                Some(event) => {
+                    let (machine, signals, ()) = machine.step(event);
+                    (Probe::SynDrop(machine), signals)
+                }
+                None => (Probe::SynDrop(machine), SmallVec::new()),
+            },
         }
     }
 }
@@ -186,6 +230,12 @@ impl IntoProbe for Retransmit {
     }
 }
 
+impl IntoProbe for SynDrop {
+    fn into_probe(self) -> Probe {
+        Probe::SynDrop(SynDropInstrument::new())
+    }
+}
+
 /// Приборы разговора, гоняемые ВМЕСТЕ над одним проводом. Композиция: пакет и тик фанаутятся в
 /// каждый, слова беды сливаются в один алфавит [`Distress`]. Это `alongside` парка, свёрнутый в
 /// список одинакового входа/выхода.
@@ -193,7 +243,7 @@ impl IntoProbe for Retransmit {
 struct Probes(Vec<Probe>);
 
 impl Mealy for Probes {
-    type In = DetectorEvent<Seen>;
+    type In = DetectorEvent<Reading>;
     type Out = SmallVec<[Distress; 2]>;
     type Log = ();
 
@@ -203,7 +253,7 @@ impl Mealy for Probes {
             .0
             .into_iter()
             .map(|probe| {
-                let (probe, signals) = probe.step(event.clone());
+                let (probe, signals) = probe.step(&event);
                 said.extend(signals);
                 probe
             })
@@ -338,13 +388,11 @@ impl<F: FnMut(&str, Distress)> Running<F> {
                         if let Some(sni) = tls::extract_sni(wire.payload) {
                             ident.naming = Naming::Spoken(sni.into());
                         }
-                        // Провод → буква приборов; TCP-специфичные улики (SYN/RST) сюда не идут —
-                        // `anywhere` их отсеивает.
-                        if let Some(seen) = talks
-                            .read(&wire)
-                            .and_then(|tcp| Reading::Tcp(tcp).anywhere())
-                        {
-                            let (signals, ()) = table.process(wire.flow, &seen, now);
+                        // Провод → ШИРОКИЙ словарь; каждый прибор сузит его до своего алфавита
+                        // (`Seen` — тишина/повтор, `SeenTcp` — blackhole). Кормим широким, не узким.
+                        if let Some(tcp) = talks.read(&wire) {
+                            let reading = Reading::Tcp(tcp);
+                            let (signals, ()) = table.process(wire.flow, &reading, now);
                             fire(react, idents, wire.flow, &signals);
                         }
                     }

@@ -34,7 +34,8 @@ fn main() -> Report {
             }
             Distress::Silence { ms } => report!("подтверждено: {target} молчит {ms}мс"),
             Distress::NoBytes => report!("подтверждено: {target} не ответил вовсе"),
-            Distress::Rst | Distress::Throttled { .. } => {}
+            // IP-blackhole — другой пайп (detect-syn-drop): здесь его приборы не стоят.
+            Distress::Rst | Distress::Throttled { .. } | Distress::Blackhole { .. } => {}
         })
         .run()
 }

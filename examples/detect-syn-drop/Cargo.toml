@@ -1,0 +1,13 @@
+[package]
+name = "detect-syn-drop"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: поймать IP-blackhole (SYN без ответа) на NFQUEUE — отдельный пайп"
+
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "detect-syn-drop"
+path = "src/main.rs"

@@ -117,6 +117,25 @@ impl reflex_core::Reads<SeenTcp> for Seen {
     }
 }
 
+/// Из широкого словаря провода в общий: TCP отдаёт своё содержимое, датаграмма — своё. Через это
+/// приборы на любом транспорте (тишина, темп) читают свой алфавит, не зная, откуда он пришёл.
+impl reflex_core::Reads<Reading> for Seen {
+    fn read(wide: &Reading) -> Option<Self> {
+        wide.anywhere()
+    }
+}
+
+/// Из широкого словаря провода в TCP: датаграмма TCP-букв не несёт. Так приборы соединения (сброс,
+/// IP-blackhole) читают `SeenTcp` из общего потока.
+impl reflex_core::Reads<Reading> for SeenTcp {
+    fn read(wide: &Reading) -> Option<Self> {
+        match wide {
+            Reading::Tcp(seen) => Some(seen.clone()),
+            Reading::Udp(_) => None,
+        }
+    }
+}
+
 /// У протокола есть свой словарь наблюдений — связка объекта стека (`reflex`) с алфавитом (здесь).
 /// Отдельным трейтом, не полем в `reflex_core::Protocol`: `reflex` о наблюдениях знать не должен.
 /// `type Seen` ассоциированным типом: наблюдение, СОСТАВ которого протоколом определён.
