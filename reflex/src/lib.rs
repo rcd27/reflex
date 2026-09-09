@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-use reflex_core::capability::CanHold;
+use reflex_core::capability::{CanAsk, CanHold};
 use reflex_core::colimit::Layer;
 use reflex_core::dns::DnsMessage;
 use reflex_core::effect::Effect;
@@ -566,11 +566,20 @@ impl<T: Transport> Detecting<T> {
 /// ```
 pub fn emit<T>(act: Act, seen: &[u8]) -> (T::Answer, SmallVec<[Effect; 2]>)
 where
-    T: CanHold + CanSever,
+    T: CanHold + CanSever + CanAsk,
 {
     match act {
         // Наблюдаем: пакет отпущен, мира не касаемся.
         Act::Observe => (T::release(), SmallVec::new()),
+        // Спрашиваем контур: пакет отпущен, вопрос уходит командой. Ответа здесь не ждём — он
+        // придёт буквой ленты и найдёт свою машину по токену (§1: шаг не ждёт).
+        Act::Ask { token } => (
+            T::release(),
+            T::question(token, seen)
+                .into_iter()
+                .map(Effect::Inject)
+                .collect(),
+        ),
         // Обрыв: пакет ВСЁ РАВНО отпущен — рвёт инъекция, а не дроп. Нечем оборвать (`None`) —
         // команды нет, но слово носителю есть: акт исполнен, сказать оказалось нечем.
         Act::Sever => (
@@ -590,6 +599,10 @@ pub enum Act {
     /// Оборвать: инжектить RST тому, кто прислал улику (клиенту при тихом дропе). Пакет всё равно
     /// пропускается — обрыв делает инъекция, а не дроп.
     Sever,
+    /// Спросить контур — обратный ход. Ответ придёт БУКВОЙ ленты, не возвратом вызова: шаг Мили не
+    /// ждёт (§1), ожидание живёт фазой машины. `token` — ключ, по которому ответ найдёт свою
+    /// машину: сам по себе ответ не говорит, чей он.
+    Ask { token: u64 },
 }
 
 /// Цепочка собрана — готова к запуску.
