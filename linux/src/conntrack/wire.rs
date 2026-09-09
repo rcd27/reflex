@@ -2,6 +2,8 @@
 //! TLV — единственное место, где эта дверь может соврать молча, а проверять его только на живом ядре
 //! значило бы проверять только там, где есть root.
 
+use std::time::Duration;
+
 use crate::netlink::{aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at};
 
 /// Сколько прошло в одну сторону по счёту ЯДРА.
@@ -32,6 +34,77 @@ pub struct Entry {
     pub mark: u32,
 }
 
+/// TCP-состояние разговора по мнению ЯДРА (из `CTA_PROTOINFO`). Свой автомат TCP не нужен — ядро
+/// уже держит этот счёт. `Other` заселяет неназванные коды (NONE, SYN_SENT2, …), а не роняет их.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtTcp {
+    SynSent,
+    SynRecv,
+    Established,
+    FinWait,
+    CloseWait,
+    LastAck,
+    TimeWait,
+    Close,
+    Other(u8),
+}
+
+impl CtTcp {
+    fn of_state(state: u8) -> CtTcp {
+        match state {
+            1 => CtTcp::SynSent,
+            2 => CtTcp::SynRecv,
+            3 => CtTcp::Established,
+            4 => CtTcp::FinWait,
+            5 => CtTcp::CloseWait,
+            6 => CtTcp::LastAck,
+            7 => CtTcp::TimeWait,
+            8 => CtTcp::Close,
+            other => CtTcp::Other(other),
+        }
+    }
+}
+
+/// Концы разговора из кортежа ядра. V4 ключуется; V6 РАЗБИРАЕТСЯ и НЕ ключуется (иначе все IPv6-
+/// потоки схлопнулись бы в один ключ по умолчанию — §7: незнание обитаемо, порча молчаливая нет);
+/// `Unknown` — семейства в кортеже нет вовсе. Будущей работе по IPv6 остаётся одно место — ковка ключа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CtEnds {
+    V4 {
+        src: u32,
+        dst: u32,
+        src_port: u16,
+        dst_port: u16,
+        proto: u8,
+    },
+    V6 {
+        src: [u8; 16],
+        dst: [u8; 16],
+        src_port: u16,
+        dst_port: u16,
+        proto: u8,
+    },
+    #[default]
+    Unknown,
+}
+
+/// Вид края разговора из тела `NFQA_CT` — то, что ядро считает за нас даром (§ спеки ct-края).
+/// Отсутствие атрибута — `None`/`Unknown`, не ноль: ядро без `acct` счётчиков не шлёт, и ноль был
+/// бы ложью, неотличимой от правды. Начало (`started_at`) кладётся АБСОЛЮТНЫМ, как прислало ядро:
+/// возраст считает прибор из `at` своей буквы, разбор часов не дёргает (§8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CtView {
+    pub id: u32,
+    pub ends: CtEnds,
+    pub tuple: Option<Tuple>,
+    pub down: Counts,
+    pub up: Counts,
+    pub started_at: Option<u64>,
+    pub expires_in: Option<Duration>,
+    pub tcp: Option<CtTcp>,
+    pub mark: u32,
+}
+
 pub const NLMSG_DONE: u16 = 3;
 pub const NLMSG_ERROR: u16 = 2;
 
@@ -54,6 +127,17 @@ const CTA_PROTO_DST_PORT: u16 = 3;
 
 const CTA_COUNTERS_PACKETS: u16 = 1;
 const CTA_COUNTERS_BYTES: u16 = 2;
+
+// Сверены с `nfnetlink_conntrack.h` (не по памяти: `NFQA_*` и `CTA_*` путаются, номера рядом).
+const CTA_ID: u16 = 12;
+const CTA_TIMEOUT: u16 = 7;
+const CTA_TIMESTAMP: u16 = 20;
+const CTA_TIMESTAMP_START: u16 = 1;
+const CTA_PROTOINFO: u16 = 4;
+const CTA_PROTOINFO_TCP: u16 = 1;
+const CTA_PROTOINFO_TCP_STATE: u16 = 1;
+const CTA_IP_V6_SRC: u16 = 3;
+const CTA_IP_V6_DST: u16 = 4;
 
 /// Чем кончился разбор одной порции дампа. `Done` — не «пусто», а «ядро сказало, что записей больше
 /// нет»: дамп приходит несколькими порциями, остановка по пустой порции читала бы обрыв как конец.
@@ -78,31 +162,60 @@ fn counted(body: &[u8]) -> Counts {
     })
 }
 
-fn addressed(body: &[u8], so_far: Tuple) -> Tuple {
-    attrs(body).fold(so_far, |built, (kind, value)| match kind {
-        CTA_IP_V4_SRC => Tuple {
-            src: be32_at(value, 0).unwrap_or(built.src),
+/// Части кортежа до решения о семействе: адреса обоих семейств копятся раздельно, выбор — в конце.
+/// Ронять V6 на лету значило бы терять разбор ради ключа, который его всё равно не примет.
+#[derive(Default)]
+struct EndsParts {
+    v4_src: Option<u32>,
+    v4_dst: Option<u32>,
+    v6_src: Option<[u8; 16]>,
+    v6_dst: Option<[u8; 16]>,
+    src_port: u16,
+    dst_port: u16,
+    proto: u8,
+}
+
+fn v16_at(bytes: &[u8], at: usize) -> Option<[u8; 16]> {
+    bytes.get(at..at + 16).map(|slice| {
+        let mut out = [0u8; 16];
+        out.copy_from_slice(slice);
+        out
+    })
+}
+
+fn addressed(body: &[u8], parts: EndsParts) -> EndsParts {
+    attrs(body).fold(parts, |built, (kind, value)| match kind {
+        CTA_IP_V4_SRC => EndsParts {
+            v4_src: be32_at(value, 0).or(built.v4_src),
             ..built
         },
-        CTA_IP_V4_DST => Tuple {
-            dst: be32_at(value, 0).unwrap_or(built.dst),
+        CTA_IP_V4_DST => EndsParts {
+            v4_dst: be32_at(value, 0).or(built.v4_dst),
+            ..built
+        },
+        CTA_IP_V6_SRC => EndsParts {
+            v6_src: v16_at(value, 0).or(built.v6_src),
+            ..built
+        },
+        CTA_IP_V6_DST => EndsParts {
+            v6_dst: v16_at(value, 0).or(built.v6_dst),
             ..built
         },
         _unknown_to_us => built,
     })
 }
 
-fn ported(body: &[u8], so_far: Tuple) -> Tuple {
-    attrs(body).fold(so_far, |built, (kind, value)| match kind {
-        CTA_PROTO_NUM => Tuple {
+fn ported(body: &[u8], parts: EndsParts) -> EndsParts {
+    attrs(body).fold(parts, |built, (kind, value)| match kind {
+        CTA_PROTO_NUM => EndsParts {
             proto: value.first().copied().unwrap_or(built.proto),
             ..built
         },
-        CTA_PROTO_SRC_PORT => Tuple {
+        CTA_PROTO_SRC_PORT => EndsParts {
             src_port: be16_at(value, 0).unwrap_or(built.src_port),
             ..built
         },
-        CTA_PROTO_DST_PORT => Tuple {
+        CTA_PROTO_DST_PORT => EndsParts {
             dst_port: be16_at(value, 0).unwrap_or(built.dst_port),
             ..built
         },
@@ -110,36 +223,119 @@ fn ported(body: &[u8], so_far: Tuple) -> Tuple {
     })
 }
 
-fn tupled(body: &[u8]) -> Tuple {
-    attrs(body).fold(Tuple::default(), |built, (kind, value)| match kind {
+/// Концы из тела `CTA_TUPLE_ORIG`. V4 предпочтён (его умеет ковка ключа); иначе V6 (разобран, не
+/// ключуется); иначе `Unknown`.
+fn ends_of(body: &[u8]) -> CtEnds {
+    let parts = attrs(body).fold(EndsParts::default(), |built, (kind, value)| match kind {
         CTA_TUPLE_IP => addressed(value, built),
         CTA_TUPLE_PROTO => ported(value, built),
+        _unknown_to_us => built,
+    });
+    match (parts.v4_src, parts.v4_dst, parts.v6_src, parts.v6_dst) {
+        (Some(src), Some(dst), _, _) => CtEnds::V4 {
+            src,
+            dst,
+            src_port: parts.src_port,
+            dst_port: parts.dst_port,
+            proto: parts.proto,
+        },
+        (_, _, Some(src), Some(dst)) => CtEnds::V6 {
+            src,
+            dst,
+            src_port: parts.src_port,
+            dst_port: parts.dst_port,
+            proto: parts.proto,
+        },
+        _no_family => CtEnds::Unknown,
+    }
+}
+
+/// Четвёрка для ковки ключа — только из V4: то, что `keyed` умеет (§7).
+fn tuple_of(ends: &CtEnds) -> Option<Tuple> {
+    match *ends {
+        CtEnds::V4 {
+            src,
+            dst,
+            src_port,
+            dst_port,
+            proto,
+        } => Some(Tuple {
+            src,
+            dst,
+            src_port,
+            dst_port,
+            proto,
+        }),
+        CtEnds::V6 { .. } | CtEnds::Unknown => None,
+    }
+}
+
+fn started_at_of(body: &[u8]) -> Option<u64> {
+    attrs(body)
+        .find(|(kind, _)| *kind == CTA_TIMESTAMP_START)
+        .and_then(|(_, value)| be64_at(value, 0))
+}
+
+fn tcp_of(body: &[u8]) -> Option<CtTcp> {
+    attrs(body)
+        .find(|(kind, _)| *kind == CTA_PROTOINFO_TCP)
+        .and_then(|(_, tcp)| attrs(tcp).find(|(kind, _)| *kind == CTA_PROTOINFO_TCP_STATE))
+        .and_then(|(_, state)| state.first().copied())
+        .map(CtTcp::of_state)
+}
+
+/// Вид края из тела `NFQA_CT` (только атрибуты `CTA_*`, без `nfgenmsg`). Один чеканщик: тот же
+/// `attrs`-обход, что и у записи дампа. Отсутствие атрибута — `None`/`Unknown`, не ноль.
+pub fn view_of(body: &[u8]) -> CtView {
+    attrs(body).fold(CtView::default(), |built, (kind, value)| match kind {
+        CTA_TUPLE_ORIG => {
+            let ends = ends_of(value);
+            CtView {
+                tuple: tuple_of(&ends),
+                ends,
+                ..built
+            }
+        }
+        CTA_COUNTERS_ORIG => CtView {
+            down: counted(value),
+            ..built
+        },
+        CTA_COUNTERS_REPLY => CtView {
+            up: counted(value),
+            ..built
+        },
+        CTA_MARK => CtView {
+            mark: be32_at(value, 0).unwrap_or(built.mark),
+            ..built
+        },
+        CTA_TIMEOUT => CtView {
+            expires_in: be32_at(value, 0).map(|secs| Duration::from_secs(secs as u64)),
+            ..built
+        },
+        CTA_TIMESTAMP => CtView {
+            started_at: started_at_of(value),
+            ..built
+        },
+        CTA_PROTOINFO => CtView {
+            tcp: tcp_of(value),
+            ..built
+        },
+        CTA_ID => CtView {
+            id: be32_at(value, 0).unwrap_or(built.id),
+            ..built
+        },
         _unknown_to_us => built,
     })
 }
 
-/// Тело одного сообщения `IPCTNL_MSG_CT_NEW` в запись.
+/// Тело одного сообщения `IPCTNL_MSG_CT_NEW` в запись. Через [`view_of`]: `Entry` — узкий срез вида
+/// (четвёрка V4, счёт, марка), а сам разбор один.
 pub fn entry_of(payload: &[u8]) -> Option<Entry> {
-    payload.get(NFGEN..).map(|body| {
-        attrs(body).fold(Entry::default(), |built, (kind, value)| match kind {
-            CTA_TUPLE_ORIG => Entry {
-                orig: tupled(value),
-                ..built
-            },
-            CTA_COUNTERS_ORIG => Entry {
-                orig_counts: counted(value),
-                ..built
-            },
-            CTA_COUNTERS_REPLY => Entry {
-                reply_counts: counted(value),
-                ..built
-            },
-            CTA_MARK => Entry {
-                mark: be32_at(value, 0).unwrap_or(built.mark),
-                ..built
-            },
-            _unknown_to_us => built,
-        })
+    payload.get(NFGEN..).map(view_of).map(|view| Entry {
+        orig: view.tuple.unwrap_or_default(),
+        orig_counts: view.down,
+        reply_counts: view.up,
+        mark: view.mark,
     })
 }
 
