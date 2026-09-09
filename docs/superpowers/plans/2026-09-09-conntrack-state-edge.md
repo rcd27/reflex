@@ -20,6 +20,7 @@
 - **Докблок = имя конструкции + закон + `§N` канона.** Проза-рассказ о боли не пишется; тесты-законы (`compile_fail`, property) остаются.
 - **Порог сноса.** Ни одна строка работающей детекции не удаляется раньше зелёного боевого гейта (Задача 9).
 - Прогон после каждой задачи: `cargo test --workspace`.
+- **Тест обязан уметь упасть.** Прежде чем считать задачу готовой, сломай проверяемое место нарочно и убедись, что тест краснеет. Тест, зелёный на сломанном коде, хуже отсутствующего: он выдаёт ложную уверенность и переживает рефакторинг, охраняя пустоту.
 
 ---
 
@@ -31,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: `keyed` (существующая, `engine-nfq/src/parse.rs:363`); `Tuple` из `conntrack::wire`.
-- Produces: `pub fn keyed_of_tuple(src: u32, src_port: u16, dst: u32, dst_port: u16) -> FlowKey` в том же модуле — обёртка НАД `keyed`, а не второе правило.
+- Produces: `pub fn keyed_of_orig(orig: Tuple) -> FlowKey` в том же модуле — обёртка НАД `keyed`, а не второе правило. Принимает кортеж ЦЕЛИКОМ и называет, какой именно: подать `CTA_TUPLE_REPLY` по ошибке можно, но имя об этом кричит, а тест ловит.
 
 **Осторожно: ключ несимметричен.** `keyed` различает клиента и сервера (`mixed(mixed(tuple) ^ server)`), а `CTA_TUPLE_ORIG` даёт четвёрку «как завели»: `src` — инициатор. Значит orig-кортеж кладётся как есть, а reply-кортеж обязан быть развёрнут перед ковкой. Тест на это — второй ниже.
 
@@ -48,7 +49,7 @@
 - [ ] **Step 1: Написать падающий тест**
 
 ```rust
-use reflex_engine_nfq::parse::{keyed, keyed_of_tuple};
+use reflex_engine_nfq::parse::{datagrammed, keyed, keyed_of_orig, wired};
 use reflex_linux::conntrack::Tuple;
 
 /// Ключ, выкованный из разобранного провода, и ключ из четвёрки ядра — один и тот же ключ.
@@ -60,15 +61,17 @@ fn kernel_tuple_and_wire_forge_the_same_key() {
     assert_eq!(keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port), wire_key);
 }
 
-/// Направление не теряется: ответный кортеж даёт ключ того же разговора, а не второго.
+/// Подмена ORIG на REPLY ловится, а не проходит молча: ключ несимметричен, и кортеж ответного
+/// направления даёт ДРУГОЙ ключ. Тест охраняет не арифметику, а то, что мы всегда куём из ORIG —
+/// единственного кортежа, который `NFQA_CT` даёт нормализованным.
 #[test]
-fn reply_direction_yields_the_same_conversation() {
-    let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
-    let reply = Tuple { src: tuple.dst, dst: tuple.src, src_port: tuple.dst_port, dst_port: tuple.src_port, proto: 6 };
-    // Разворот перед ковкой — обязанность зовущего: ключ несимметричен по построению.
-    assert_eq!(
-        keyed_of_tuple(reply.dst, reply.dst_port, reply.src, reply.src_port),
-        keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port)
+fn feeding_the_reply_tuple_changes_the_key() {
+    let orig = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
+    let reply = Tuple { src: orig.dst, dst: orig.src, src_port: orig.dst_port, dst_port: orig.src_port, proto: 6 };
+    assert_ne!(
+        keyed_of_orig(reply),
+        keyed_of_orig(orig),
+        "ключ несимметричен: перепутать направления — получить второй разговор"
     );
 }
 ```
@@ -82,33 +85,34 @@ fn both_sources_agree_while_both_exist() {
     let from_wire = wired(segment, true).flow;
     let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
     assert_eq!(
-        keyed_of_tuple(tuple.src, tuple.src_port, tuple.dst, tuple.dst_port),
+        keyed_of_orig(tuple),
         from_wire,
         "ORIG-инициатор и upward-клиент — одно лицо"
     );
 }
 
-/// Протокол в ключ не входит: QUIC и TCP к одной цели остаются одним разговором, как объявлено
-/// докблоком `datagrammed`.
+/// Протокол в ключ не входит — и проверяется это ТАМ, ГДЕ ПРОТОКОЛ ЕСТЬ: ключ TCP-сегмента и
+/// ключ UDP-датаграммы к одной цели совпадают, как объявляет докблок `datagrammed` («иначе знание
+/// о цели разъедется по транспортам»). Сравнивать два вызова ковки, которая протокол не
+/// принимает, — тавтология: такой тест зелен и на сломанной обёртке.
 #[test]
-fn protocol_does_not_enter_the_key() {
-    let tcp = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
-    let quic = Tuple { proto: 17, ..tcp };
-    assert_eq!(
-        keyed_of_tuple(tcp.src, tcp.src_port, tcp.dst, tcp.dst_port),
-        keyed_of_tuple(quic.src, quic.src_port, quic.dst, quic.dst_port)
-    );
+fn tcp_and_udp_to_one_target_share_the_conversation() {
+    let ends = (0x0A00_0001, 44321, 0x5DB8_D822, 443);
+    let over_tcp = wired(syn_from(ends.0, ends.1, ends.2, ends.3), true).flow;
+    let over_udp = datagrammed(payload_from(ends.0, ends.1, ends.2, ends.3), true).flow;
+    assert_eq!(over_tcp, over_udp, "один разговор, два транспорта");
+    assert_eq!(keyed_of_orig(Tuple { src: ends.0, dst: ends.2, src_port: ends.1, dst_port: ends.3, proto: 17 }), over_tcp);
 }
 ```
 
 - [ ] **Step 2: Прогнать — обязан упасть**
 
 Run: `cargo test -p reflex-engine-nfq --test flow_key_matches_tuple`
-Expected: FAIL — `keyed_of_tuple` не найден.
+Expected: FAIL — `keyed_of_orig` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-`keyed_of_tuple` зовёт `keyed` и ничего не считает сама. Правило «кто клиент» не дублируется: у `CTA_TUPLE_ORIG` инициатор — `src`, и это единственное знание, которое обёртка добавляет.
+`keyed_of_orig` зовёт `keyed` и ничего не считает сама. Правило «кто клиент» не дублируется: у `CTA_TUPLE_ORIG` инициатор — `src`, и это единственное знание, которое обёртка добавляет.
 
 - [ ] **Step 4: Прогнать**
 
