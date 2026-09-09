@@ -714,18 +714,34 @@ pub trait EdgeView {
     fn mark(&self) -> u32;                   // слово состояния, как его хранит край
 }
 impl Word for Memo { type Of = Conversation; }        // состояние принадлежит разговору
-pub struct Told(pub u32);                              // то же состояние, сказанное о пакете
+/// То же состояние, сказанное о пакете: НАШИ биты и маска, под которой они лежат.
+/// Не готовое слово ядра — его нельзя произвести из `Memo` в принципе: запись есть
+/// read-modify-write, и старое слово знает только край.
+pub struct Told { pub under: u32, pub mask: u32 }
 impl Word for Told { type Of = Packet; }
-impl Descends<Told> for Memo { fn descends(self) -> Told; }
+impl Descends<Told> for Memo { fn descends(self) -> Told; }   // Memo несёт свой Layout
 impl<V> Reads<(Reading, V)> for Seen { ... }           // прибор провода проецирует .0
 
+/// Сужение сквозь пару для приборов, которым нужны обе половины. Локальный тип — иначе
+/// орфан-правило (`E0117`): и трейт, и кортеж чужие.
+pub struct Edged<N, V> { pub narrow: N, pub edge: V }
+impl<N: Reads<Reading>, V: Clone> Reads<(Reading, V)> for Edged<N, V> { ... }
+
 // --- в reflex-linux: НОСИТЕЛЬ ---
-impl EdgeView for CtView { ... }                       // conntrack как один из краёв
+/// Вид ядра ПЛЮС то, что вид не несёт: база таймаута для состояния. `CtView` — что приехало с
+/// пакетом, база — конфигурация машины, прочитанная при старте. Носитель — их пара, потому что
+/// `idle = база − остаток` есть знание conntrack о себе.
+pub struct CtEdge { pub view: CtView, pub base: TimeoutBase }
+impl EdgeView for CtEdge { ... }
 ```
 
 **Почему трейт, а не `CtView` напрямую.** `reflex-instrument` знает ровно `reflex-core` и `smallvec` (проверено `cargo tree`); `impl Reads<(Reading, CtView)>` в нём заставил бы алфавит беды зависеть от `reflex-linux`, то есть привязал бы kernel-агностичные приборы к conntrack — против раздела «Закон и его носитель» спеки. Плюс орфан-правило: трейт и `Self` оба чужие, кортеж не fundamental, `E0117`.
 
-Отсюда: закон (`EdgeView`) живёт в `core`, носитель (`CtView`) реализует его в `linux`, приборы сужаются generic-ом по `V: EdgeView` и о conntrack не знают. Карта eBPF встанет тем же законом, другим `impl`.
+Отсюда: закон (`EdgeView`) живёт в `core`, носитель реализует его в `linux`, приборы сужаются generic-ом по `V: EdgeView` и о conntrack не знают. Карта eBPF встанет тем же законом, другим `impl`.
+
+**Спуск `Memo → Told` и почему `Told` — не готовая марка.** Запись состояния есть read-modify-write: новое слово = `(старое & !маска) | наши биты`, а старое слово знает только край, читающий его из `NFQA_CT`. Значит из слова разговора готовую марку произвести НЕЛЬЗЯ — `Descends` и не пытается. `Told` несёт наши биты и маску; край применяет их к прочитанному слову одной операцией.
+
+Чтобы упаковка не разошлась на две (`Layout::write` и `descends` — ровно шов «два закона об одном предмете»), кодек остаётся ОДИН: `Memo` носит свой `Layout` (он `Copy`), `descends` зовёт упаковку `Layout`, а `Layout::write(word, memo)` выражается через тот же `Told`: `(word & !told.mask) | told.under`. Одна упаковка, два входа.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -796,7 +812,7 @@ git commit -m "feat(instrument): слово края в области разг�
 pub struct EdgeSilence<V> { after: Duration, layout: Layout, base: TimeoutBase, edge: PhantomData<fn() -> V> }
 impl<V: EdgeView> EdgeSilence<V> { pub fn new(after: Duration, layout: Layout, base: TimeoutBase) -> EdgeSilence<V>; }
 impl<V: EdgeView> Mealy for EdgeSilence<V> {
-    type In = DetectorEvent<(Seen, V)>;   // край абстрактен: conntrack, eBPF-карта, чужая ОС
+    type In = DetectorEvent<Edged<Seen, V>>;   // край абстрактен: conntrack, eBPF-карта, чужая ОС
     type Out = SmallVec<[(Distress, Memo); 2]>;   // слово беды и слово края — обе Of = Conversation
     type Log = ();
 }
