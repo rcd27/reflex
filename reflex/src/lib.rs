@@ -40,8 +40,10 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
+use reflex_core::capability::CanHold;
 use reflex_core::colimit::Layer;
 use reflex_core::dns::DnsMessage;
+use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::word::{Conversation, Target};
 pub use reflex_core::mealy::Mealy;
@@ -546,6 +548,41 @@ impl<T: Transport> Detecting<T> {
     }
 }
 
+/// ОДИН ФУНКТОР: доменный акт → слово носителя и команды миру (§9.4, §12.4).
+///
+/// Прежде перевод жил тремя разборами в разных местах, а обрыв исполнялся императивно прямо в
+/// петле — фасад знал про сокет инъекции. Здесь перевод один и ЧИСТЫЙ: функтор отдаёт команду, а
+/// не шлёт её. Исполняет петля, и в переигровке не исполняет — тем лента и остаётся
+/// переигрываемой (§10). Сделай функтор эффектным — режим пришлось бы протаскивать внутрь него.
+///
+/// Допустимость акта проверяет ТИП: над носителем без способности функтор не соберётся, и это не
+/// проверка в рантайме, а отсутствие импликации.
+///
+/// ```compile_fail
+/// use reflex::{emit, Act};
+/// use reflex_linux::queue::QueueSocket;
+/// // `QueueSocket` — терминал, но обрывать не умеет: `CanSever` он не несёт.
+/// let _ = emit::<QueueSocket>(Act::Observe, &[]);
+/// ```
+pub fn emit<T>(act: Act, seen: &[u8]) -> (T::Answer, SmallVec<[Effect; 2]>)
+where
+    T: CanHold + CanSever,
+{
+    match act {
+        // Наблюдаем: пакет отпущен, мира не касаемся.
+        Act::Observe => (T::release(), SmallVec::new()),
+        // Обрыв: пакет ВСЁ РАВНО отпущен — рвёт инъекция, а не дроп. Нечем оборвать (`None`) —
+        // команды нет, но слово носителю есть: акт исполнен, сказать оказалось нечем.
+        Act::Sever => (
+            T::release(),
+            T::notice(seen, Toward::Sender)
+                .into_iter()
+                .map(Effect::Inject)
+                .collect(),
+        ),
+    }
+}
+
 /// Что движок делает с целью после срабатывания. Словарь эффектов; пополняется по мере use-case'ов.
 pub enum Act {
     /// Только смотреть — пакет идёт как шёл.
@@ -720,18 +757,15 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act> Acting<T, F> {
                         let (signals, ()) = table.process(observed.flow, &observed.wire, now);
                         let named = label(&observed.key);
                         for signal in &signals {
-                            match react(&named, signal.clone()) {
-                                Act::Observe => {}
-                                // Обрыв — тому, кто прислал улику (клиенту при тихом дропе). Байты
-                                // улики уже в руках (`held`), из них движок и строит RST.
-                                Act::Sever => {
-                                    if let Some(rst) =
-                                        NfqueueBackend::notice(held.seen(), Toward::Sender)
-                                    {
-                                        if let Err(why) = sender.send(&rst.serialize_ip()) {
-                                            eprintln!("[reflex] RST не ушёл: {why}");
-                                        }
-                                    }
+                            // Один функтор: акт даёт слово носителю и список команд миру. Петля
+                            // команды ИСПОЛНЯЕТ — в живом прогоне; переигровка их глушит, и потому
+                            // перевод акта остаётся чистым (§9.4, §10).
+                            let (_word, effects) =
+                                emit::<NfqueueBackend>(react(&named, signal.clone()), held.seen());
+                            for effect in &effects {
+                                let Effect::Inject(packet) = effect;
+                                if let Err(why) = sender.send(&packet.clone().serialize_ip()) {
+                                    eprintln!("[reflex] инъекция не ушла: {why}");
                                 }
                             }
                         }
