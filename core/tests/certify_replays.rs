@@ -7,7 +7,7 @@
 use reflex_core::certify::{replays, Replayed};
 use reflex_core::detector::DetectorEvent;
 use reflex_core::interleave::Interleave;
-use reflex_core::tape::{Mode, Tape, TapeLetter};
+use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use std::time::{Duration, Instant};
 
 const STEP: Duration = Duration::from_millis(100);
@@ -17,12 +17,18 @@ fn recorded(start: Instant) -> Tape<u8, u32, &'static str> {
     let mut tape = Tape::new();
     let seam = Interleave::started(start, STEP);
     let (seam, seen) = seam.saw(1u8, start + Duration::from_millis(50));
-    tape.record(seen.into_iter().map(TapeLetter::Event));
+    tape.record(seen.into_iter().map(|event| TapeLetter::Event {
+        to: To::One(1),
+        event,
+    }));
     let (seam, answered) =
         seam.answered::<u8, u32, &str>(7, "блок", start + Duration::from_millis(250));
     tape.record(answered);
     let (_seam, idled) = seam.idle::<u8>(start + Duration::from_millis(420));
-    tape.record(idled.into_iter().map(TapeLetter::Event));
+    tape.record(idled.into_iter().map(|event| TapeLetter::Event {
+        to: To::Each,
+        event,
+    }));
     tape
 }
 
@@ -39,7 +45,9 @@ fn чистая_машина_переигрывается() {
         letters
             .iter()
             .filter_map(|letter| match letter {
-                TapeLetter::Event(event) => Some(event.at().elapsed().as_nanos() / 1_000_000_000),
+                TapeLetter::Event { event, .. } => {
+                    Some(event.at().elapsed().as_nanos() / 1_000_000_000)
+                }
                 TapeLetter::Answer(_) => None,
             })
             .collect()

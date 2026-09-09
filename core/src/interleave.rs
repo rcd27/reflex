@@ -80,7 +80,11 @@ impl Interleave {
         let at = at.max(self.last);
         let events = self
             .nodes_up_to(at)
-            .map(crate::tape::TapeLetter::Event)
+            // Узел сетки адресован КАЖДОЙ живой машине: у времени ключа нет.
+            .map(|event| crate::tape::TapeLetter::Event {
+                to: crate::tape::To::Each,
+                event,
+            })
             .chain(core::iter::once(crate::tape::TapeLetter::Answer(
                 crate::tape::Answer { key, input, at },
             )))
