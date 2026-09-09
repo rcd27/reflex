@@ -4,6 +4,11 @@
 const ATTR_HDR: usize = 4;
 const NESTED: u16 = 0x8000;
 
+// Универсальные типы netlink-сообщений — общие для ctnetlink и очереди (дважды объявленные,
+// разошлись бы молча, потому здесь, к остальному netlink-словарю).
+pub(crate) const NLMSG_ERROR: u16 = 2;
+pub(crate) const NLMSG_DONE: u16 = 3;
+
 pub(crate) const fn aligned(len: usize) -> usize {
     (len + 3) & !3
 }

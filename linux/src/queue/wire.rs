@@ -7,7 +7,7 @@
 //! байт, и ядро молча не поняло бы сообщение.
 
 use crate::conntrack::{view_of, CtView};
-use crate::netlink::{aligned, attrs, be32_at, i32_at, nested, tlv, u16_at};
+use crate::netlink::{aligned, attrs, be32_at, i32_at, nested, tlv, u16_at, NLMSG_DONE, NLMSG_ERROR};
 
 // Сверены с `include/uapi/linux/netfilter/nfnetlink_queue.h` (не по памяти).
 const NFNL_SUBSYS_QUEUE: u16 = 3;
@@ -38,9 +38,6 @@ const NF_ACCEPT: u32 = 1;
 const CTA_MARK: u16 = 8;
 
 const NLM_F_REQUEST: u16 = 0x001;
-// Универсальные типы netlink-сообщений (не привязаны к подсистеме).
-const NLMSG_ERROR: u16 = 2;
-const NLMSG_DONE: u16 = 3;
 
 const NLMSG_HDR: usize = 16;
 const NFGEN: usize = 4;

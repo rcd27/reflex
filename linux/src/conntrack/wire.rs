@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use crate::netlink::{aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at};
+use crate::netlink::{
+    aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at, NLMSG_DONE, NLMSG_ERROR,
+};
 
 /// Сколько прошло в одну сторону по счёту ЯДРА.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,9 +106,6 @@ pub struct CtView {
     pub tcp: Option<CtTcp>,
     pub mark: u32,
 }
-
-pub const NLMSG_DONE: u16 = 3;
-pub const NLMSG_ERROR: u16 = 2;
 
 const HDR: usize = 16;
 const NFGEN: usize = 4;

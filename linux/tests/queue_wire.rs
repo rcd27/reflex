@@ -30,6 +30,24 @@ fn attrs_of(message: &[u8]) -> Vec<(u16, Vec<u8>)> {
     walk_attrs(&message[20..])
 }
 
+/// СЫРЫЕ типы атрибутов — без снятия бита вложенности: ровно то, что уходит ядру. `walk_attrs`
+/// маскирует бит для чтения СМЫСЛА; здесь нужен сам бит, потому что формат — и есть обещание ядру.
+fn raw_types(message: &[u8]) -> Vec<u16> {
+    let mut out = Vec::new();
+    let mut rest = &message[20..];
+    while rest.len() >= 4 {
+        let len = u16::from_ne_bytes([rest[0], rest[1]]) as usize;
+        let raw = u16::from_ne_bytes([rest[2], rest[3]]);
+        if len < 4 || len > rest.len() {
+            break;
+        }
+        out.push(raw);
+        let advance = ((len + 3) & !3).min(rest.len());
+        rest = &rest[advance..];
+    }
+    out
+}
+
 fn be32(value: &[u8]) -> Option<u32> {
     value
         .get(0..4)
@@ -129,6 +147,13 @@ fn verdict_carries_conntrack_mark() {
     // NFQA_CT = 11 (вложенный), внутри CTA_MARK = 8, be32.
     let ct = nested_attr(&built, 11).expect("NFQA_CT в вердикте");
     assert_eq!(be32_attr(&ct, 8), Some(0x0000_1234));
+    // Формат — обещание ядру: NFQA_CT обязан нести бит вложенности (сырой тип 0x800b, не 0x000b),
+    // иначе плоский атрибут ядро может отвергнуть молча. `nested_attr` этого не поймал бы: он снимает
+    // бит на чтении смысла.
+    assert!(
+        raw_types(&built).contains(&(11 | 0x8000)),
+        "NFQA_CT уходит ядру без бита вложенности"
+    );
 }
 
 /// Вердикт без смены состояния не несёт NFQA_CT вовсе: не трогать — не то же, что записать своё.
