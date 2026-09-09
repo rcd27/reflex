@@ -98,6 +98,17 @@ where
         self.said.keys()
     }
 
+    /// Момент самого свежего из слов цели. Возраст слова о цели берётся ОТСЮДА, а не из свёртки:
+    /// свёртка — потребителя, она видит слова и не видит моментов, и требовать от неё вернуть время
+    /// значило бы просить описание угрозы говорить о часах (§8). `None` — слов нет.
+    pub fn freshest(&self, wide: &Wide::Fibre) -> Option<Instant> {
+        self.said
+            .get(wide)?
+            .values()
+            .map(|(_said, at)| *at)
+            .max()
+    }
+
     /// Забыть один разговор — его слово больше не участвует в сведении.
     pub fn forget(&mut self, wide: &Wide::Fibre, narrow: &Narrow::Fibre) {
         if let Some(slice) = self.said.get_mut(wide) {

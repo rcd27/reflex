@@ -133,3 +133,35 @@ fn слои_разных_целей_не_смешиваются() {
     assert_eq!(layer.join(&target(), |w| Some(w.len())), Some(1));
     assert_eq!(layer.join(&other, |w| Some(w.len())), Some(1));
 }
+
+/// Возраст слова о цели считается по САМОМУ СВЕЖЕМУ из сведённых наблюдений, а не по первому и не
+/// по случайному. Возьми старейшее — и цель, только что заговорившая одним из двадцати потоков,
+/// выглядела бы молчащей минуту; порядок хранения при этом не наш, значит «какое попало» тоже
+/// негодно.
+#[test]
+fn возраст_цели_по_самому_свежему_слову() {
+    let t0 = Instant::now();
+    let mut layer: Layer<Conversation, Target, u8> = Layer::new();
+    layer.saw(target(), flow(1), 1, t0);
+    layer.saw(target(), flow(2), 2, t0 + Duration::from_secs(5));
+    layer.saw(target(), flow(3), 3, t0 + Duration::from_secs(2));
+
+    assert_eq!(
+        layer.freshest(&target()),
+        Some(t0 + Duration::from_secs(5)),
+        "свежайшее из трёх, а не первое и не последнее положенное"
+    );
+}
+
+/// Цели без слов возраста нет: «сказать нечего» — не «сказано давно». Верни здесь ноль или `now` —
+/// и потребитель принял бы пустоту за свежее наблюдение.
+#[test]
+fn у_цели_без_слов_возраста_нет() {
+    let t0 = Instant::now();
+    let mut layer: Layer<Conversation, Target, u8> = Layer::new();
+    layer.saw(target(), flow(1), 1, t0);
+    layer.forget(&target(), &flow(1));
+
+    assert_eq!(layer.freshest(&target()), None, "пустой слой возраста не имеет");
+    assert_eq!(layer.freshest(&TargetKey::Unnamed(Addr(1))), None, "незнакомая цель — тем более");
+}

@@ -32,6 +32,10 @@
 //! * терминал — НАБЛЮДАТЬ (`.on`) или ДЕЙСТВОВАТЬ (`.act`, реакция возвращает [`Act`]: `Sever`
 //!   инжектит RST — тихий дроп обрывается за ~300мс вместо вечной крутилки).
 //!
+//! Поперёк этих осей стоит ОБЛАСТЬ, о которой сказано. `.on` слышит слова РАЗГОВОРОВ; чтобы
+//! услышать слово о ЦЕЛИ, ставится пара `.about(свёртка).on_target(реакция)` — копредел по слою
+//! (§4: `Target ≅ ∐ Conversation`). Пара держится типом: свернул — обязан сказать.
+//!
 //! Склейку сигналов в вывод пишет потребитель — фреймворк описывает МИР, лечение живёт у него.
 //!
 //! [`run`]: Running::run
@@ -65,7 +69,7 @@ use reflex_linux::rawsend::RawSender;
 pub use smallvec::{smallvec, SmallVec};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
-pub use reflex_instrument::distress::Distress;
+pub use reflex_instrument::distress::{Distress, Voiced};
 
 /// Секунды — единица человека. Чтобы `secs(5)` читалось, а не `Duration::from_secs(5)`.
 pub fn secs(n: u64) -> Duration {
@@ -492,12 +496,16 @@ impl<T: Transport> Keyed<T> {
 /// Свёртка видит МНОЖЕСТВО последних слов: порядок ей не показан, кратность сняло хранилище.
 pub type Fold = Box<dyn Fn(&[&Distress]) -> Option<Distress> + Send>;
 
+/// Реакция на слово о ЦЕЛИ. Отдельна от реакции на слово о разговоре: области разные, и §5 держит
+/// их раздельно типом.
+pub type TargetVoice = Box<dyn FnMut(&str, Voiced) + Send>;
+
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
 pub struct Detecting<T: Transport> {
     queue: u16,
     probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
-    about: Option<Fold>,
+    about: Option<(Fold, TargetVoice)>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -515,9 +523,18 @@ impl<T: Transport> Detecting<T> {
     ///
     /// Без этого оператора движок говорит только о разговорах: двадцать потоков к молчащей цели
     /// дают двадцать слов, а не одно.
-    pub fn about(mut self, fold: impl Fn(&[&Distress]) -> Option<Distress> + Send + 'static) -> Self {
-        self.about = Some(Box::new(fold));
-        self
+    ///
+    /// Реакцию на слово о цели требует ТИП: `about` отдаёт [`Folding`], у которого нет `.on` —
+    /// цепочка не соберётся, пока не сказано `.on_target`. Иначе потребитель построил бы копредел и
+    /// молча уронил его выход: свёл и выбросил.
+    pub fn about(
+        self,
+        fold: impl Fn(&[&Distress]) -> Option<Distress> + Send + 'static,
+    ) -> Folding<T> {
+        Folding {
+            detecting: self,
+            fold: Box::new(fold),
+        }
     }
 
     /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
@@ -592,6 +609,79 @@ where
     }
 }
 
+/// Свести слой в слова о ЦЕЛЯХ. Отдельная функция, а не тело петли: копредел живёт на обоих
+/// терминалах (`.on` и `.act`), а один предмет описывается одним законом.
+///
+/// Затихшие разговоры снимаются ПРЕЖДЕ сведения — иначе цель говорила бы голосом разговоров,
+/// которых уже нет. Возраст берётся у слоя ([`Layer::freshest`]), а не у свёртки: свёртка видит
+/// слова и не видит часов.
+fn voiced(
+    layer: &mut Layer<Conversation, Target, Distress>,
+    fold: &Fold,
+    idle: Duration,
+    now: Instant,
+) -> Vec<(String, Voiced)> {
+    layer.forget_idle(idle, now);
+    layer
+        .targets()
+        .filter_map(|key| {
+            let distress = layer.join(key, |words| fold(words))?;
+            // Слово есть — значит есть и слова разговоров, значит есть и момент: `freshest` тут
+            // непуст по построению, но догадка не улика, и пустой возраст роняет слово, а не врёт.
+            let since = now.saturating_duration_since(layer.freshest(key)?);
+            Some((label(key), Voiced { distress, since }))
+        })
+        .collect()
+}
+
+/// Копредел объявлен, реакция на его слово — ещё нет. Тип-состояние: `.on` здесь не живёт, и
+/// цепочка не соберётся, пока не сказано [`Folding::on_target`].
+///
+/// Так пара «свести → сказать о цели» держится ТИПОМ. Без неё потребитель построил бы слой,
+/// свёртку и копредел — и выбросил бы результат, не заметив: свёл и уронил.
+pub struct Folding<T: Transport> {
+    detecting: Detecting<T>,
+    fold: Fold,
+}
+
+impl<T: Transport> Folding<T> {
+    /// Что делать со словом о ЦЕЛИ. Дверь отдельная от [`Detecting::on`], потому что область другая:
+    /// беда разговора и беда цели — слова разных слоёв, и §5 не складывает их законом пары. Спустить
+    /// слово о цели к разговору тоже нельзя — это отменило бы только что сделанную агрегацию.
+    pub fn on_target<G: FnMut(&str, Voiced) + Send + 'static>(self, react: G) -> Speaking<T> {
+        Speaking {
+            detecting: Detecting {
+                about: Some((self.fold, Box::new(react) as TargetVoice)),
+                ..self.detecting
+            },
+        }
+    }
+}
+
+/// Пара «свести → сказать о цели» замкнута: цепочка снова копит приборы и ждёт терминала.
+///
+/// Терминал здесь только НАБЛЮДАТЬ. `.act` у копредела нет, и это не забывчивость: слово о цели
+/// рождается тиком, а тик носителя не имеет — рвать по нему нечем (см. [`Acting::run`]). Пусти
+/// копредел в `.act` — свёртка «молчат все» не сказала бы ни слова, потому что слова тишины до слоя
+/// в том цикле не доходят. Отказ компилятора честнее молчащей цепочки.
+pub struct Speaking<T: Transport> {
+    detecting: Detecting<T>,
+}
+
+impl<T: Transport> Speaking<T> {
+    /// Ещё прибор поверх — как в [`Detecting::detect`]: копредел не закрывает набор приборов.
+    pub fn detect(self, detector: impl IntoProbe<T::Wire>) -> Speaking<T> {
+        Speaking {
+            detecting: self.detecting.detect(detector),
+        }
+    }
+
+    /// НАБЛЮДАТЬ слова о РАЗГОВОРАХ — вторая дверь пары. Слова о цели уже адресованы `.on_target`.
+    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
+        self.detecting.on(react)
+    }
+}
+
 /// Что движок делает с целью после срабатывания. Словарь эффектов; пополняется по мере use-case'ов.
 pub enum Act {
     /// Только смотреть — пакет идёт как шёл.
@@ -610,7 +700,7 @@ pub struct Running<T: Transport, F> {
     queue: u16,
     probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
-    about: Option<Fold>,
+    about: Option<(Fold, TargetVoice)>,
     react: F,
     transport: PhantomData<fn() -> T>,
 }
@@ -697,20 +787,9 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 // Слово О ЦЕЛИ рождается здесь: слова её разговоров сводятся свёрткой потребителя.
                 // Затихшие разговоры уходят прежде сведения — иначе цель говорила бы голосом
                 // разговоров, которых уже нет.
-                if let Some(fold) = &self.about {
-                    layer.forget_idle(idle, now);
-                    let voices: Vec<(String, Distress)> = layer
-                        .targets()
-                        .filter_map(|key| {
-                            let said = layer.join(key, |words| fold(words))?;
-                            match key {
-                                TargetKey::Named(name) => Some((name.to_string(), said)),
-                                TargetKey::Unnamed(addr) => Some((addr.to_string(), said)),
-                            }
-                        })
-                        .collect();
-                    for (target, said) in voices {
-                        (self.react)(&target, said);
+                if let Some((fold, voice)) = &mut self.about {
+                    for (target, said) in voiced(&mut layer, fold, idle, now) {
+                        voice(&target, said);
                     }
                 }
                 // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
@@ -882,6 +961,78 @@ mod tests {
             label(&nameless.key()),
             label(&crafted.key()),
             "человеку они выглядят одинаково — тем важнее, что ключ их различает"
+        );
+    }
+
+    fn flow(n: u32) -> Flow {
+        Flow {
+            src: std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(0x0A00_0000 | n)),
+                40000 + n as u16,
+            ),
+            dst: std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(0x5DB8_D822)),
+                443,
+            ),
+            protocol: reflex_core::types::Protocol::Tcp,
+        }
+    }
+
+    fn всегда(_words: &[&Distress]) -> Option<Distress> {
+        Some(Distress::NoBytes)
+    }
+
+    /// Слово о цели несёт возраст САМОГО СВЕЖЕГО наблюдения, а не старейшего: цель, только что
+    /// заговорившая одним из двух потоков, не должна выглядеть молчащей полминуты. Без возраста
+    /// потребителю нечем отличить новость от того же молчания, о котором уже сказано.
+    #[test]
+    fn слово_о_цели_несёт_возраст_свежайшего_наблюдения() {
+        let t0 = Instant::now();
+        let key = TargetKey::Named("rutracker.org".into());
+        let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
+        layer.saw(key.clone(), flow(1), Distress::NoBytes, t0);
+        layer.saw(key, flow(2), Distress::NoBytes, t0 + Duration::from_secs(20));
+
+        let fold: Fold = Box::new(всегда);
+        let said = voiced(
+            &mut layer,
+            &fold,
+            Duration::from_secs(60),
+            t0 + Duration::from_secs(30),
+        );
+        assert_eq!(said.len(), 1, "одна цель — одно слово");
+        assert_eq!(said[0].0, "rutracker.org");
+        assert_eq!(
+            said[0].1,
+            Voiced {
+                distress: Distress::NoBytes,
+                since: Duration::from_secs(10),
+            },
+            "возраст от свежайшего (20с), а не от первого (0с)"
+        );
+    }
+
+    /// Затихшие разговоры уходят ПРЕЖДЕ сведения: цель не говорит голосом разговоров, которых уже
+    /// нет. Свёртка здесь согласна на что угодно — значит молчание может прийти только оттого, что
+    /// сводить стало нечего.
+    #[test]
+    fn затихшая_цель_не_говорит() {
+        let t0 = Instant::now();
+        let key = TargetKey::Named("rutracker.org".into());
+        let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
+        layer.saw(key, flow(1), Distress::NoBytes, t0);
+
+        let fold: Fold = Box::new(всегда);
+        assert!(
+            voiced(&mut layer, &fold, Duration::from_secs(5), t0 + Duration::from_secs(2))
+                .len()
+                == 1,
+            "разговор жив — цель говорит"
+        );
+        assert!(
+            voiced(&mut layer, &fold, Duration::from_secs(5), t0 + Duration::from_secs(9))
+                .is_empty(),
+            "разговор затих — сводить нечего, и слово о цели не рождается"
         );
     }
 }
