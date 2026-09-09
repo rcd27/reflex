@@ -254,7 +254,7 @@ pub struct CtView {
     pub tuple: Option<Tuple>,          // Some только для V4: то, что умеет ковка ключа
     pub down: Counts,      // от клиента к цели (orig)
     pub up: Counts,        // от цели к клиенту (reply)
-    pub started_ago: Option<Duration>,   // из CTA_TIMESTAMP
+    pub started_at: Option<u64>,       // CTA_TIMESTAMP_START как есть: наносекунды реального времени
     pub expires_in: Option<Duration>,    // из CTA_TIMEOUT
     pub tcp: Option<CtTcp>,              // из CTA_PROTOINFO
     pub mark: u32,
@@ -303,8 +303,19 @@ fn view_reads_counters_and_mark() {
 fn missing_attributes_are_unknown_not_zero() {
     let view = view_of(&[]);
     assert_eq!(view.expires_in, None);
-    assert_eq!(view.started_ago, None);
+    assert_eq!(view.started_at, None);
     assert!(view.tcp.is_none());
+}
+
+/// Начало потока отдаётся АБСОЛЮТНЫМ, как его прислало ядро, а не «сколько назад». Возраст —
+/// разность с моментом наблюдения, а момент приносит буква события (§8): разбор, дёрнувший часы
+/// сам, сделал бы вид края недетерминированным и непереигрываемым.
+#[test]
+fn the_start_is_absolute_the_age_is_not_computed_here() {
+    let stamp = 1_757_000_000_000_000_000u64;
+    // CTA_TIMESTAMP = 20 (вложенный), внутри CTA_TIMESTAMP_START = 1, be64 наносекунд.
+    let view = view_of(&nested_raw(20, &tlv_be64(1, stamp)));
+    assert_eq!(view.started_at, Some(stamp), "как прислало ядро, без арифметики");
 }
 
 /// IPv6 РАЗБИРАЕТСЯ, но ключом не становится. Отдай разбор на IPv6-потоке четвёрку по умолчанию
@@ -339,7 +350,7 @@ Expected: FAIL — `view_of` не найден.
 
 - [ ] **Step 3: Реализовать**
 
-`addressed` учится читать `CTA_IP_V6_SRC` (3) и `CTA_IP_V6_DST` (4) наравне с `CTA_IP_V4_*` и отдаёт `CtEnds`; `tuple` выводится из `CtEnds::V4` и только из неё. `view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` = 7 (be32, секунды), `CTA_TIMESTAMP` = 20 (вложенный, `CTA_TIMESTAMP_START` = 1, be64 наносекунд), `CTA_PROTOINFO` = 4 → `CTA_PROTOINFO_TCP` = 1 → `CTA_PROTOINFO_TCP_STATE` = 1 (u8), `CTA_ID` = 12. Все сверены с `nfnetlink_conntrack.h`; `CTA_IP_V6_SRC` = 3, `CTA_IP_V6_DST` = 4.
+`addressed` учится читать `CTA_IP_V6_SRC` (3) и `CTA_IP_V6_DST` (4) наравне с `CTA_IP_V4_*` и отдаёт `CtEnds`; `tuple` выводится из `CtEnds::V4` и только из неё. `view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` = 7 (be32, секунды), `CTA_TIMESTAMP` = 20 (вложенный, `CTA_TIMESTAMP_START` = 1, be64 наносекунд **реального времени от эпохи** — кладётся в вид как есть, без пересчёта в «сколько назад»: часов разбор не дёргает), `CTA_PROTOINFO` = 4 → `CTA_PROTOINFO_TCP` = 1 → `CTA_PROTOINFO_TCP_STATE` = 1 (u8), `CTA_ID` = 12. Все сверены с `nfnetlink_conntrack.h`; `CTA_IP_V6_SRC` = 3, `CTA_IP_V6_DST` = 4.
 
 **Отсутствие — `None`, не ноль.** Ядро без `nf_conntrack_acct` счётчиков не шлёт; ноль пакетов неотличим от «не считали».
 
