@@ -365,6 +365,14 @@ pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> Fl
     FlowKey(mixed(mixed(tuple) ^ (server as u64)))
 }
 
+/// Ключ из четвёрки ядра (`CTA_TUPLE_ORIG`). У неё инициатор — `src`, поэтому это ТА ЖЕ [`keyed`],
+/// что и у провода: обёртка добавляет ровно одно знание — «src ORIG'а есть клиент» — и не считает
+/// ничего. Своя арифметика была бы вторым правилом ковки, и два ключа одного разговора разошлись бы
+/// молча (ключ несимметричен: reply-кортеж зовущий обязан развернуть до вызова).
+pub fn keyed_of_tuple(src: u32, src_port: u16, dst: u32, dst_port: u16) -> FlowKey {
+    keyed(src, src_port, dst, dst_port)
+}
+
 fn mixed(word: u64) -> u64 {
     let spread = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     let folded = (spread ^ (spread >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
