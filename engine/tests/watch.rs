@@ -173,7 +173,7 @@ fn sbroshennyy_razgovor_ne_vypuskaetsya_dazhe_pri_izvestnom_imeni() {
 /// установленной личностью и принятым решением.
 ///
 /// Без неё беда, наступившая ПОСЛЕ лечения, не видна никому: разговор ушёл в ядро и байтов больше
-/// не даёт. `model/molecule/WatchedInstrument.tla`, клетка `asis` — красная.
+/// не даёт: наблюдение о незнакомой цели видно только до решения о выпуске.
 #[test]
 fn tsel_pod_nablyudeniem_ne_vypuskaetsya() {
     let watched_plan = plan_of(Programme::Mark(Mark(LEG)), Interest::Watching);

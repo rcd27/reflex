@@ -211,7 +211,7 @@ fn hash_5tuple(src_ip: u32, dst_ip: u32, src_port: u16, dst_port: u16, protocol:
 }
 
 // ── reflex_steer (TC INGRESS): прозрачный заворот целевого флоу в локальную несущую ──
-// Проекция `model/wire/TransparentIntercept` — механизм `Owned`. Для целевого dst (∈ STEER_TARGETS):
+// Механизм `Owned`. Для целевого dst (∈ STEER_TARGETS):
 // sk_lookup established→listener на transparent-listener несущей (STEER_CFG), sk_assign на skb,
 // sk_release. Нет сокета → TC_ACT_OK (fail-open, кадр на транзите — NoBlackHole держится).
 // Слушатель — IP_TRANSPARENT (BL-214). Обратный путь (box без IP на мосту) — `ip rule`/`ip route
@@ -391,7 +391,7 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
     Ok(TC_ACT_OK)
 }
 
-// ── UDP-ветка reflex_steer (BL-234, проекция `model/molecule/UdpSteerClassify.tobe`, TLC GREEN) ──
+// ── UDP-ветка reflex_steer ──
 // У UDP нет SNI, цель звонка (рефлектор) эфемерна и вне STEER_TARGETS → классификация по КЛАССУ ПОРТА,
 // НЕ по цели: гейт `dport ∉ {53,443}` (DNS остаётся direct — резолв/гео; QUIC/443 — десинк-нога BL-171).
 // Round-trip (доставка/возврат) и анти-петля порт-метки прото-агностичны (`SteerDatapath`/`SelfLoop`) —
