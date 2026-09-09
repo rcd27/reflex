@@ -41,12 +41,14 @@ echo "─── лог движка ──────────────�
 cat "$LOG"
 echo "──────────────────────────────────────────"
 
-# 6. Вердикт: цель поймана по имени, контроль молчит.
-GOT_TARGET=0;  grep -q "тихий дроп: $TARGET"  "$LOG" && GOT_TARGET=1
-GOT_CONTROL=0; grep -q "$CONTROL"             "$LOG" && GOT_CONTROL=1
-echo "[итог] target=$GOT_TARGET (ждём 1)  control=$GOT_CONTROL (ждём 0)"
-if [ "$GOT_TARGET" = 1 ] && [ "$GOT_CONTROL" = 0 ]; then
-  echo "[итог] ЗЕЛЕНО: тихий дроп «$TARGET» пойман на боевом трафике; «$CONTROL» чист"
+# 6. Вердикт: цель поймана ОБОИМИ приборами (подозрение по повтору + подтверждение тишиной),
+#    контроль молчит.
+SUSPECT=0; grep -q "подозрение на тихий дроп: $TARGET" "$LOG" && SUSPECT=1
+CONFIRM=0; grep -q "подтверждено: $TARGET"             "$LOG" && CONFIRM=1
+CONTROL_HIT=0; grep -q "$CONTROL"                      "$LOG" && CONTROL_HIT=1
+echo "[итог] подозрение=$SUSPECT (ждём 1)  подтверждение=$CONFIRM (ждём 1)  контроль=$CONTROL_HIT (ждём 0)"
+if [ "$SUSPECT" = 1 ] && [ "$CONFIRM" = 1 ] && [ "$CONTROL_HIT" = 0 ]; then
+  echo "[итог] ЗЕЛЕНО: «$TARGET» пойман обоими приборами на боевом трафике; «$CONTROL» чист"
   exit 0
 fi
 echo "[итог] КРАСНО"

@@ -7,16 +7,25 @@
 //!     engine(Nfqueue::queue(200))
 //!         .from(Tcp)
 //!         .extract(Sni)
-//!         .detect(Silence::after(secs(5)))
-//!         .on(|target, silence| report!("тихий дроп: {target} молчит {}мс", silence.ms))
+//!         .detect(Retransmit::unanswered()) // быстрое подозрение — по повтору клиента
+//!         .detect(Silence::after(secs(5)))  // медленное подтверждение — по окну тишины
+//!         .on(|target, distress| match distress {
+//!             Distress::Retransmit { after_ms } => {
+//!                 report!("подозрение на тихий дроп: {target} (повтор через {after_ms}мс)")
+//!             }
+//!             Distress::Silence { ms } => report!("подтверждено: {target} молчит {ms}мс"),
+//!             Distress::NoBytes => report!("подтверждено: {target} не ответил вовсе"),
+//!             Distress::Rst | Distress::Throttled { .. } => {}
+//!         })
 //!         .run()
 //! }
 //! ```
 //!
 //! Ни `Plane`, ни `Interleave`, ни `DetectorEvent`, ни `parse` наружу не торчат: цепочка
-//! разворачивается в алгебру движка (`разбор провода → детектор на ключ → реакция`) внутри [`run`].
-//! Это фасад одной итерации example-driven разработки: наружу выведено ровно то, что нужно
-//! use-case'у `detect-silent-drop`; поверхность растёт от следующих примеров, а не от догадок.
+//! разворачивается в алгебру движка (`разбор провода → приборы на ключ → реакция`) внутри [`run`].
+//! Приборы КОМПОНУЮТСЯ: `.detect(A).detect(B)` гоняет оба над одним проводом, реакция получает их
+//! общий алфавит [`Distress`]. Склейку сигналов в вывод (подозрение → подтверждение) пишет
+//! потребитель — фреймворк описывает МИР, лечение живёт у него.
 //!
 //! [`run`]: Running::run
 
@@ -24,16 +33,22 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use reflex_core::flow_table::FlowTable;
+use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tls;
+use reflex_core::DetectorEvent;
 use reflex_core::Serves;
 use reflex_engine::FlowKey;
 use reflex_engine_nfq::parse::{self, Read, SERVER_PORT};
 use reflex_engine_nfq::talk::Talks;
-use reflex_instrument::detect::{Measured, SilenceInstrument};
-use reflex_instrument::distress::Distress;
-use reflex_instrument::wire::Reading;
+use reflex_instrument::detect::SilenceInstrument;
+use reflex_instrument::retransmit::RetransmitInstrument;
+use reflex_instrument::wire::{Reading, Seen};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend};
+use smallvec::SmallVec;
+
+/// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
+pub use reflex_instrument::distress::Distress;
 
 /// Секунды — единица человека. Чтобы `secs(5)` читалось, а не `Duration::from_secs(5)`.
 pub fn secs(n: u64) -> Duration {
@@ -74,7 +89,7 @@ pub struct Tcp;
 /// Чем ключуется разговор. Пока — именем цели из `ClientHello`.
 pub struct Sni;
 
-/// Детектор тихого дропа: цель молчит дольше окна `after`.
+/// Детектор тихого дропа по окну ТИШИНЫ: цель молчит дольше `after` — медленное подтверждение.
 pub struct Silence {
     after: Duration,
 }
@@ -86,9 +101,93 @@ impl Silence {
     }
 }
 
-/// Что случилось: цель молчит столько-то миллисекунд.
-pub struct Silenced {
-    pub ms: u32,
+/// Детектор тихого дропа по ПОВТОРУ клиента: просьба ушла, ответа нет, ядро клиента ретрансмитит —
+/// самая ранняя улика (порог — RTO клиента под реальный RTT, не наш тик). Подозрение, не приговор:
+/// обычная сетевая потеря даёт тот же повтор, потому автора не называем.
+pub struct Retransmit;
+
+impl Retransmit {
+    /// Повтор без ответа цели.
+    pub fn unanswered() -> Retransmit {
+        Retransmit
+    }
+}
+
+/// Настроенный прибор — то, что кладут в `.detect(…)`. Внутренний тип: наружу торчат `Silence`
+/// и `Retransmit`, а не он (скрыт из доков, потребитель его не называет).
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub enum Probe {
+    Retransmit(RetransmitInstrument),
+    Silence(SilenceInstrument),
+}
+
+impl Probe {
+    /// Один шаг прибора; лог отбрасываем — наружу идёт только слово беды.
+    fn step(self, event: DetectorEvent<Seen>) -> (Probe, SmallVec<[Distress; 2]>) {
+        match self {
+            Probe::Retransmit(machine) => {
+                let (machine, signals, ()) = machine.step(event);
+                (Probe::Retransmit(machine), signals)
+            }
+            Probe::Silence(machine) => {
+                let (machine, signals, _log) = machine.step(event);
+                (Probe::Silence(machine), signals)
+            }
+        }
+    }
+}
+
+/// Прибор, кладущийся в `.detect(…)`. Реализуют `Silence` и `Retransmit`.
+pub trait IntoProbe {
+    #[doc(hidden)]
+    fn into_probe(self) -> Probe;
+    /// Временно́е окно прибора (ноль у беспороговых) — по нему движок выбирает срок эвикта ключа.
+    #[doc(hidden)]
+    fn window(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+impl IntoProbe for Silence {
+    fn into_probe(self) -> Probe {
+        Probe::Silence(SilenceInstrument::after(self.after))
+    }
+    fn window(&self) -> Duration {
+        self.after
+    }
+}
+
+impl IntoProbe for Retransmit {
+    fn into_probe(self) -> Probe {
+        Probe::Retransmit(RetransmitInstrument::new())
+    }
+}
+
+/// Приборы разговора, гоняемые ВМЕСТЕ над одним проводом. Композиция: пакет и тик фанаутятся в
+/// каждый, слова беды сливаются в один алфавит [`Distress`]. Это `alongside` парка, свёрнутый в
+/// список одинакового входа/выхода.
+#[derive(Clone)]
+struct Probes(Vec<Probe>);
+
+impl Mealy for Probes {
+    type In = DetectorEvent<Seen>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
+
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        let mut said: SmallVec<[Distress; 2]> = SmallVec::new();
+        let stepped = self
+            .0
+            .into_iter()
+            .map(|probe| {
+                let (probe, signals) = probe.step(event.clone());
+                said.extend(signals);
+                probe
+            })
+            .collect();
+        (Probes(stepped), said, ())
+    }
 }
 
 /// Движок над носителем — ждёт выбора транспорта.
@@ -115,33 +214,43 @@ impl Watching {
     }
 }
 
-/// Ключ выбран — ждёт детектора.
+/// Ключ выбран — ждёт хотя бы одного детектора.
 pub struct Keyed {
     queue: u16,
 }
 
 impl Keyed {
-    /// Установить детектор.
-    pub fn detect(self, silence: Silence) -> Detecting {
+    /// Установить первый детектор. Дальше можно `.detect(…)` ещё — они гоняются вместе.
+    pub fn detect(self, detector: impl IntoProbe) -> Detecting {
         Detecting {
             queue: self.queue,
-            after: silence.after,
+            longest: detector.window(),
+            probes: vec![detector.into_probe()],
         }
     }
 }
 
-/// Детектор установлен — ждёт реакции.
+/// Детекторы копятся — можно добавить ещё или перейти к реакции.
 pub struct Detecting {
     queue: u16,
-    after: Duration,
+    probes: Vec<Probe>,
+    longest: Duration,
 }
 
 impl Detecting {
-    /// Что делать при срабатывании. `target` — имя цели, `silence` — сколько она молчит.
-    pub fn on<F: FnMut(&str, Silenced)>(self, react: F) -> Running<F> {
+    /// Установить ещё один детектор поверх — они гоняются ВМЕСТЕ над одним проводом.
+    pub fn detect(mut self, detector: impl IntoProbe) -> Detecting {
+        self.longest = self.longest.max(detector.window());
+        self.probes.push(detector.into_probe());
+        self
+    }
+
+    /// Что делать на срабатывание любого прибора. `target` — имя цели, `distress` — что случилось.
+    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<F> {
         Running {
             queue: self.queue,
-            after: self.after,
+            probes: self.probes,
+            longest: self.longest,
             react,
         }
     }
@@ -150,37 +259,41 @@ impl Detecting {
 /// Цепочка собрана — готова к запуску.
 pub struct Running<F> {
     queue: u16,
-    after: Duration,
+    probes: Vec<Probe>,
+    longest: Duration,
     react: F,
 }
 
-/// Как часто движок будит детекторы в тишине. Молчание видно только тиком — без него тихий дроп
-/// заметился бы лишь на следующем пакете, которого нет. Меньше окна детектора; выбрано, не замерено.
+/// Как часто движок будит приборы в тишине. Молчание видно только тиком — без него окно тишины не
+/// закрылось бы. Меньше окна детектора; выбрано, не замерено.
 const TICK: Duration = Duration::from_millis(200);
 
 /// Сколько ждать на пустой очереди, прежде чем вернуться к тику. Ожидание ведёт цикл, не бэкенд.
 const POLL_MS: i32 = 100;
 
-impl<F: FnMut(&str, Silenced)> Running<F> {
+/// Нижний предел срока эвикта ключа: даже беспороговым приборам (повтор) нужно пережить типичный
+/// разговор.
+const MIN_IDLE: Duration = Duration::from_secs(10);
+
+impl<F: FnMut(&str, Distress)> Running<F> {
     /// Ведущий цикл. Возвращается только исходом настройки (`Report`) — работает, пока жив процесс.
     ///
-    /// Внутри: разбор провода (`parse`) → память разговора (`Talks`) → детектор на ключ
-    /// (`FlowTable<SilenceInstrument>`) с фанаутом тиков и эвиктом по простою → реакция. Пакет
-    /// пропускается как есть (`Answer::Pass`): этот use-case наблюдает, а не вмешивается.
+    /// Внутри: разбор провода (`parse`) → память разговора (`Talks`) → приборы на ключ
+    /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на общий
+    /// алфавит [`Distress`]. Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
     pub fn run(mut self) -> Report {
         let mut backend = match NfqueueBackend::open(self.queue) {
             Ok(backend) => backend,
             Err(why) => return Report::not_started(self.queue, why),
         };
 
-        let after = self.after;
-        // Ключ молчит до эвикта вдвое дольше окна: снятый раньше потерял бы беду последнего окна.
+        // Ключ живёт до эвикта дольше самого долгого окна: снятый раньше потерял бы его беду.
+        let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
+        let probes = self.probes;
         let mut table =
-            FlowTable::<SilenceInstrument, FlowKey>::new(after.saturating_mul(2), move |_flow| {
-                SilenceInstrument::after(after)
-            });
+            FlowTable::<Probes, FlowKey>::new(idle, move |_flow| Probes(probes.clone()));
         let mut talks = Talks::new();
-        // Имя цели живёт вне детектора: он мерит молчание, имя добывается из `ClientHello`.
+        // Имя цели живёт вне приборов: они мерят провод, имя добывается из `ClientHello`.
         let mut names: HashMap<FlowKey, String> = HashMap::new();
         let mut last_tick = Instant::now();
 
@@ -193,27 +306,20 @@ impl<F: FnMut(&str, Silenced)> Running<F> {
                 let names = &mut names;
                 let react = &mut self.react;
                 backend.serve(|held| {
-                    match parse::read(held.seen(), SERVER_PORT) {
-                        Read::Tcp(wire) => {
-                            // Имя цели — из приветствия, если оно в этом пакете.
-                            if let Some(name) = tls::extract_sni(wire.payload) {
-                                names.insert(wire.flow, name);
-                            }
-                            // Провод → буква детектора; TCP-специфичные улики (SYN/RST) детектор
-                            // тишины не читает — `anywhere` их отсеивает.
-                            if let Some(seen) = talks
-                                .read(&wire)
-                                .and_then(|tcp| Reading::Tcp(tcp).anywhere())
-                            {
-                                let (signals, log) = table.process(wire.flow, &seen, now);
-                                fire(react, names, wire.flow, &signals, log);
-                            }
+                    if let Read::Tcp(wire) = parse::read(held.seen(), SERVER_PORT) {
+                        // Имя цели — из приветствия, если оно в этом пакете.
+                        if let Some(name) = tls::extract_sni(wire.payload) {
+                            names.insert(wire.flow, name);
                         }
-                        Read::Udp(_)
-                        | Read::NotIpv4
-                        | Read::NotOurProtocol
-                        | Read::NotOurPort
-                        | Read::Truncated => {}
+                        // Провод → буква приборов; TCP-специфичные улики (SYN/RST) сюда не идут —
+                        // `anywhere` их отсеивает.
+                        if let Some(seen) = talks
+                            .read(&wire)
+                            .and_then(|tcp| Reading::Tcp(tcp).anywhere())
+                        {
+                            let (signals, ()) = table.process(wire.flow, &seen, now);
+                            fire(react, names, wire.flow, &signals);
+                        }
                     }
                     // Наблюдаем, не вмешиваемся: пакет идёт как шёл.
                     Answer::Pass
@@ -230,36 +336,28 @@ impl<F: FnMut(&str, Silenced)> Running<F> {
                 Served::Blind => std::thread::sleep(Duration::from_millis(1)),
             }
 
-            // Тик будит детекторы в тишине — именно тут и рождается сигнал о тихом дропе.
+            // Тик будит приборы в тишине — там рождается подтверждение по окну тишины.
             if now.duration_since(last_tick) >= TICK {
                 last_tick = now;
-                for (flow, (signals, log)) in table.tick(now) {
-                    fire(&mut self.react, &names, flow, &signals, log);
+                for (flow, (signals, ())) in table.tick(now) {
+                    fire(&mut self.react, &names, flow, &signals);
                 }
             }
         }
     }
 }
 
-/// Перевести беды детектора в реакцию. Тишину зовём по имени цели; безымянный разговор молчим —
-/// `extract(Sni)` обещал ключ, а без имени вести цель нечем. Прочие беды (`Rst`, троттлинг, повтор)
-/// этому use-case'у не адресованы — детектор тишины их и не эмитит.
-fn fire<F: FnMut(&str, Silenced)>(
+/// Отдать слова беды реакции. Зовём по имени цели; безымянный разговор молчим — `extract(Sni)`
+/// обещал ключ, а без имени вести цель нечем. Что делать с каждым словом — решает потребитель.
+fn fire<F: FnMut(&str, Distress)>(
     react: &mut F,
     names: &HashMap<FlowKey, String>,
     flow: FlowKey,
     signals: &[Distress],
-    log: Option<Measured>,
 ) {
-    for signal in signals {
-        let ms = match signal {
-            Distress::Silence { ms } => *ms,
-            // Цель не ответила вовсе — молчание с самого начала; длину берём из показания.
-            Distress::NoBytes => log.map(|measured| measured.since_ms).unwrap_or(0),
-            Distress::Rst | Distress::Throttled { .. } | Distress::Retransmit { .. } => continue,
-        };
-        if let Some(name) = names.get(&flow) {
-            react(name, Silenced { ms });
+    if let Some(name) = names.get(&flow) {
+        for signal in signals {
+            react(name, signal.clone());
         }
     }
 }

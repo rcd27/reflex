@@ -13,3 +13,4 @@ reflex-engine = { path = "../engine" }
 reflex-engine-nfq = { path = "../engine-nfq" }
 reflex-instrument = { path = "../instrument" }
 reflex-linux = { path = "../linux", features = ["nfqueue"] }
+smallvec = "1"
