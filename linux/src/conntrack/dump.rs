@@ -1,7 +1,5 @@
-//! СОКЕТ К CTNETLINK. Всё IO — здесь, и только здесь.
-//!
-//! Мутация буфера неизбежна на границе системного вызова и потому заперта в ней: разбор того, что
-//! в буфер легло, живёт в `wire` и мутации не знает вовсе.
+//! Сокет к ctnetlink. Всё IO — здесь, и только здесь. Мутация буфера неизбежна на границе
+//! системного вызова и заперта в ней: разбор того, что легло, живёт в `wire` и мутации не знает.
 
 use super::wire::{chunk_of, Chunk, Entry};
 use libc::{c_int, c_void, close, recv, send, socket, AF_NETLINK, SOCK_RAW};
@@ -15,11 +13,9 @@ const AF_INET_FAMILY: u8 = 2;
 const REQUEST_LEN: u32 = 20;
 const BUFFER: usize = 64 * 1024;
 
-/// ЧЕМ ДАМП МОЖЕТ КОНЧИТЬСЯ, КРОМЕ ЗАПИСЕЙ.
-///
-/// `Kernel(-2)` — обычный и ожидаемый исход: модуль `nf_conntrack` не загружен. Это не поломка
-/// прибора, а факт о машине, и звать его ошибкой сокета значило бы смешать два разных разговора
-/// с человеком.
+/// Чем дамп может кончиться, кроме записей. `Kernel(-2)` — обычный исход: модуль `nf_conntrack` не
+/// загружен, факт о машине, не поломка прибора; звать его ошибкой сокета значило бы смешать два
+/// разговора с человеком.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DumpError {
     Socket(i32),
@@ -70,9 +66,9 @@ fn request(seq: u32) -> [u8; REQUEST_LEN as usize] {
 }
 
 impl Dump {
-    /// БЕЗ ЯВНОГО `bind`, И ЭТО НЕ УПУЩЕНИЕ: netlink привязывает сокет сам при первой отправке
-    /// (`netlink_autobind`), назначая pid. Явная привязка потребовала бы `sockaddr_nl`, у которого
-    /// поле выравнивания приватно, — то есть кода, существующего ради обхода чужой видимости.
+    /// Без явного `bind`: netlink привязывает сокет сам при первой отправке (`netlink_autobind`),
+    /// назначая pid. Явная привязка потребовала бы `sockaddr_nl` с приватным полем выравнивания —
+    /// кода ради обхода чужой видимости.
     pub fn open() -> Result<Dump, DumpError> {
         match unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER) } {
             below if below < 0 => Err(DumpError::Socket(errno())),
@@ -80,8 +76,8 @@ impl Dump {
         }
     }
 
-    /// ВСЕ ЗАПИСИ CONNTRACK НА ЭТОТ МОМЕНТ. Дамп приходит несколькими порциями, и конец объявляет
-    /// ЯДРО (`NLMSG_DONE`), а не пустая порция: остановка по пустоте читала бы обрыв как конец.
+    /// Все записи conntrack на этот момент. Дамп приходит несколькими порциями, конец объявляет ЯДРО
+    /// (`NLMSG_DONE`), не пустая порция: остановка по пустоте читала бы обрыв как конец.
     pub fn entries(&self) -> Result<Vec<Entry>, DumpError> {
         let asked = request(1);
         match unsafe { send(self.fd, asked.as_ptr() as *const c_void, asked.len(), 0) } {
@@ -91,7 +87,7 @@ impl Dump {
     }
 
     fn drain(&self, so_far: Vec<Entry>) -> Result<Vec<Entry>, DumpError> {
-        // МУТАЦИЯ ЖИВЁТ РОВНО ЗДЕСЬ: ядру нужен буфер, в который оно пишет.
+        // Мутация живёт ровно здесь: ядру нужен буфер, в который оно пишет.
         let mut buffer = vec![0u8; BUFFER];
         match unsafe { recv(self.fd, buffer.as_mut_ptr() as *mut c_void, BUFFER, 0) } {
             below if below < 0 => Err(DumpError::Recv(errno())),
