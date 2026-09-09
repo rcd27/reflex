@@ -13,7 +13,7 @@
 //! вместо `socket.connect`. Прозрачный listen на ЛЮБОЙ dst: `set_any_ip(true)` + placeholder-адрес,
 //! сокет рождается ПО ВХОДЯЩЕМУ SYN (движок сам не создаёт — драйвер парсит кадр и заводит listen).
 //!
-//! ТРИ ПРОЕКЦИИ (молекулы `model/molecule/`, TLC GREEN):
+//! Три инварианта:
 //!   - `WitnessedLease` (Holding ⟹ Witnessed): `TunStream::Drop → socket.abort()` (RST) снимает сокет
 //!     ТЕМ ЖЕ тиком = реап на конце флоу, НЕ по таймеру 2ч. Орфан невыразим в типах (как `PidGuard`).
 //!     Backstop: молчание байт-witness дольше `BYTE_IDLE` → abort (добивает завис `write_all`, корень #3).

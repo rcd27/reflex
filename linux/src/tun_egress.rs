@@ -2,11 +2,11 @@
 //!
 //! ЗАЧЕМ отдельно от `tun` (listener): `netstack-smoltcp` умеет ЛИШЬ терминировать входящие флоу
 //! (модель tun2socks — `socket.listen` на dst входящего SYN), исходящего `connect` в нём НЕТ. Для
-//! L2Glue-egress (проекция `model/wire/EgressIdentity` + `SteerDatapath.Egress="L2Glue"`) неводу нужно
+//! L2Glue-egress неводу нужно
 //! САМОМУ инициировать TCP к реальной цели: netstack эмитит SYN/ClientHello/ACK'и в egress-tun, а eBPF
 //! (`reflex_egress`) переклеивает L2/L3-личность на ВЫУЧЕННУЮ роутеровскую и `bpf_redirect(eth0)`.
 //!
-//! ЗАКОН датаплейна (memory `v002_datapath_law`): ядерный L3-originate ВВЕРХ на этой коробке —
+//! Закон датаплейна: ядерный L3-originate ВВЕРХ на этой коробке —
 //! доказанная чёрная дыра (Билайн MAC-auth + forward↔tun дроп). Значит egress ОБЯЗАН идти netstack'ом
 //! в tun (как вход/возврат), не `TcpStream::connect`. Этот модуль — тот самый netstack.
 //!

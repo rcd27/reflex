@@ -24,7 +24,7 @@ conntrack = []
 # Помечена атрибутом в `src/lib.rs`. Ниже — что именно предстоит разобрать.
 #
 # tun: userspace-терминация TCP из tun-устройства в async-потоки с ОРИГИНАЛЬНЫМ dst. СВОИ обёртки над
-# движком smoltcp (проекция model/wire/TransparentCapture.tla): `tun_listen` (входящие, passive-open) +
+# движком smoltcp: `tun_listen` (входящие, passive-open) +
 # `tun_egress` (originate, active-open, `EgressIdentity`/`SteerDatapath` L2Glue). netstack-smoltcp срезан
 # (#74) — буфер/lifecycle/backpressure сокета были вне юрисдикции → утечку не локализовать.
 tun = ["dep:smoltcp", "dep:spin"]

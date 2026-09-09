@@ -1,12 +1,9 @@
 //! Fd-субстрат tun-устройства: открыть tun (IPv4, `IFF_TUN|IFF_NO_PI`, non-blocking) + неблокирующие
 //! read/write одного пакета. Тонкий примитив края, потребляемый обёртками стека: `tun_listen`
 //! (терминация входящих TCP, passive-open) и `tun_egress` (originate, active-open) качают пакеты через
-//! СВОЙ netstack на движке smoltcp тем же fd. Механизм `CaptureMech="Tun"` (проекция
-//! `model/wire/TransparentCapture.tla`): устройство отдаёт сырой L3 → dst прямо из IP-заголовка,
-//! петля-на-себя невыразима. reflex несёт несущую, невод — мозг обхода.
-//!
-//! ИСТОРИЯ (#74): раньше здесь жила netstack-smoltcp обёртка (`TunFlows`/`TunPlane`/`TunDatagrams`) —
-//! срезана вместе с зависимостью, TCP-терминацию несёт своя обёртка `tun_listen`.
+//! свой netstack на движке smoltcp тем же fd. Устройство отдаёт сырой L3 → dst прямо из IP-заголовка,
+//! петля-на-себя невыразима. Прежде здесь жила netstack-smoltcp обёртка (#74) — срезана, TCP-терминацию
+//! несёт своя обёртка `tun_listen`.
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
