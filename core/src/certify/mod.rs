@@ -14,6 +14,7 @@ pub mod marking;
 pub mod observation;
 pub mod refusal;
 pub mod remembering;
+pub mod replays;
 pub mod rewriting;
 pub mod severing;
 
@@ -23,6 +24,7 @@ pub use marking::marks;
 pub use observation::observes;
 pub use refusal::refuses;
 pub use remembering::remembers;
+pub use replays::{replays, Replayed};
 pub use rewriting::rewrites;
 pub use severing::severs;
 
