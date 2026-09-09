@@ -38,7 +38,8 @@ use reflex_core::serves::Served;
 use reflex_core::tls;
 use reflex_core::DetectorEvent;
 use reflex_core::Serves;
-use reflex_engine::FlowKey;
+use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
+use reflex_engine::{Addr, FlowKey};
 use reflex_engine_nfq::parse::{self, Read, SERVER_PORT};
 use reflex_engine_nfq::talk::Talks;
 use reflex_instrument::detect::SilenceInstrument;
@@ -86,8 +87,29 @@ pub fn engine(backend: Nfqueue) -> Engine {
 /// Транспорт разговоров, за которым смотрим. Пока — только TCP.
 pub struct Tcp;
 
-/// Чем ключуется разговор. Пока — именем цели из `ClientHello`.
+/// Чем ключуется цель: именем из `ClientHello`, а при его ОТСУТСТВИИ — адресом. Отсутствие имени
+/// не теряется (MTProto/Телеграм, коннект по чистому IP, ECH — имени нет вовсе): такая цель
+/// опознаётся по IP, а не пропадает молча. Это расслоение движка (`TargetKey::Named | Unnamed`,
+/// канон §4): имя — верхний слой, адрес — нижний, и слово всегда есть.
 pub struct Sni;
+
+/// Личность цели разговора, копимая по ходу: адрес известен с первого пакета, имя — если пришло
+/// приветствие с SNI. Отсюда рождается [`TargetKey`] цели.
+struct Ident {
+    dst: Addr,
+    naming: Naming<Box<str>>,
+}
+
+impl Ident {
+    /// Как назвать цель человеку: имя, если оно есть; иначе адрес. `keyed` — то же расслоение, каким
+    /// цель ключует движок (`host_of` — точный адрес: какой именно сервер, не сеть).
+    fn target(&self) -> String {
+        match keyed(self.naming.clone(), self.dst, host_of) {
+            TargetKey::Named(name) => name.to_string(),
+            TargetKey::Unnamed(addr) => addr.to_string(),
+        }
+    }
+}
 
 /// Детектор тихого дропа по окну ТИШИНЫ: цель молчит дольше `after` — медленное подтверждение.
 pub struct Silence {
@@ -293,8 +315,8 @@ impl<F: FnMut(&str, Distress)> Running<F> {
         let mut table =
             FlowTable::<Probes, FlowKey>::new(idle, move |_flow| Probes(probes.clone()));
         let mut talks = Talks::new();
-        // Имя цели живёт вне приборов: они мерят провод, имя добывается из `ClientHello`.
-        let mut names: HashMap<FlowKey, String> = HashMap::new();
+        // Личность цели живёт вне приборов: они мерят провод, а `extract(Sni)` копит имя+адрес.
+        let mut idents: HashMap<FlowKey, Ident> = HashMap::new();
         let mut last_tick = Instant::now();
 
         loop {
@@ -303,13 +325,18 @@ impl<F: FnMut(&str, Distress)> Running<F> {
             let outcome = {
                 let table = &mut table;
                 let talks = &mut talks;
-                let names = &mut names;
+                let idents = &mut idents;
                 let react = &mut self.react;
                 backend.serve(|held| {
                     if let Read::Tcp(wire) = parse::read(held.seen(), SERVER_PORT) {
-                        // Имя цели — из приветствия, если оно в этом пакете.
-                        if let Some(name) = tls::extract_sni(wire.payload) {
-                            names.insert(wire.flow, name);
+                        // Личность копится: адрес с первого пакета, имя — если пришло приветствие.
+                        // Отсутствие SNI не теряется — цель опознаётся по адресу (Телега/чистый IP).
+                        let ident = idents.entry(wire.flow).or_insert(Ident {
+                            dst: wire.dst,
+                            naming: Naming::Awaited,
+                        });
+                        if let Some(sni) = tls::extract_sni(wire.payload) {
+                            ident.naming = Naming::Spoken(sni.into());
                         }
                         // Провод → буква приборов; TCP-специфичные улики (SYN/RST) сюда не идут —
                         // `anywhere` их отсеивает.
@@ -318,7 +345,7 @@ impl<F: FnMut(&str, Distress)> Running<F> {
                             .and_then(|tcp| Reading::Tcp(tcp).anywhere())
                         {
                             let (signals, ()) = table.process(wire.flow, &seen, now);
-                            fire(react, names, wire.flow, &signals);
+                            fire(react, idents, wire.flow, &signals);
                         }
                     }
                     // Наблюдаем, не вмешиваемся: пакет идёт как шёл.
@@ -340,24 +367,28 @@ impl<F: FnMut(&str, Distress)> Running<F> {
             if now.duration_since(last_tick) >= TICK {
                 last_tick = now;
                 for (flow, (signals, ())) in table.tick(now) {
-                    fire(&mut self.react, &names, flow, &signals);
+                    fire(&mut self.react, &idents, flow, &signals);
                 }
+                // Личность уходит вместе с ключом: эвикт таблицы по простою, зеркалим его, чтобы
+                // карта личностей не росла с числом ВИДЕННЫХ разговоров.
+                idents.retain(|flow, _| table.get(flow).is_some());
             }
         }
     }
 }
 
-/// Отдать слова беды реакции. Зовём по имени цели; безымянный разговор молчим — `extract(Sni)`
-/// обещал ключ, а без имени вести цель нечем. Что делать с каждым словом — решает потребитель.
+/// Отдать слова беды реакции по личности цели. Личность есть ВСЕГДА (имя или адрес), потому
+/// безымянная цель — Телеграм, чистый IP — не теряется. Что делать с каждым словом — решает потребитель.
 fn fire<F: FnMut(&str, Distress)>(
     react: &mut F,
-    names: &HashMap<FlowKey, String>,
+    idents: &HashMap<FlowKey, Ident>,
     flow: FlowKey,
     signals: &[Distress],
 ) {
-    if let Some(name) = names.get(&flow) {
+    if let Some(ident) = idents.get(&flow) {
+        let target = ident.target();
         for signal in signals {
-            react(name, signal.clone());
+            react(&target, signal.clone());
         }
     }
 }
@@ -386,5 +417,41 @@ impl std::process::Termination for Report {
                 std::process::ExitCode::FAILURE
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `extract(Sni)` не теряет безымянную цель: нет имени — личность по адресу. Телеграм, коннект
+    /// по чистому IP, ECH — у всех имени нет, и все опознаются по IP, а не пропадают молча.
+    #[test]
+    fn target_falls_back_to_address_when_there_is_no_name() {
+        let awaited = Ident {
+            dst: Addr(0x0A00_0001),
+            naming: Naming::Awaited,
+        };
+        assert_eq!(
+            awaited.target(),
+            "10.0.0.1",
+            "приветствия не было — по адресу"
+        );
+
+        let silent = Ident {
+            dst: Addr(0x0A00_0001),
+            naming: Naming::Silent,
+        };
+        assert_eq!(
+            silent.target(),
+            "10.0.0.1",
+            "приветствие без имени (ECH/не-TLS) — тоже по адресу"
+        );
+
+        let named = Ident {
+            dst: Addr(0x0A00_0001),
+            naming: Naming::Spoken("rutracker.org".into()),
+        };
+        assert_eq!(named.target(), "rutracker.org", "имя есть — по имени");
     }
 }
