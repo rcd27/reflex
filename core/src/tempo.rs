@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(t.time_to_first(), Some(Duration::from_millis(400)));
     }
 
-    /// СОБЫТИЙ НЕ БЫЛО — это не «ждали ноль», а другой факт, и тип его называет.
+    /// Событий не было — не «ждали ноль», а другой факт, и тип его называет.
     #[test]
     fn no_events_is_not_a_zero_wait() {
         let base = Instant::now();
