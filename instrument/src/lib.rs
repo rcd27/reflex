@@ -19,6 +19,7 @@ pub mod detect;
 pub mod distress;
 pub mod drift;
 pub mod edge;
+pub mod edge_word;
 pub mod episode;
 pub mod fate;
 pub mod leg;
