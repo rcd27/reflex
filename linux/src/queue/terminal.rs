@@ -22,6 +22,17 @@ pub enum Answer {
     Remembered { accept: bool, state: u32 },
 }
 
+/// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре.
+/// Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод слова в байты вердикта свидетельствовало
+/// бы только живое ядро (§9: выше значения, ниже мир). `apply` лишь исполняет это решение сокетом.
+pub(crate) fn asked(answer: &Answer) -> (bool, Option<u32>) {
+    match *answer {
+        Answer::Pass => (true, None),
+        Answer::Stop => (false, None),
+        Answer::Remembered { accept, state } => (accept, Some(state)),
+    }
+}
+
 impl Terminal for QueueSocket {
     type Carrier = Held;
     type Answer = Answer;
@@ -32,12 +43,8 @@ impl Terminal for QueueSocket {
         answered: Answered<Held, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
         let id = answered.carrier.0.id;
-        let done = match answered.answer {
-            Answer::Pass => self.verdict(id, true, None),
-            Answer::Stop => self.verdict(id, false, None),
-            Answer::Remembered { accept, state } => self.verdict(id, accept, Some(state)),
-        };
-        match done {
+        let (accept, state) = asked(&answered.answer);
+        match self.verdict(id, accept, state) {
             Ok(()) => Ok(Delivered {
                 at: answered.at,
                 answer: answered.answer,
@@ -48,6 +55,27 @@ impl Terminal for QueueSocket {
                 why,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Состояние доезжает до вердикта, а не теряется по дороге: `Remembered` обязано дать ядру и
+    /// вердикт, и марку. Мутация `Some(state) → None` в `asked` краснит именно здесь — то, чего
+    /// `remember` (строит слово) поймать не мог.
+    #[test]
+    fn remembering_reaches_the_verdict() {
+        assert_eq!(
+            asked(&Answer::Remembered {
+                accept: true,
+                state: 0x1234
+            }),
+            (true, Some(0x1234))
+        );
+        assert_eq!(asked(&Answer::Pass), (true, None));
+        assert_eq!(asked(&Answer::Stop), (false, None));
     }
 }
 

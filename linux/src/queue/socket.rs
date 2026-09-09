@@ -8,6 +8,7 @@ use libc::{c_int, c_void, close, poll, pollfd, recv, send, socket, AF_NETLINK, P
 use super::wire::{
     bind_request, conntrack_flag_request, incoming_of, params_request, verdict_message, Incoming,
 };
+use crate::netlink::errno;
 use crate::nfqueue::Waited;
 
 const NETLINK_NETFILTER: c_int = 12;
@@ -34,10 +35,6 @@ impl QueueError {
             other => QueueError::Recv(other),
         }
     }
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// Сокет к очереди `queue`. Хранит СВОЙ дескриптор — `/proc/self/fd` не нужен (в отличие от старой

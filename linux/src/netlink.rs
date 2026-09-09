@@ -9,6 +9,12 @@ const NESTED: u16 = 0x8000;
 pub(crate) const NLMSG_ERROR: u16 = 2;
 pub(crate) const NLMSG_DONE: u16 = 3;
 
+/// Errno последнего системного вызова — общий для всех netlink-дверей (дамп, очередь). Один дом,
+/// как у `NLMSG_*`: тот же однострочник в двух сокетах — повод для второй копии исчез.
+pub(crate) fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
 pub(crate) const fn aligned(len: usize) -> usize {
     (len + 3) & !3
 }

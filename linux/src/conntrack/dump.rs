@@ -2,6 +2,7 @@
 //! системного вызова и заперта в ней: разбор того, что легло, живёт в `wire` и мутации не знает.
 
 use super::wire::{chunk_of, Chunk, Entry};
+use crate::netlink::errno;
 use libc::{c_int, c_void, close, recv, send, socket, AF_NETLINK, SOCK_RAW};
 
 const NETLINK_NETFILTER: c_int = 12;
@@ -26,10 +27,6 @@ pub enum DumpError {
 
 pub struct Dump {
     fd: c_int,
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn request(seq: u32) -> [u8; REQUEST_LEN as usize] {
