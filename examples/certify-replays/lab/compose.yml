@@ -8,6 +8,10 @@ services:
       dockerfile: examples/certify-replays/lab/engine/Dockerfile
     cap_add:
       - NET_ADMIN
+    # Предпосылки КРАЯ: фасад читает счётчики и возраст потока у conntrack.
+    sysctls:
+      net.netfilter.nf_conntrack_acct: "1"
+      net.netfilter.nf_conntrack_timestamp: "1"
     environment:
       TARGET: rutracker.org
       CONTROL: vk.com

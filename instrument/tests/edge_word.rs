@@ -50,14 +50,40 @@ fn descent_preserves_foreign_bits() {
     let told = Memo::new(layout(), Phase::Suspected, 3).descends();
     let foreign = 0x2000_00FF;
     let written = (foreign & !told.mask) | told.under;
-    assert_eq!(written & !told.mask, foreign, "вне маски спуска чужие биты целы");
+    assert_eq!(
+        written & !told.mask,
+        foreign,
+        "вне маски спуска чужие биты целы"
+    );
 }
 
 /// `Edged` несёт ОБЕ половины: провод (`narrow`) и вид края (`edge`). Прибору тишины нужны обе.
 #[test]
 fn edged_carries_both_wire_and_view() {
     let wide = (Reading::Udp(Seen::Sent { count: 1 }), 42u32);
-    let edged = <Edged<Seen, u32> as Reads<(Reading, u32)>>::read(&wide).expect("сузилось");
-    assert!(matches!(edged.narrow, Seen::Sent { count: 1 }), "провод взят");
+    let edged = <Edged<Option<Seen>, u32> as Reads<(Reading, u32)>>::read(&wide).expect("сузилось");
+    assert!(
+        matches!(edged.narrow, Some(Seen::Sent { count: 1 })),
+        "провод взят"
+    );
     assert_eq!(edged.edge, 42, "вид края взят");
+}
+
+/// КРАЙ ВИДЕН ДАЖЕ ТАМ, ГДЕ ПРОВОД НЕВЫРАЗИМ — урок боевого регресса.
+///
+/// `SYN` есть буква ТРАНСПОРТА (`SeenTcp::Syn`), в общий словарь (`Seen`) она не сужается. Потребуй
+/// краевой прибор провод целым — он не увидел бы ни одного пакета блэкхол-потока, где кроме `SYN`
+/// ничего и нет: не «пропустил наблюдение», а не получил ни одного, и фаза не сдвинулась бы никогда.
+/// Стенд блэкхола после переезда дал ровно это — ноль находок при живом дропе.
+#[test]
+fn край_доходит_даже_когда_провод_не_сужается() {
+    let syn = (Reading::Tcp(SeenTcp::Syn), 7u32);
+    let edged =
+        <Edged<Option<Seen>, u32> as Reads<(Reading, u32)>>::read(&syn).expect("край доходит");
+
+    assert!(
+        edged.narrow.is_none(),
+        "провод невыразим в общем словаре — и сказано это пустотой, а не потерей всей буквы"
+    );
+    assert_eq!(edged.edge, 7, "край на месте: прибор увидит пакет");
 }

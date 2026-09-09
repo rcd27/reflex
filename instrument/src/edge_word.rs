@@ -63,10 +63,20 @@ pub struct Edged<N, V> {
     pub edge: V,
 }
 
-impl<N: Reads<Reading>, V: Clone> Reads<(Reading, V)> for Edged<N, V> {
-    fn read(wide: &(Reading, V)) -> Option<Edged<N, V>> {
-        N::read(&wide.0).map(|narrow| Edged {
-            narrow,
+/// Сужение к паре: край берётся ВСЕГДА, провод — если он выразим в словаре прибора.
+///
+/// `narrow: Option<N>` не педантизм, а урок боя: `SYN` есть буква ТРАНСПОРТА (`SeenTcp::Syn`), в
+/// общий словарь (`Seen`) она не сужается — и прибор, потребовавший провод целым, не увидел бы ни
+/// одного пакета блэкхол-потока, где кроме `SYN` ничего и нет. Наблюдения он бы не пропустил, а
+/// вовсе не получил: переход фазы не случился бы никогда.
+///
+/// Отсюда закон: краевой прибор обязан видеть КАЖДЫЙ пакет своего разговора, ибо предмет его —
+/// состояние разговора в ядре, а не отдельное слово провода. Провод ему добавка, и добавка может
+/// отсутствовать.
+impl<N: Reads<Reading>, V: Clone> Reads<(Reading, V)> for Edged<Option<N>, V> {
+    fn read(wide: &(Reading, V)) -> Option<Edged<Option<N>, V>> {
+        Some(Edged {
+            narrow: N::read(&wide.0),
             edge: wide.1.clone(),
         })
     }

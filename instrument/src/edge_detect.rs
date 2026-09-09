@@ -116,7 +116,7 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
     /// таблицы), вида не имеет. Это ТРЕТЬЕ значение рядом с «ноль» и «много» (§7): «не считали» —
     /// не «не ответила». Прими прибор непустой `V` — петля роняла бы такие пакеты молча, и разница
     /// между незнанием и наблюдением исчезла бы ещё до прибора.
-    type In = DetectorEvent<Edged<Seen, Option<V>>>;
+    type In = DetectorEvent<Edged<Option<Seen>, Option<V>>>;
     type Out = Verdict;
     type Log = ();
 

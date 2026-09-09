@@ -85,9 +85,9 @@ fn with_mark(mut edge: TestEdge, mark: u32) -> TestEdge {
     edge
 }
 
-fn packet(edge: TestEdge) -> DetectorEvent<Edged<Seen, Option<TestEdge>>> {
+fn packet(edge: TestEdge) -> DetectorEvent<Edged<Option<Seen>, Option<TestEdge>>> {
     DetectorEvent::packet_now(Edged {
-        narrow: Seen::Received { count: 1 },
+        narrow: Some(Seen::Received { count: 1 }),
         edge: Some(edge),
     })
 }
@@ -266,7 +266,7 @@ fn без_края_прибор_молчит_и_ничего_не_помнит()
     let silence: EdgeSilence<TestEdge> = EdgeSilence::new(WINDOW, layout());
 
     let (_next, (memo, said), ()) = silence.step(DetectorEvent::packet_now(Edged {
-        narrow: Seen::Received { count: 1 },
+        narrow: Some(Seen::Received { count: 1 }),
         edge: None::<TestEdge>,
     }));
 

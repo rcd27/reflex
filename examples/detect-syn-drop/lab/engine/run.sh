@@ -23,9 +23,16 @@ nft add rule  inet reflex_lab out tcp dport 443 queue num 200
 nft add chain inet reflex_lab inp '{ type filter hook input priority -150; policy accept; }'
 nft add rule  inet reflex_lab inp tcp sport 443 queue num 200
 
-# Цель повиснет на SYN (max-time держит попытки дольше повтора SYN); контроль пройдёт.
-curl -s4 --noproxy '*' --max-time 12 "https://$TARGET/"  >/dev/null 2>&1 &
-curl -s4 --noproxy '*' --max-time 8  "https://$CONTROL/" >/dev/null 2>&1 || true
+# МОЛОТ, а не одиночная проба: блэкхол судит по ВОЗРАСТУ потока (порог 2с), и наблюдение обязано
+# прийти ПОСЛЕ порога. У одиночного `SYN` повторы редки (RTO удваивается), и попасть в окно ему
+# случается не всегда — «не измерено» читалось бы как «не работает».
+i=0
+while [ "$i" -lt 20 ]; do
+  curl -s4 --noproxy '*' --max-time 10 -k "https://$TARGET/" >/dev/null 2>&1 &
+  i=$((i + 1))
+  sleep 0.3
+done
+curl -s4 --noproxy '*' --max-time 8 "https://$CONTROL/" >/dev/null 2>&1 || true
 
 sleep 6
 

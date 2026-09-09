@@ -7,6 +7,12 @@ services:
       dockerfile: examples/detect-dns-poisoning/lab/engine/Dockerfile
     cap_add:
       - NET_ADMIN
+    # Предпосылки КРАЯ: фасад читает у conntrack счётчики и возраст потока, а ядро их не ведёт,
+    # пока не сказано. Ставятся ЗДЕСЬ: /proc/sys в контейнере read-only, и docker кладёт
+    # namespaced-sysctl'ы при создании netns — единственный момент, когда они пишутся.
+    sysctls:
+      net.netfilter.nf_conntrack_acct: "1"
+      net.netfilter.nf_conntrack_timestamp: "1"
     environment:
       TARGET: nnmclub.to
       CONTROL: vk.com

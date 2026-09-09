@@ -106,7 +106,7 @@ fn main() {
             }
 
             let (_same, (memo, said), ()) = silence.step(DetectorEvent::packet_now(Edged {
-                narrow,
+                narrow: Some(narrow),
                 // Край здесь заведомо есть: пакет без ct-вида отсеян выше. `Option` — форма
                 // прибора: он обязан отличать «не считали» от «не ответила» (§7).
                 edge: Some(edge),
