@@ -33,11 +33,47 @@ pub enum Phase {
     Released,
 }
 
-/// Что мы оставили на разговоре: фаза и оттиск (младшие биты счётчика ответов на момент постановки).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Что мы оставили на разговоре: фаза, оттиск (младшие биты счётчика ответов) и РАСКЛАДКА, под
+/// которой они лягут. Раскладку памятка носит с собой: спуск `descends` параметра не принимает, а
+/// упаковать без маски нельзя — зато кодек остаётся ОДИН (`under_bits`), и два входа (`Layout::write`
+/// и `descends`) не разойдутся молча.
+///
+/// Сравнение НЕ смотрит на раскладку: две памятки, отличающиеся лишь маской, для `Changes` (повтор
+/// наблюдения) — одна и та же, иначе смена соседа по машине читалась бы как новое наблюдение.
+#[derive(Debug, Clone, Copy)]
 pub struct Memo {
+    layout: Layout,
     pub phase: Phase,
     pub imprint: u8,
+}
+
+impl PartialEq for Memo {
+    fn eq(&self, other: &Self) -> bool {
+        self.phase == other.phase && self.imprint == other.imprint
+    }
+}
+
+impl Eq for Memo {}
+
+impl Memo {
+    /// Памятка под конкретной раскладкой.
+    pub fn new(layout: Layout, phase: Phase, imprint: u8) -> Memo {
+        Memo {
+            layout,
+            phase,
+            imprint,
+        }
+    }
+
+    /// Наши биты, уложенные под маской (без чужого слова — его добавит край read-modify-write).
+    pub fn under(&self) -> u32 {
+        under_bits(&self.layout, self.phase, self.imprint)
+    }
+
+    /// Маска, под которой лежат наши биты.
+    pub fn mask(&self) -> u32 {
+        self.layout.mask
+    }
 }
 
 /// Что прочли из марки. `Foreign` — не ошибка и не пустота, а заселённая клетка входа: по нашим
@@ -72,6 +108,16 @@ impl Phase {
 /// Все 15 бит полей (тег+фаза+оттиск).
 const FIELD_BITS: u32 = TAG_BITS + PHASE_BITS + IMPRINT_BITS;
 
+/// ЕДИНЫЙ кодек: наши биты (тег+фаза+оттиск), уложенные под маской. Один — потому что второй
+/// разошёлся бы молча; его зовут оба входа — `Layout::write` и спуск `Memo::descends` (через
+/// `Memo::under`).
+fn under_bits(layout: &Layout, phase: Phase, imprint: u8) -> u32 {
+    let packed = (layout.tag as u32)
+        | (phase.code() << TAG_BITS)
+        | ((imprint as u32) << (TAG_BITS + PHASE_BITS));
+    (packed << layout.shift()) & layout.mask
+}
+
 impl Layout {
     /// Единственная дверь. Отказ — ЗНАЧЕНИЕ (`None`), не тихое обрезание: тег обязан быть ненулевым
     /// и 4-битным (иначе пустое слово прочлось бы «нашим», а широкий тег залез бы в фазу); маска
@@ -100,12 +146,11 @@ impl Layout {
         self.mask.trailing_zeros()
     }
 
-    /// Записать памятку под маской, сохранив чужие биты (read-modify-write). Тег писателя — наш.
+    /// Записать памятку под маской, сохранив чужие биты (read-modify-write). Один кодек со спуском
+    /// (`under_bits`): пакует по СВОЕЙ раскладке фазу/оттиск памятки (её собственная раскладка — для
+    /// спуска, здесь не участвует).
     pub fn write(&self, word: u32, memo: Memo) -> u32 {
-        let packed = (self.tag as u32)
-            | (memo.phase.code() << TAG_BITS)
-            | ((memo.imprint as u32) << (TAG_BITS + PHASE_BITS));
-        (word & !self.mask) | ((packed << self.shift()) & self.mask)
+        (word & !self.mask) | under_bits(self, memo.phase, memo.imprint)
     }
 
     /// Прочесть марку. Сперва тег: не наш — `Foreign` (остальным полям веры нет, они чужие).
@@ -117,6 +162,6 @@ impl Layout {
         }
         let phase = Phase::of_code((packed >> TAG_BITS) & ((1 << PHASE_BITS) - 1));
         let imprint = ((packed >> (TAG_BITS + PHASE_BITS)) & ((1 << IMPRINT_BITS) - 1)) as u8;
-        Recall::Ours(Memo { phase, imprint })
+        Recall::Ours(Memo::new(*self, phase, imprint))
     }
 }

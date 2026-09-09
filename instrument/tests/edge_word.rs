@@ -1,11 +1,16 @@
 //! Слово края: беда и памятка разговора образуют пару (одна область), а прибор провода сужает
 //! широкое слово `(Reading, V)` к своему множителю, не трогая вид края `V`.
 
-use reflex_core::word::Word;
+use reflex_core::word::{Descends, Word};
 use reflex_core::Reads;
 use reflex_instrument::distress::Distress;
-use reflex_instrument::edge::Memo;
+use reflex_instrument::edge::{Layout, Memo, Phase};
+use reflex_instrument::edge_word::{Edged, Told};
 use reflex_instrument::wire::{Reading, Seen, SeenTcp};
+
+fn layout() -> Layout {
+    Layout::new(0x0FFF_E000, 0b101).expect("15-битная маска, ненулевой тег")
+}
 
 /// Пара слов одной области — слово: беда и памятка края обе сказаны о разговоре.
 #[test]
@@ -36,4 +41,38 @@ fn a_tcp_instrument_narrows_past_the_edge_view() {
         <SeenTcp as Reads<(Reading, ())>>::read(&wide),
         Some(SeenTcp::Syn)
     );
+}
+
+/// Спуск сохраняет чужие биты: `Told` несёт наши биты и маску, край применит их RMW, чужая разметка
+/// вне маски цела. Мутация «descends теряет маску» (mask = !0) затрёт чужое — тест краснеет.
+#[test]
+fn descent_preserves_foreign_bits() {
+    let told = Memo::new(layout(), Phase::Suspected, 3).descends();
+    let foreign = 0x2000_00FF;
+    let written = (foreign & !told.mask) | told.under;
+    assert_eq!(written & !told.mask, foreign, "вне маски спуска чужие биты целы");
+}
+
+/// Один кодек: `Layout::write` и спуск дают ОДНО слово. Второй кодек в `write` (упаковка мимо `Told`)
+/// разошёлся бы с этим утверждением.
+#[test]
+fn write_and_descent_are_one_codec() {
+    let layout = layout();
+    let memo = Memo::new(layout, Phase::Confirmed, 200);
+    let word = 0x1234_5678;
+    let told = memo.descends();
+    assert_eq!(
+        layout.write(word, memo),
+        (word & !told.mask) | told.under,
+        "write и спуск — один кодек"
+    );
+}
+
+/// `Edged` несёт ОБЕ половины: провод (`narrow`) и вид края (`edge`). Прибору тишины нужны обе.
+#[test]
+fn edged_carries_both_wire_and_view() {
+    let wide = (Reading::Udp(Seen::Sent { count: 1 }), 42u32);
+    let edged = <Edged<Seen, u32> as Reads<(Reading, u32)>>::read(&wide).expect("сузилось");
+    assert!(matches!(edged.narrow, Seen::Sent { count: 1 }), "провод взят");
+    assert_eq!(edged.edge, 42, "вид края взят");
 }
