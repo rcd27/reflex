@@ -2,6 +2,8 @@
 //! TLV — единственное место, где эта дверь может соврать молча, а проверять его только на живом ядре
 //! значило бы проверять только там, где есть root.
 
+use crate::netlink::{aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at};
+
 /// Сколько прошло в одну сторону по счёту ЯДРА.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
@@ -35,9 +37,6 @@ pub const NLMSG_ERROR: u16 = 2;
 
 const HDR: usize = 16;
 const NFGEN: usize = 4;
-const ATTR_HDR: usize = 4;
-const NESTED: u16 = 0x8000;
-
 const CTA_TUPLE_ORIG: u16 = 1;
 const CTA_MARK: u16 = 8;
 const CTA_COUNTERS_ORIG: u16 = 9;
@@ -56,10 +55,6 @@ const CTA_PROTO_DST_PORT: u16 = 3;
 const CTA_COUNTERS_PACKETS: u16 = 1;
 const CTA_COUNTERS_BYTES: u16 = 2;
 
-const fn aligned(len: usize) -> usize {
-    (len + 3) & !3
-}
-
 /// Чем кончился разбор одной порции дампа. `Done` — не «пусто», а «ядро сказало, что записей больше
 /// нет»: дамп приходит несколькими порциями, остановка по пустой порции читала бы обрыв как конец.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,74 +62,6 @@ pub enum Chunk {
     More(Vec<Entry>),
     Done(Vec<Entry>),
     Failed(i32),
-}
-
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    bytes
-        .get(at..at + 2)
-        .map(|two| u16::from_ne_bytes([two[0], two[1]]))
-}
-
-fn be16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    bytes
-        .get(at..at + 2)
-        .map(|two| u16::from_be_bytes([two[0], two[1]]))
-}
-
-fn be32_at(bytes: &[u8], at: usize) -> Option<u32> {
-    bytes
-        .get(at..at + 4)
-        .map(|four| u32::from_be_bytes([four[0], four[1], four[2], four[3]]))
-}
-
-fn be64_at(bytes: &[u8], at: usize) -> Option<u64> {
-    bytes.get(at..at + 8).map(|eight| {
-        u64::from_be_bytes([
-            eight[0], eight[1], eight[2], eight[3], eight[4], eight[5], eight[6], eight[7],
-        ])
-    })
-}
-
-fn i32_at(bytes: &[u8], at: usize) -> Option<i32> {
-    bytes
-        .get(at..at + 4)
-        .map(|four| i32::from_ne_bytes([four[0], four[1], four[2], four[3]]))
-}
-
-/// Обход TLV одного уровня. Длина в заголовке включает его самого; короче заголовка — обрыв, обход
-/// прекращается, а не пропускает байты наугад.
-struct Attrs<'a> {
-    rest: &'a [u8],
-}
-
-impl<'a> Iterator for Attrs<'a> {
-    type Item = (u16, &'a [u8]);
-
-    /// Выход один, и он гасит остаток. Прежде обрыв уходил через `?`, не тронув `self.rest`:
-    /// итератор возвращал `None`, а на следующем шаге снова `Some` те же байты. Сверка длины
-    /// выглядела дублем `.get`, но держала фьюзность — теперь её держит единственная ветка отказа.
-    fn next(&mut self) -> Option<(u16, &'a [u8])> {
-        match (u16_at(self.rest, 0), u16_at(self.rest, 2)) {
-            (Some(len), Some(kind)) => match self.rest.get(ATTR_HDR..len as usize) {
-                Some(body) => {
-                    self.rest = self.rest.get(aligned(len as usize)..).unwrap_or(&[]);
-                    Some((kind & !NESTED, body))
-                }
-                None => {
-                    self.rest = &[];
-                    None
-                }
-            },
-            (Some(_), _) | (None, _) => {
-                self.rest = &[];
-                None
-            }
-        }
-    }
-}
-
-fn attrs(body: &[u8]) -> Attrs<'_> {
-    Attrs { rest: body }
 }
 
 fn counted(body: &[u8]) -> Counts {
