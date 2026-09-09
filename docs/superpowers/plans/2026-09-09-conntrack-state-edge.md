@@ -1,0 +1,951 @@
+# Состояние в IO-край: план реализации
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Перенести состояние приборов из юзерспейсных таблиц в conntrack ядра: юзерспейс zero-state, состояние приезжает с пакетом в `NFQA_CT` и уезжает с вердиктом в `NFQA_CT{CTA_MARK}`.
+
+**Architecture:** Свой netlink-сокет к `NFNL_SUBSYS_QUEUE` вместо крейта `nfq` (тот не разбирает `CTA_MARK` и не кладёт `NFQA_CT` в вердикт). Ядерный вид края входит расслоением носителя — `DetectorEvent<(Wire, CtView)>`, сужение существующими `Reads`/`lmap`. Следующее состояние — слово области `Conversation`, едущее в ядро спуском `Packet: Within<Conversation>` вместе с вердиктом. Собственное `S` прибора вырождается в `()`.
+
+**Tech Stack:** Rust 2021, `libc` (netlink руками, без новых зависимостей), существующие `reflex-core` (`Mealy`, `Word`, `Reads`, `certify`), `reflex-linux` (`conntrack/wire.rs`, `nfqueue/`).
+
+**Spec:** `docs/superpowers/specs/2026-09-09-conntrack-state-edge-design.md`
+
+## Global Constraints
+
+- **Новых зависимостей нет.** Netlink пишется на `libc`, как уже сделано в `linux/src/conntrack/dump.rs` («зависимостей сверх `libc` нет намеренно»).
+- **Закон одного чеканщика.** `CTA_*` разбирает ровно один код — `linux/src/conntrack/wire.rs`. Горячий путь идёт через него; второго разбора той же марки не заводить.
+- **Обход TLV — одно место.** `Attrs`/`aligned` переезжают в `linux/src/netlink.rs` и используются обоими подсистемами (`ctnetlink`, `queue`).
+- **Закон носитель-независим.** `CtView` — вид КРАЯ: поля называют величины («сколько прошло вниз», «как давно»), а не атрибуты netlink. `certify::remembering` формулируется над `Terminal`, не над очередью.
+- **IO отдельно от разбора.** Сокет — в своём модуле, разбор байтов — чистые функции, тестируемые без root.
+- **Докблок = имя конструкции + закон + `§N` канона.** Проза-рассказ о боли не пишется; тесты-законы (`compile_fail`, property) остаются.
+- **Порог сноса.** Ни одна строка работающей детекции не удаляется раньше зелёного боевого гейта (Задача 9).
+- Прогон после каждой задачи: `cargo test --workspace`.
+
+---
+
+### Task 0: Ключ потока — одна функция, не два понятия
+
+**Files:**
+- Modify: `engine/src/row.rs` или место ковки `FlowKey` (найти прогоном: `cargo test -p reflex-engine flow_key`)
+- Test: `linux/tests/flow_key_matches_tuple.rs`
+
+**Interfaces:**
+- Consumes: `Tuple` из `conntrack::wire` (существующий).
+- Produces: `pub fn flow_key_of_tuple(tuple: Tuple) -> FlowKey` — единственная ковка ключа из четвёрки.
+
+Нулевой шаг спеки: ключ таблицы имён и кортеж conntrack обязаны быть одной личностью потока. Две ковки одного ключа разойдутся молча при зелёной сборке.
+
+- [ ] **Step 1: Написать падающий тест**
+
+```rust
+use reflex_engine::FlowKey;
+use reflex_linux::conntrack::{flow_key_of_tuple, Tuple};
+
+/// Ключ, выкованный из разобранного провода, и ключ из четвёрки ядра — один и тот же ключ.
+/// Иначе беда, найденная по ядерному состоянию, не найдёт имени, заведённого по проводу.
+#[test]
+fn kernel_tuple_and_wire_forge_the_same_key() {
+    let wire_key = key_from_parsed_packet(&syn_from(0x0A00_0001, 44321, 0x5DB8_D822, 443));
+    let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
+    assert_eq!(flow_key_of_tuple(tuple), wire_key);
+}
+
+/// Направление не теряется: ответный кортеж даёт ключ того же разговора, а не второго.
+#[test]
+fn reply_direction_yields_the_same_conversation() {
+    let tuple = Tuple { src: 0x0A00_0001, dst: 0x5DB8_D822, src_port: 44321, dst_port: 443, proto: 6 };
+    let reply = Tuple { src: tuple.dst, dst: tuple.src, src_port: tuple.dst_port, dst_port: tuple.src_port, proto: 6 };
+    assert_eq!(flow_key_of_tuple(reply), flow_key_of_tuple(tuple));
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-linux --features conntrack --test flow_key_matches_tuple`
+Expected: FAIL — `flow_key_of_tuple` не найден.
+
+- [ ] **Step 3: Реализовать**
+
+Найти существующую ковку ключа из разобранного провода и выразить `flow_key_of_tuple` ЧЕРЕЗ неё же, не повторяя правило нормализации направления. Если правило зашито в разбор — вынести его в одну функцию и позвать из обоих мест.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add engine/src/row.rs linux/tests/flow_key_matches_tuple.rs
+git commit -m "refactor(engine): ключ потока куётся одной функцией из четвёрки"
+```
+
+---
+
+### Task 1: Общий обход TLV
+
+**Files:**
+- Create: `linux/src/netlink.rs`
+- Modify: `linux/src/lib.rs` (объявить модуль)
+- Modify: `linux/src/conntrack/wire.rs` (снять свои `Attrs`/`aligned`, взять из `netlink`)
+- Test: `linux/src/netlink.rs` (`#[cfg(test)] mod tests`)
+
+**Interfaces:**
+- Consumes: ничего.
+- Produces: `pub(crate) fn aligned(len: usize) -> usize`; `pub(crate) fn attrs(body: &[u8]) -> Attrs<'_>`; `pub(crate) struct Attrs<'a>` — `Iterator<Item = (u16, &'a [u8])>`, тип атрибута уже без бита `NESTED`; `pub(crate) fn u16_at/be16_at/be32_at/be64_at/i32_at(bytes, at) -> Option<_>`; `pub(crate) fn tlv(kind: u16, body: &[u8]) -> Vec<u8>` — сборка одного атрибута с выравниванием, длина БЕЗ паддинга; `pub(crate) fn nested(kind: u16, body: &[u8]) -> Vec<u8>` — то же с битом `NESTED`.
+
+- [ ] **Step 1: Написать падающий тест на сборку атрибута**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Длина в заголовке атрибута считает заголовок и тело, но НЕ паддинг: у ядра эта разница
+    /// стоила апстриму крейта `nfq` отдельного исправления (июнь 2026).
+    #[test]
+    fn attribute_length_excludes_padding() {
+        let built = tlv(7, &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(built.len(), 8, "тело выровнено до четырёх");
+        assert_eq!(u16_at(&built, 0), Some(7), "длина = 4 заголовка + 3 тела");
+        assert_eq!(u16_at(&built, 2), Some(7), "тип на месте");
+        assert_eq!(&built[4..7], &[0xAA, 0xBB, 0xCC]);
+    }
+
+    /// Сборка и обход — обратны друг другу.
+    #[test]
+    fn built_attributes_read_back() {
+        let body: Vec<u8> = tlv(1, &[1, 2, 3]).into_iter().chain(tlv(2, &[4])).collect();
+        let read: Vec<(u16, Vec<u8>)> = attrs(&body).map(|(k, v)| (k, v.to_vec())).collect();
+        assert_eq!(read, vec![(1, vec![1, 2, 3]), (2, vec![4])]);
+    }
+
+    /// Бит вложенности снимается на чтении: тип атрибута называет предмет, не форму.
+    #[test]
+    fn nested_bit_is_stripped_on_read() {
+        let inner = tlv(3, &[9]);
+        let body = nested(5, &inner);
+        let read: Vec<u16> = attrs(&body).map(|(k, _)| k).collect();
+        assert_eq!(read, vec![5], "тип без бита 0x8000");
+    }
+
+    /// Обрыв гасит обход целиком: фьюзность держит единственная ветка отказа.
+    #[test]
+    fn truncated_attribute_stops_the_walk() {
+        let mut body = tlv(1, &[1, 2, 3, 4, 5, 6]);
+        body.truncate(6);
+        assert_eq!(attrs(&body).count(), 0);
+    }
+}
+```
+
+- [ ] **Step 2: Прогнать — тест обязан упасть**
+
+Run: `cargo test -p reflex-linux --features conntrack netlink::tests`
+Expected: FAIL — `cannot find function tlv` (модуля ещё нет).
+
+- [ ] **Step 3: Написать модуль**
+
+Перенести из `linux/src/conntrack/wire.rs` без изменения поведения: `aligned`, `Attrs`, `attrs`, `u16_at`, `be16_at`, `be32_at`, `be64_at`, `i32_at`. Добавить сборку:
+
+```rust
+//! Обход и сборка TLV netlink — общие для ctnetlink и очереди. Одно место: два обхода одних
+//! байтов разошлись бы молча при зелёной сборке.
+
+const ATTR_HDR: usize = 4;
+const NESTED: u16 = 0x8000;
+
+/// Атрибут: заголовок и тело, выровненные до четырёх. Длина в заголовке паддинг НЕ считает.
+pub(crate) fn tlv(kind: u16, body: &[u8]) -> Vec<u8> {
+    let len = (ATTR_HDR + body.len()) as u16;
+    len.to_ne_bytes()
+        .into_iter()
+        .chain(kind.to_ne_bytes())
+        .chain(body.iter().copied())
+        .chain(std::iter::repeat_n(0u8, aligned(body.len()) - body.len()))
+        .collect()
+}
+
+/// Вложенный атрибут — тот же TLV с объявленной вложенностью.
+pub(crate) fn nested(kind: u16, body: &[u8]) -> Vec<u8> {
+    tlv(kind | NESTED, body)
+}
+```
+
+В `linux/src/lib.rs` добавить `pub(crate) mod netlink;`. В `conntrack/wire.rs` снять перенесённые определения и импортировать: `use crate::netlink::{aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at};`.
+
+- [ ] **Step 4: Прогнать — тесты обязаны пройти, старые не покраснеть**
+
+Run: `cargo test -p reflex-linux --features conntrack`
+Expected: PASS, включая существующие тесты разбора дампа.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add linux/src/netlink.rs linux/src/lib.rs linux/src/conntrack/wire.rs
+git commit -m "refactor(linux): обход и сборка TLV netlink — одно место"
+```
+
+---
+
+### Task 2: `CtView` — вид края, и один чеканщик на два источника
+
+**Files:**
+- Modify: `linux/src/conntrack/wire.rs` (добавить `CtView`, `view_of`; переписать `entry_of` через `view_of`)
+- Modify: `linux/src/conntrack/mod.rs` (реэкспорт)
+- Test: `linux/tests/ct_view.rs`
+
+**Interfaces:**
+- Consumes: `netlink::{attrs, be32_at, be64_at}` (Task 1).
+- Produces:
+
+```rust
+pub struct CtView {
+    pub id: u32,
+    pub tuple: Tuple,
+    pub down: Counts,      // от клиента к цели (orig)
+    pub up: Counts,        // от цели к клиенту (reply)
+    pub started_ago: Option<Duration>,   // из CTA_TIMESTAMP
+    pub expires_in: Option<Duration>,    // из CTA_TIMEOUT
+    pub tcp: Option<CtTcp>,              // из CTA_PROTOINFO
+    pub mark: u32,
+}
+pub enum CtTcp { SynSent, SynRecv, Established, FinWait, CloseWait, LastAck, TimeWait, Close, Other(u8) }
+pub fn view_of(body: &[u8]) -> CtView;   // тело = ТОЛЬКО атрибуты CTA_*, без nfgenmsg
+```
+
+- [ ] **Step 1: Написать падающий тест**
+
+```rust
+use reflex_linux::conntrack::{view_of, CtTcp};
+
+/// Хелпер: собрать тело NFQA_CT из атрибутов, как их кладёт ядро.
+fn ct_body(mark: u32, orig_packets: u64, reply_packets: u64, timeout_secs: u32) -> Vec<u8> {
+    // CTA_COUNTERS_PACKETS = 1, CTA_COUNTERS_ORIG = 9, CTA_COUNTERS_REPLY = 10,
+    // CTA_MARK = 8, CTA_TIMEOUT = 7. Числа у ctnetlink — big-endian.
+    let counters = |packets: u64| tlv_be64(1, packets);
+    [
+        nested_raw(9, &counters(orig_packets)),
+        nested_raw(10, &counters(reply_packets)),
+        tlv_be32(8, mark),
+        tlv_be32(7, timeout_secs),
+    ]
+    .concat()
+}
+
+/// Вид края читается из тела NFQA_CT тем же разбором, что и запись дампа: один чеканщик.
+#[test]
+fn view_reads_counters_and_mark() {
+    let view = view_of(&ct_body(0xDEAD_BEEF, 5, 0, 118));
+    assert_eq!(view.mark, 0xDEAD_BEEF);
+    assert_eq!(view.down.packets, 5, "клиент отправил пять");
+    assert_eq!(view.up.packets, 0, "цель не ответила ни разу");
+    assert_eq!(view.expires_in, Some(std::time::Duration::from_secs(118)));
+}
+
+/// Отсутствующий атрибут — не ноль, а «неизвестно»: ядро с выключенным acct счётчиков не шлёт,
+/// и ноль пакетов был бы ложью, неотличимой от правды.
+#[test]
+fn missing_attributes_are_unknown_not_zero() {
+    let view = view_of(&[]);
+    assert_eq!(view.expires_in, None);
+    assert_eq!(view.started_ago, None);
+    assert!(view.tcp.is_none());
+}
+```
+
+Хелперы `tlv_be32`, `tlv_be64`, `nested_raw` написать в том же файле теста поверх публичной сборки байтов (в тесте — руками, `netlink` крейт-приватен).
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-linux --features conntrack --test ct_view`
+Expected: FAIL — `view_of` не найден.
+
+- [ ] **Step 3: Реализовать**
+
+`view_of` собирает `CtView` тем же `fold` по `attrs`, каким сегодня собирается `Entry`; `entry_of` переписывается как `payload.get(NFGEN..).map(view_of)` плюс сборка `Entry` из полей вида. `CTA_COUNTERS_*` читаются существующей `counted`, `CTA_TUPLE_ORIG` — существующей `tupled`. Новое: `CTA_TIMEOUT` (be32, секунды), `CTA_TIMESTAMP` (вложенный, `CTA_TIMESTAMP_START` = be64 наносекунд), `CTA_PROTOINFO` → `CTA_PROTOINFO_TCP` → `CTA_PROTOINFO_TCP_STATE` (u8).
+
+**Отсутствие — `None`, не ноль.** Ядро без `nf_conntrack_acct` счётчиков не шлёт; ноль пакетов неотличим от «не считали».
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test -p reflex-linux --features conntrack`
+Expected: PASS, включая существующие тесты дампа (они идут через переписанный `entry_of`).
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add linux/src/conntrack/ linux/tests/ct_view.rs
+git commit -m "feat(linux): CtView — вид края, чеканенный одним разбором CTA_*"
+```
+
+---
+
+### Task 3: Сообщения очереди — сборка и разбор без сокета
+
+**Files:**
+- Create: `linux/src/queue/wire.rs`
+- Create: `linux/src/queue/mod.rs`
+- Modify: `linux/src/lib.rs`
+- Test: `linux/tests/queue_wire.rs`
+
+**Interfaces:**
+- Consumes: `netlink::*` (Task 1), `conntrack::view_of`, `CtView` (Task 2).
+- Produces:
+
+```rust
+pub struct Packet { pub id: u32, pub payload: Vec<u8>, pub nfmark: u32, pub ct: Option<CtView> }
+pub enum Incoming { Packet(Packet), Done, Failed(i32) }
+
+pub fn bind_request(queue: u16, seq: u32) -> Vec<u8>;
+pub fn params_request(queue: u16, seq: u32, copy_range: u16) -> Vec<u8>;
+pub fn conntrack_flag_request(queue: u16, seq: u32) -> Vec<u8>;   // NFQA_CFG_F_CONNTRACK + маска
+pub fn verdict_message(queue: u16, seq: u32, id: u32, accept: bool, ct_mark: Option<u32>) -> Vec<u8>;
+pub fn incoming_of(buffer: &[u8]) -> Vec<Incoming>;               // одно сообщение или несколько
+```
+
+- [ ] **Step 1: Написать падающие тесты**
+
+```rust
+use reflex_linux::queue::{incoming_of, verdict_message, conntrack_flag_request, Incoming};
+
+/// Флаг conntrack — то, чем включается NFQA_CT. Без него ядро вида края не приложит, и все
+/// приборы на ядерных величинах молча увидят пустоту.
+#[test]
+fn conntrack_flag_request_sets_flag_and_mask() {
+    let built = conntrack_flag_request(200, 1);
+    // NFQA_CFG_FLAGS = 5, NFQA_CFG_MASK = 6, NFQA_CFG_F_CONNTRACK = 0x0002, оба be32.
+    assert!(contains_be32_attr(&built, 5, 0x0002), "флаг выставлен");
+    assert!(contains_be32_attr(&built, 6, 0x0002), "маска называет тот же бит");
+}
+
+/// Состояние уезжает вложенным NFQA_CT{CTA_MARK} — именно этого не умеет крейт nfq.
+#[test]
+fn verdict_carries_conntrack_mark() {
+    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234));
+    // NFQA_CT = 11 (вложенный), внутри CTA_MARK = 8, be32.
+    let ct = nested_attr(&built, 11).expect("NFQA_CT в вердикте");
+    assert_eq!(be32_attr(&ct, 8), Some(0x0000_1234));
+}
+
+/// Вердикт без смены состояния не несёт NFQA_CT вовсе: не трогать — не то же, что записать своё.
+#[test]
+fn verdict_without_state_carries_no_conntrack_attribute() {
+    let built = verdict_message(200, 7, 42, true, None);
+    assert!(nested_attr(&built, 11).is_none());
+}
+
+/// Пакет разбирается вместе с видом края: обе половины из одного сообщения.
+#[test]
+fn packet_carries_payload_and_view() {
+    let message = packet_message(/* id */ 9, /* payload */ &[0x45, 0x00], /* ct mark */ 0xABC);
+    match incoming_of(&message).as_slice() {
+        [Incoming::Packet(packet)] => {
+            assert_eq!(packet.id, 9);
+            assert_eq!(packet.payload, vec![0x45, 0x00]);
+            assert_eq!(packet.ct.as_ref().map(|view| view.mark), Some(0xABC));
+        }
+        other => panic!("ожидался один пакет, пришло {other:?}"),
+    }
+}
+
+/// Несколько сообщений в одном буфере — обычный ответ ядра, а не край: считать их по одному
+/// значило бы терять пакеты пачками.
+#[test]
+fn several_messages_in_one_buffer_are_all_read() {
+    let buffer = [packet_message(1, &[1], 0), packet_message(2, &[2], 0)].concat();
+    assert_eq!(incoming_of(&buffer).len(), 2);
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-linux --features nfqueue --test queue_wire`
+Expected: FAIL — модуля `queue` нет.
+
+- [ ] **Step 3: Реализовать**
+
+Константы: `NFNL_SUBSYS_QUEUE = 3`; `NFQNL_MSG_PACKET = 0`, `NFQNL_MSG_VERDICT = 1`, `NFQNL_MSG_CONFIG = 2`; `NFQA_PACKET_HDR = 1`, `NFQA_VERDICT_HDR = 2`, `NFQA_MARK = 8`, `NFQA_PAYLOAD = 10`, `NFQA_CT = 11`; `NFQA_CFG_CMD = 1`, `NFQA_CFG_PARAMS = 2`, `NFQA_CFG_FLAGS = 5`, `NFQA_CFG_MASK = 6`; `NFQNL_CFG_CMD_BIND = 1`; `NFQNL_COPY_PACKET = 2`; `NFQA_CFG_F_CONNTRACK = 0x0002`; `NF_ACCEPT = 1`, `NF_DROP = 0`.
+
+Заголовок сообщения — `nlmsghdr` (16 байт) + `nfgenmsg` (`family = AF_UNSPEC`, `version = 0`, `res_id` = номер очереди в **big-endian**). Тип сообщения — `(NFNL_SUBSYS_QUEUE << 8) | msg`.
+
+Разбор `incoming_of` — рекурсивный обход сообщений буфера по образцу `chunk_of` из `conntrack/wire.rs`: длина из заголовка, `NLMSG_DONE`/`NLMSG_ERROR` как отдельные исходы, иначе — атрибуты через `attrs`, где `NFQA_CT` отдаётся в `view_of` (Task 2), а не разбирается на месте.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test -p reflex-linux --features nfqueue --test queue_wire`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add linux/src/queue/ linux/src/lib.rs linux/tests/queue_wire.rs
+git commit -m "feat(linux): сообщения очереди — NFQA_CT на приёме и в вердикте"
+```
+
+---
+
+### Task 4: Сокет очереди и `Terminal` над ним
+
+**Files:**
+- Create: `linux/src/queue/socket.rs`
+- Create: `linux/src/queue/terminal.rs`
+- Modify: `linux/src/queue/mod.rs`
+- Test: `linux/tests/queue_terminal.rs`
+
+**Interfaces:**
+- Consumes: `queue::wire::*` (Task 3).
+- Produces:
+
+```rust
+pub struct QueueSocket { /* fd */ }
+impl QueueSocket {
+    pub fn open(queue: u16) -> Result<QueueSocket, QueueError>;
+    pub fn wait(&self, millis: i32) -> Waited;      // poll на СВОЁМ fd, без /proc/self/fd
+    pub fn recv(&self) -> Result<Vec<Incoming>, QueueError>;
+    pub fn verdict(&self, id: u32, accept: bool, ct_mark: Option<u32>) -> Result<(), QueueError>;
+}
+pub enum QueueError { Socket(i32), Send(i32), Recv(i32), Overrun, Kernel(i32) }
+impl QueueError { pub fn from_errno(errno: i32) -> QueueError; }   // ENOBUFS → Overrun, прочее → Recv
+pub struct Held(pub Packet);            // носитель права ответить
+pub enum Answer { Pass, Stop, Remembered { accept: bool, state: u32 } }
+impl reflex_core::held::Terminal for QueueSocket { type Carrier = Held; type Answer = Answer; type Refusal = QueueError; }
+impl reflex_core::capability::CanRemember for QueueSocket { fn remember(state: u32, accept: bool) -> Answer; }
+```
+
+- [ ] **Step 1: Написать падающий тест на способность и на переполнение**
+
+```rust
+use reflex_linux::queue::{Answer, QueueError};
+
+/// `ENOBUFS` — величина, а не молчание: ядро сказало, что пакеты потеряны, и это знание нужно
+/// прибору (сравнение оттиска через разрыв недоверенно).
+#[test]
+fn overrun_is_a_value() {
+    assert_eq!(QueueError::from_errno(libc::ENOBUFS), QueueError::Overrun);
+    assert_eq!(QueueError::from_errno(libc::EPERM), QueueError::Recv(libc::EPERM));
+}
+
+/// Способность помнить строится тем же словом, каким отвечает очередь: пятое слово молча не завести.
+#[test]
+fn remembering_is_one_word_with_the_verdict() {
+    let answer = <reflex_linux::queue::QueueSocket as reflex_core::capability::CanRemember>::remember(0x1234, true);
+    assert_eq!(answer, Answer::Remembered { accept: true, state: 0x1234 });
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-linux --features nfqueue --test queue_terminal`
+Expected: FAIL — `QueueSocket` не найден.
+
+- [ ] **Step 3: Реализовать сокет**
+
+Открытие — по образцу `conntrack/dump.rs::open` (`socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER)`, без явного `bind`), затем три сообщения конфигурации из Task 3 подряд. Дескриптор хранится СВОЙ — `/proc/self/fd` не используется. `wait` — `libc::poll` на нём. `recv` — `libc::recv` в буфер 64 КиБ, затем `incoming_of`; `errno == ENOBUFS` → `QueueError::Overrun`. `verdict` — `libc::send` собранного сообщения.
+
+`Terminal::apply` разбирает `Answer` в один вызов `verdict`: `Pass` → accept без `NFQA_CT`, `Stop` → drop, `Remembered { accept, state }` → вердикт с `NFQA_CT{CTA_MARK}`.
+
+Добавить в `core/src/capability.rs`:
+
+```rust
+/// Способность помнить на крае: следующее состояние отдаётся ТЕМ ЖЕ словом, что и вердикт.
+/// Раздельные слова допускали бы «ответили, но не запомнили» — состояние осталось бы прошлым
+/// при отпущенном пакете. Канон §5.
+pub trait CanRemember: crate::held::Terminal {
+    fn remember(state: u32, accept: bool) -> Self::Answer;
+}
+```
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add linux/src/queue/ core/src/capability.rs linux/tests/queue_terminal.rs
+git commit -m "feat(linux): свой сокет очереди, способность помнить на крае"
+```
+
+---
+
+### Task 5: Кодек марки
+
+**Files:**
+- Create: `instrument/src/edge.rs`
+- Modify: `instrument/src/lib.rs`
+- Test: `instrument/tests/edge_codec.rs`
+
+**Interfaces:**
+- Consumes: ничего из предыдущих задач (чистая арифметика над `u32`).
+- Produces:
+
+```rust
+pub struct Layout { pub mask: u32, pub tag: u8 }   // маска — ПАРАМЕТР, не константа фреймворка
+pub enum Phase { Quiet, Suspected, Confirmed, Released }
+pub struct Memo { pub phase: Phase, pub imprint: u8 }
+pub enum Recall { Ours(Memo), Foreign { theirs: u32 } }   // буква входа, не показание
+
+impl Layout {
+    pub fn read(&self, word: u32) -> Recall;
+    pub fn write(&self, word: u32, memo: Memo) -> u32;    // read-modify-write под маской
+}
+```
+
+- [ ] **Step 1: Написать падающие тесты**
+
+```rust
+use reflex_instrument::edge::{Layout, Memo, Phase, Recall};
+
+const LAYOUT: Layout = Layout { mask: 0x00FF_E000, tag: 0b101 };
+
+/// Чужие биты переживают наш шаг: сосед по машине нам неизвестен, и стереть его разметку мы не
+/// вправе — даже не зная, что она есть.
+#[test]
+fn foreign_bits_survive_the_write() {
+    let foreign = 0x2000_00FF;
+    let written = LAYOUT.write(foreign, Memo { phase: Phase::Suspected, imprint: 3 });
+    assert_eq!(written & !LAYOUT.mask, foreign, "вне маски — байт в байт");
+}
+
+/// Записанное читается обратно.
+#[test]
+fn what_was_written_is_read_back() {
+    let word = LAYOUT.write(0, Memo { phase: Phase::Confirmed, imprint: 200 });
+    match LAYOUT.read(word) {
+        Recall::Ours(memo) => {
+            assert_eq!(memo.phase, Phase::Confirmed);
+            assert_eq!(memo.imprint, 200);
+        }
+        Recall::Foreign { theirs } => panic!("своё прочлось чужим: {theirs:#x}"),
+    }
+}
+
+/// Писателя называет тег, а не память: сравнение с КОНСТАНТОЙ, иначе юзерспейс снова обзавёлся бы
+/// состоянием ради проверки, что состояния не держит.
+#[test]
+fn another_writer_is_recognised_without_memory() {
+    let alien = LAYOUT.write(0, Memo { phase: Phase::Suspected, imprint: 1 }) ^ 0x0000_2000;
+    assert!(matches!(LAYOUT.read(alien), Recall::Foreign { .. }));
+}
+
+/// Пустое слово — не «наша тишина», а чужое: нулевой тег нашим не бывает.
+#[test]
+fn empty_word_is_foreign() {
+    assert!(matches!(LAYOUT.read(0), Recall::Foreign { theirs: 0 }));
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-instrument --test edge_codec`
+Expected: FAIL — модуля `edge` нет.
+
+- [ ] **Step 3: Реализовать**
+
+Раскладка внутри маски: младшие 8 бит — оттиск, следующие 3 — фаза, старшие — тег. Поля извлекаются сдвигом от младшего бита маски (`mask.trailing_zeros()`). `write` = `(word & !mask) | (packed << shift)`. `read` сверяет тег; не совпал — `Recall::Foreign { theirs: word }`.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add instrument/src/edge.rs instrument/src/lib.rs instrument/tests/edge_codec.rs
+git commit -m "feat(instrument): кодек края — фаза, оттиск, тег писателя под маской"
+```
+
+---
+
+### Task 6: Слово края и расслоение носителя
+
+**Files:**
+- Create: `instrument/src/edge_word.rs`
+- Modify: `engine-nfq/src/talk.rs` или место сборки широкого слова (`Reading`)
+- Test: `instrument/tests/edge_word.rs`
+
+**Interfaces:**
+- Consumes: `Memo` (Task 5), `CtView` (Task 2), `Word`/`Descends`/`Conversation`/`Packet` из `reflex-core`.
+- Produces:
+
+```rust
+impl Word for Memo { type Of = Conversation; }        // состояние принадлежит разговору
+pub struct Told(pub u32);                              // то же состояние, сказанное о пакете
+impl Word for Told { type Of = Packet; }
+impl Descends<Told> for Memo { fn descends(self) -> Told; }
+impl Reads<(Reading, CtView)> for Seen { ... }         // прибор провода проецирует .0
+impl Reads<(Reading, CtView)> for CtView { ... }       // прибор края проецирует .1
+```
+
+- [ ] **Step 1: Написать падающие тесты**
+
+```rust
+/// Пара слов одной области — слово: беда и памятка края обе сказаны о разговоре.
+#[test]
+fn distress_and_memo_pair_up() {
+    fn takes<W: reflex_core::word::Word>() {}
+    takes::<(Distress, Memo)>();
+}
+
+/// Сужение широкого слова: прибор провода видит провод, прибор края — край, оба слепы к чужому.
+#[test]
+fn each_instrument_narrows_to_its_own_multiplier() {
+    let wide = (Reading::Tcp(some_tcp()), some_view());
+    assert!(Seen::read(&wide).is_some(), "провод читается");
+    assert!(CtView::read(&wide).is_some(), "край читается");
+}
+```
+
+Плюс тест-закон, что смешение областей не собирается:
+
+```rust
+/// Состояние, сказанное о разговоре, не склеивается с вердиктом о пакете без спуска.
+/// ```compile_fail
+/// use reflex_core::word::Word;
+/// fn takes<W: Word>() {}
+/// takes::<(reflex_instrument::edge_word::Memo, reflex_core::word::VerdictWord)>();
+/// ```
+struct AreasDoNotMix;
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-instrument --test edge_word`
+Expected: FAIL — `impl Word for Memo` отсутствует.
+
+- [ ] **Step 3: Реализовать**
+
+Широкое слово транспорта становится парой `(Reading, CtView)`; существующие `Reads` для `Seen`/`SeenTcp` проецируют первый множитель, новый `Reads` для `CtView` — второй. Логика существующих приборов не трогается.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add instrument/src/edge_word.rs engine-nfq/src/talk.rs instrument/tests/edge_word.rs
+git commit -m "feat(instrument): слово края в области разговора, расслоение носителя"
+```
+
+---
+
+### Task 7: Приборы на величинах края
+
+**Files:**
+- Create: `instrument/src/edge_detect.rs`
+- Modify: `instrument/src/lib.rs`
+- Test: `instrument/tests/edge_detect.rs`
+
+**Interfaces:**
+- Consumes: `CtView` (Task 2), `Layout`/`Memo`/`Phase`/`Recall` (Task 5).
+- Produces:
+
+```rust
+pub struct EdgeSilence { after: Duration, layout: Layout, base: TimeoutBase }
+impl EdgeSilence { pub fn new(after: Duration, layout: Layout, base: TimeoutBase) -> EdgeSilence; }
+impl Mealy for EdgeSilence {
+    type In = DetectorEvent<(Seen, CtView)>;
+    type Out = SmallVec<[(Distress, Memo); 2]>;   // слово беды и слово края — обе Of = Conversation
+    type Log = ();
+}
+```
+
+- [ ] **Step 1: Написать падающие тесты**
+
+```rust
+/// Цель не ответила вовсе — ядро знает это счётчиком, нам хранить нечего.
+#[test]
+fn no_reply_at_all_is_read_from_the_edge() {
+    let view = view(/* down */ 4, /* up */ 0, /* expires_in */ 110, /* base */ 120);
+    let (_next, said, ()) = EdgeSilence::new(secs(5), LAYOUT).step(packet(view));
+    assert!(said.iter().any(|(distress, _)| *distress == Distress::NoBytes));
+}
+
+/// Тишина меряется ядерной величиной: база минус остаток жизни записи.
+#[test]
+fn silence_is_measured_by_the_kernel_clock() {
+    let view = view(/* down */ 2, /* up */ 3, /* expires_in */ 114, /* base */ 120);
+    let (_next, said, ()) = EdgeSilence::new(secs(5), LAYOUT).step(packet(view));
+    assert!(
+        said.iter().any(|(distress, _)| matches!(distress, Distress::Silence { ms } if *ms >= 6000)),
+        "шесть секунд простоя видны без наших часов"
+    );
+}
+
+/// Сказанное однажды не повторяется: фаза лежит в марке, и второй пакет её оттуда читает.
+#[test]
+fn a_told_flow_stays_silent_on_the_next_packet() {
+    let told = LAYOUT.write(0, Memo { phase: Phase::Confirmed, imprint: 3 });
+    let view = with_mark(view(2, 3, 114, 120), told);
+    let (_next, said, ()) = EdgeSilence::new(secs(5), LAYOUT).step(packet(view));
+    assert!(said.is_empty(), "повторно не жалуемся");
+}
+
+/// Прибор состояния не держит: два шага из одного значения дают один и тот же исход.
+#[test]
+fn the_instrument_is_stateless() {
+    let instrument = EdgeSilence::new(secs(5), LAYOUT);
+    let view = view(2, 3, 114, 120);
+    let (again, first, ()) = instrument.step(packet(view.clone()));
+    let (_, second, ()) = again.step(packet(view));
+    assert_eq!(first, second, "исход зависит от края, не от прожитого");
+}
+
+/// По нашим битам писал другой — это буква, а не тишина: прибор вправе сказать о находке.
+#[test]
+fn a_foreign_writer_is_observed() {
+    let alien = 0x0055_0000;
+    let view = with_mark(view(2, 0, 114, 120), alien);
+    let (_next, said, ()) = EdgeSilence::new(secs(5), LAYOUT).step(packet(view));
+    assert!(said.iter().any(|(distress, _)| matches!(distress, Distress::Diverged { .. })));
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-instrument --test edge_detect`
+Expected: FAIL — `EdgeSilence` не найден.
+
+- [ ] **Step 3: Реализовать**
+
+Величины берутся из `CtView`: «не ответила вовсе» = `up.packets == 0`; «сколько молчит» = `base − expires_in`, где `base` — таймаут ядра для состояния из `view.tcp`, прочитанный при старте (Task 7). Фаза и оттиск читаются `Layout::read`; `Recall::Foreign` даёт `Distress::Diverged`. На выходе — пара слов: беда и памятка края, обе `Of = Conversation`.
+
+Добавить в `instrument/src/distress.rs` вариант `Diverged { theirs: u32 }`.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add instrument/src/edge_detect.rs instrument/src/distress.rs instrument/src/lib.rs instrument/tests/edge_detect.rs
+git commit -m "feat(instrument): приборы на величинах края, без собственного состояния"
+```
+
+---
+
+### Task 8: Предпосылки машины
+
+**Files:**
+- Modify: `linux/src/nfqueue/preflight.rs`
+- Test: там же (`#[cfg(test)] mod tests`)
+
+**Interfaces:**
+- Consumes: ничего.
+- Produces: варианты `PreflightError::{NoConntrack, NoAccounting, NoTimestamps}`; `pub(crate) fn tcp_timeout_base(state: CtTcp) -> Option<Duration>` — читает `/proc/sys/net/netfilter/nf_conntrack_tcp_timeout_*`.
+
+- [ ] **Step 1: Написать падающий тест**
+
+```rust
+/// Выключенный acct — факт о машине, и человеку говорят, чем его включить: без счётчиков приборы
+/// края видят нули при зелёной сборке.
+#[test]
+fn accounting_error_names_the_fix() {
+    let message = format!("{}", PreflightError::NoAccounting);
+    assert!(message.contains("nf_conntrack_acct"));
+    assert!(message.contains("sysctl"), "рецепт починки, а не констатация");
+}
+
+/// База таймаута читается по состоянию: «сколько молчит» без неё не посчитать.
+#[test]
+fn timeout_base_is_named_per_state() {
+    assert_eq!(sysctl_name(CtTcp::SynSent), "nf_conntrack_tcp_timeout_syn_sent");
+    assert_eq!(sysctl_name(CtTcp::Established), "nf_conntrack_tcp_timeout_established");
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-linux --features nfqueue preflight`
+Expected: FAIL — вариантов нет.
+
+- [ ] **Step 3: Реализовать**
+
+К существующим проверкам добавить чтение `/proc/modules` на `nf_conntrack`, `/proc/sys/net/netfilter/nf_conntrack_acct` и `..._timestamp` (ожидается `1`), с текстами вида `Fix: sudo sysctl -w net.netfilter.nf_conntrack_acct=1`. `tcp_timeout_base` читает соответствующий файл и отдаёт `Duration` в секундах.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add linux/src/nfqueue/preflight.rs
+git commit -m "feat(linux): предпосылки края — conntrack, acct, timestamp, база таймаута"
+```
+
+---
+
+### Task 9: Девятый закон — `certify::remembering`
+
+**Files:**
+- Create: `core/src/certify/remembering.rs`
+- Modify: `core/src/certify/mod.rs`
+- Modify: `linux/examples/certify.rs`
+- Test: `core/tests/certify_remembering.rs`
+
+**Interfaces:**
+- Consumes: `CanRemember` (Task 4), `Terminal`, `Held`, `Verdict` (существующие).
+- Produces:
+
+```rust
+pub trait Recaller { fn recall(&mut self) -> Option<u32>; }   // свидетель: читает марку ДРУГОЙ дверью
+pub enum Broken { StateLost { asked: u32, found: u32 }, Clobbered { asked: u32, found: u32 } }
+pub enum Invalid { NoConntrack, AnswerNotTaken }
+pub fn remembers<T, R>(dut: &mut T, held: Held<T::Carrier>, state: u32, foreign: u32, recaller: &mut R) -> Verdict<Broken, Invalid>
+where T: Terminal + CanRemember, R: Recaller + ?Sized;
+```
+
+- [ ] **Step 1: Написать падающие тесты**
+
+```rust
+/// Закон держится: отданное ядру вернулось.
+#[test]
+fn kernel_remembers_what_was_told() {
+    let mut dut = Bench::taking();
+    let mut recaller = Echo::returning(0x2000_1234);
+    assert_eq!(
+        remembers(&mut dut, held(), 0x0000_1234, 0x2000_0000, &mut recaller),
+        Verdict::Held
+    );
+}
+
+/// Вернулось не то — вина подопытного.
+#[test]
+fn a_lost_state_is_the_fault_of_the_device() {
+    let mut recaller = Echo::returning(0x2000_0000);
+    assert!(matches!(
+        remembers(&mut Bench::taking(), held(), 0x1234, 0x2000_0000, &mut recaller),
+        Verdict::Broken(Broken::StateLost { .. })
+    ));
+}
+
+/// Наши биты встали, чужие стёрты — это отдельная вина, и она про соседей по машине.
+#[test]
+fn erasing_foreign_bits_is_its_own_fault() {
+    let mut recaller = Echo::returning(0x0000_1234);
+    assert!(matches!(
+        remembers(&mut Bench::taking(), held(), 0x1234, 0x2000_0000, &mut recaller),
+        Verdict::Broken(Broken::Clobbered { .. })
+    ));
+}
+
+/// Свидетель не увидел записи вовсе — беда стенда, не подопытного.
+#[test]
+fn a_silent_witness_invalidates_the_run() {
+    assert!(matches!(
+        remembers(&mut Bench::taking(), held(), 0x1234, 0, &mut Echo::silent()),
+        Verdict::Invalid(Invalid::NoConntrack)
+    ));
+}
+```
+
+- [ ] **Step 2: Прогнать — обязан упасть**
+
+Run: `cargo test -p reflex-core --test certify_remembering`
+Expected: FAIL — `remembers` не найден.
+
+- [ ] **Step 3: Реализовать**
+
+`remembers` отдаёт `dut.apply(held.answered(T::remember(state, true)))`, затем спрашивает свидетеля. Разбор исхода: свидетель молчит → `Invalid::NoConntrack`; наши биты не совпали → `Broken::StateLost`; наши совпали, чужие пропали → `Broken::Clobbered`; иначе `Held`.
+
+В `linux/examples/certify.rs` добавить прогон закона на живом ядре: свидетелем служит `conntrack::Dump` — **другая дверь** (`NFNL_SUBSYS_CTNETLINK`), берущая те же байты у ядра, но не тем сокетом, каким писали.
+
+- [ ] **Step 4: Прогнать**
+
+Run: `cargo test --workspace && cargo build -p reflex-linux --features certify --example certify`
+Expected: PASS + пример собирается.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add core/src/certify/ core/tests/certify_remembering.rs linux/examples/certify.rs
+git commit -m "feat(core): девятый закон — край помнит отданное состояние"
+```
+
+---
+
+### Task 10: Боевой регресс-гейт (без сноса)
+
+**Files:**
+- Create: `examples/detect-silent-drop/src/edge.rs` (второй путь рядом с существующим)
+- Modify: `examples/detect-silent-drop/src/main.rs`
+- Test: боевой прогон на вантаже, результат — в описании коммита
+
+**Interfaces:**
+- Consumes: всё построенное выше.
+- Produces: ничего для последующих задач; выход — доказательство.
+
+- [ ] **Step 1: Собрать пример с обоими путями**
+
+Существующий юзерспейсный путь НЕ трогается. Рядом поднимается второй, на `QueueSocket` + `EdgeSilence`, на своей очереди; оба печатают находки с пометкой пути.
+
+- [ ] **Step 2: Прогнать на вантаже**
+
+Run: стенд на реальном ТСПУ, цели `rutracker.org` и `vk.com`, не меньше 20 попыток на цель.
+Expected: новый путь называет те же цели, что и старый. Расхождение — стоп, разбирать до совпадения.
+
+- [ ] **Step 3: Замерить границу дропа ответа**
+
+На том же прогоне посчитать цели, у которых `ClientHello` подтверждён (`up.packets > 0`), а данных от цели нет (`Distress::NoBytes` не сработал, соединение закрылось по `FIN` клиента). Это и есть доля дропа ОТВЕТА, помеченная в спеке как неизмеренная.
+
+- [ ] **Step 4: Записать результат**
+
+```bash
+git add examples/detect-silent-drop/
+git commit -m "test(lab): боевой A/B ядерного пути против юзерспейсного
+
+Прогон на <вантаж>, <N> попыток: совпадение находок <..>.
+Доля дропа ответа: <..> — граница из спеки измерена."
+```
+
+- [ ] **Step 5: Гейт**
+
+Гейт зелёный, только если новый путь поймал всё, что поймал старый. Красный гейт запрещает Задачу 10 целиком.
+
+---
+
+### Task 11: Снос юзерспейсного состояния
+
+**Files:**
+- Modify: `reflex/src/lib.rs` (убрать `FlowTable`, `MIN_IDLE`, фанаут тиков по ключам)
+- Modify: `instrument/src/detect.rs` (снять состояние приборов, переведённых на край)
+- Test: существующие тесты фасада и приборов
+
+**Interfaces:**
+- Consumes: зелёный гейт Задачи 10.
+- Produces: ничего.
+
+- [ ] **Step 1: Убедиться, что гейт зелёный**
+
+Run: `git log --oneline -5` — коммит гейта на месте, в его описании совпадение находок.
+Expected: если нет — остановиться, Задача 11 не выполняется.
+
+- [ ] **Step 2: Снять таблицу приборов**
+
+`FlowTable::<Probes, FlowKey>` уходит; приборы живут одним экземпляром. `idents` **остаётся** — имя цели не состояние автомата; срок его жизни кроет горизонт клиентской активности.
+
+- [ ] **Step 3: Прогнать**
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 4: Повторить боевой прогон**
+
+Run: тот же стенд, что в Задаче 10.
+Expected: находки те же.
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add reflex/src/lib.rs instrument/src/detect.rs
+git commit -m "refactor(reflex): юзерспейс zero-state — таблица приборов снесена"
+```
