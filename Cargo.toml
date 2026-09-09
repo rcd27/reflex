@@ -29,5 +29,10 @@ members = [
     # История файлов осталась в суперпроекте (`rcd27/nevod`, по `50afa25c` включительно).
     "engine",
     "engine-nfq",
+    # ФАСАД — единственная дверь фреймворка (`engine(X).from…`). Прячет всё выше.
+    "reflex",
+    # ПРИМЕРЫ — эталон использования, один use-case на подпапку. Тест готовности API: если
+    # примеру нужно что-то, кроме `reflex`, — дефект фасада, а не примера.
+    "examples/detect-silent-drop",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately

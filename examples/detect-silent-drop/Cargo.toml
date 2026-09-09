@@ -1,0 +1,15 @@
+[package]
+name = "detect-silent-drop"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: поймать тихий дроп цели на NFQUEUE — эталон использования reflex"
+
+# ЗАВИСИМОСТЬ ОДНА. Потребитель не тянет core/engine/linux по отдельности и не знает их имён —
+# только `reflex`. Если для use-case'а понадобилось что-то ещё, это дефект фасада, а не примера.
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "detect-silent-drop"
+path = "src/main.rs"

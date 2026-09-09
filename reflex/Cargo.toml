@@ -1,0 +1,15 @@
+[package]
+name = "reflex"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Единственная дверь фреймворка: engine(X).from(..).extract(..).detect(..).on(..).run()"
+
+# ФАСАД. Прячет core/engine/engine-nfq/instrument/linux целиком — наружу торчит только синтаксис
+# движка. Потребитель зависит от ОДНОГО крейта и не знает ни Plane, ни Interleave, ни DetectorEvent.
+[dependencies]
+reflex-core = { path = "../core" }
+reflex-engine = { path = "../engine" }
+reflex-engine-nfq = { path = "../engine-nfq" }
+reflex-instrument = { path = "../instrument" }
+reflex-linux = { path = "../linux", features = ["nfqueue"] }
