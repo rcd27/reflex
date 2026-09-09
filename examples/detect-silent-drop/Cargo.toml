@@ -9,7 +9,17 @@ description = "Use-case: поймать тихий дроп цели на NFQUEU
 # только `reflex`. Если для use-case'а понадобилось что-то ещё, это дефект фасада, а не примера.
 [dependencies]
 reflex = { path = "../../reflex" }
+# ВТОРОЙ ПУТЬ A/B (Task 10). Ядерный путь берёт крейты напрямую — это регресс-стенд, не витрина
+# фасада: он сравнивает юзерспейсный путь (через `reflex`) с ядерным (QueueSocket + EdgeSilence).
+# После зелёного A/B и сноса FlowTable (Task 11) сравнение уходит, лишние зависимости с ним.
+reflex-linux = { path = "../../linux", features = ["nfqueue", "conntrack"] }
+reflex-instrument = { path = "../../instrument" }
+reflex-core = { path = "../../core" }
 
 [[bin]]
 name = "detect-silent-drop"
 path = "src/main.rs"
+
+[[bin]]
+name = "detect-silent-drop-edge"
+path = "src/edge_main.rs"
