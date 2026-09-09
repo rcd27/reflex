@@ -1,0 +1,11 @@
+# Стенд bring-your-own-detector: боевая верификация ПОТРЕБИТЕЛЬСКОГО прибора на реальном ТСПУ вантажа.
+services:
+  engine:
+    build:
+      context: ../../..
+      dockerfile: examples/bring-your-own-detector/lab/engine/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    environment:
+      TARGET: rutracker.org
+      CONTROL: vk.com

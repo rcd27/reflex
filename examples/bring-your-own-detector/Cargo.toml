@@ -1,0 +1,13 @@
+[package]
+name = "bring-your-own-detector"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case РАСШИРЕНИЯ: свой автомат Мили в дверь .detect(own(...)) — не из парка"
+
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "bring-your-own-detector"
+path = "src/main.rs"

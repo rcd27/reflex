@@ -21,13 +21,14 @@
 //! }
 //! ```
 //!
-//! Ни `Plane`, ни `Interleave`, ни `DetectorEvent`, ни `parse` наружу не торчат. Две оси
-//! полиморфизма закрыты в движке:
+//! Ни `Plane`, ни `Interleave`, ни `parse` наружу не торчат. Три оси полиморфизма закрыты в
+//! движке (`DetectorEvent` и словари провода открыты как субстрат «своего детектора» — см. `.detect`):
 //!
 //! * `.from(T)` — ТРАНСПОРТ: `Tcp` даёт словарь соединения, `Udp` — датаграммы (DNS). Каждый
 //!   несёт свой широкий словарь провода и свой порт.
 //! * `.detect(D)` — ПРИБОР: любой, читающий свой алфавит из широкого через `Reads` (канон §4).
 //!   Приборы разных алфавитов встают в одну дверь; несовместимый транспорту прибор не соберётся.
+//!   Свой автомат — через [`own`]: чужая машина Мили, говорящая словами беды, встаёт той же дверью.
 //! * терминал — НАБЛЮДАТЬ (`.on`) или ДЕЙСТВОВАТЬ (`.act`, реакция возвращает [`Act`]: `Sever`
 //!   инжектит RST — тихий дроп обрывается за ~300мс вместо вечной крутилки).
 //!
@@ -41,10 +42,10 @@ use std::time::{Duration, Instant};
 
 use reflex_core::dns::DnsMessage;
 use reflex_core::flow_table::FlowTable;
-use reflex_core::mealy::Mealy;
+pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tls;
-use reflex_core::DetectorEvent;
+pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::{CanSever, Serves, Toward};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
@@ -54,10 +55,10 @@ use reflex_engine_nfq::talk::Talks;
 use reflex_instrument::detect::{SilenceInstrument, SynDropInstrument};
 use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::retransmit::RetransmitInstrument;
-use reflex_instrument::wire::{Reading, Seen, SeenTcp};
+pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 use reflex_linux::nfqueue::{Answer, NfqueueBackend};
 use reflex_linux::rawsend::RawSender;
-use smallvec::SmallVec;
+pub use smallvec::{smallvec, SmallVec};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::Distress;
@@ -358,6 +359,39 @@ impl IntoProbe<Reading> for SynDrop {
 impl IntoProbe<DnsMessage> for DnsPoison {
     fn into_probe(self) -> Box<dyn Probe<DnsMessage>> {
         lift::<DnsMessage, DnsMessage, _>(DnsPoisonInstrument::new())
+    }
+}
+
+/// СВОЙ прибор: чужая машина Мили в ту же дверь `.detect`, что и парк. Потребитель приносит
+/// СОБСТВЕННЫЙ автомат — вижн «описать все сценарии через пайпы» невозможен с фиксированным меню.
+///
+/// Алфавит `N` (что машина читает — `Seen`/`SeenTcp`/`Reading`/…) выводится из `M::In` конструктором
+/// [`own`]; он обязан читаться из словаря транспорта (`N: Reads<Wire>`), иначе `.detect` не примет.
+/// Машина обязана быть `Copy` — движок сеет свежую копию шаблона на каждый ключ ([`FlowTable`]).
+pub struct Own<M, N> {
+    machine: M,
+    alphabet: PhantomData<fn() -> N>,
+}
+
+/// Обернуть свою машину в прибор для `.detect(own(machine))`. `N` выведется из `M::In`.
+pub fn own<N, M>(machine: M) -> Own<M, N>
+where
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+{
+    Own {
+        machine,
+        alphabet: PhantomData,
+    }
+}
+
+impl<W, N, M> IntoProbe<W> for Own<M, N>
+where
+    W: 'static,
+    N: Reads<W> + 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+{
+    fn into_probe(self) -> Box<dyn Probe<W>> {
+        lift::<W, N, M>(self.machine)
     }
 }
 
