@@ -1,5 +1,6 @@
-//! Семь законов эталона — что типом невыразимо. Тип убивает пустое заявление способности, закон —
-//! ложное (команда построена, а на проводе пусто). Восьмой закон, `replays`, — канон §10.
+//! Законы эталона — что типом невыразимо. Тип убивает пустое заявление способности, закон —
+//! ложное (команда построена, а на проводе пусто). Восьмой закон, `replays`, — канон §10; девятый,
+//! [`remembering`], — состояние уехало в ядро с вердиктом и вернулось (свидетель — ДРУГАЯ дверь).
 //!
 //! Свидетель — не подопытный: доставку спрашивают у того, кто устроен иначе, и у каждого закона он
 //! свой — [`injection`]→[`injection::FarEnd`] (до кого дошло), [`observation`]→[`observation::
@@ -12,6 +13,7 @@ pub mod injection;
 pub mod marking;
 pub mod observation;
 pub mod refusal;
+pub mod remembering;
 pub mod rewriting;
 pub mod severing;
 
@@ -20,6 +22,7 @@ pub use injection::injects;
 pub use marking::marks;
 pub use observation::observes;
 pub use refusal::refuses;
+pub use remembering::remembers;
 pub use rewriting::rewrites;
 pub use severing::severs;
 

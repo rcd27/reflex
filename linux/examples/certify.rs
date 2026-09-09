@@ -108,6 +108,7 @@ fn main() {
             "NfqueueBackend",
             certify_severs(queue, far, near, nonce.as_bytes(), toward),
         ),
+        [_, "remember", queue] => announce("remembers", "QueueSocket", certify_remembers(queue)),
         // ПРОБА РАЗГОВОРОМ — роль мира, и утверждает она ровно столько же, сколько соседняя:
         // ничего. Отдельна от `probe`, потому что обрыв выразим только над TCP.
         [_, "probe-tcp", target, nonce] => match probe_tcp(target, nonce.as_bytes()) {
@@ -204,6 +205,69 @@ fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
             2
         }
     }
+}
+
+/// ЗАКОН ПАМЯТИ НА ЖИВОМ ЯДРЕ (девятый). Пишем состояние вердиктом через `QueueSocket`
+/// (`NFNL_SUBSYS_QUEUE`), читаем марку ДРУГОЙ дверью — дампом ctnetlink (`NFNL_SUBSYS_CTNETLINK`).
+/// Чужие биты кладёт стенд (nft `ct mark set` ДО очереди); закон требует, чтобы они пережили вердикт.
+///
+/// Здесь `apply` впервые встречается с ядром целиком: мутация `verdict(id, accept, None)` в нём
+/// оставит марку прежней, наши биты не встанут — закон вернёт `Broken::StateLost`.
+fn certify_remembers(
+    queue: &str,
+) -> Result<
+    Verdict<
+        reflex_core::certify::remembering::Broken,
+        reflex_core::certify::remembering::Invalid,
+    >,
+    String,
+> {
+    use reflex_core::certify::remembering::{remembers, Recaller};
+    use reflex_linux::conntrack::{Dump, Tuple};
+    use reflex_linux::queue::{Held as Carried, Incoming, QueueSocket};
+
+    /// Свидетель — ДРУГАЯ дверь: дамп conntrack, ищущий запись потока по кортежу и берущий её марку.
+    struct DumpRecaller {
+        tuple: Tuple,
+    }
+    impl Recaller for DumpRecaller {
+        fn recall(&mut self) -> Option<u32> {
+            let dump = Dump::open().ok()?;
+            dump.entries()
+                .ok()?
+                .into_iter()
+                .find(|entry| entry.orig == self.tuple)
+                .map(|entry| entry.mark)
+        }
+    }
+
+    let number: u16 = queue.parse().map_err(|_| format!("queue не число: {queue}"))?;
+    let mut socket = QueueSocket::open(number).map_err(|why| format!("сокет: {why:?}"))?;
+
+    // Ждём пакет с ядерным видом: без `NFQA_CT` кортежа для свидетеля нет.
+    let (held, tuple, planted) = loop {
+        if socket.wait(5000) != Waited::Ready {
+            return Err("пакет к очереди не пришёл за 5 с".into());
+        }
+        let batch = socket.recv().map_err(|why| format!("приём: {why:?}"))?;
+        if let Some(packet) = batch.into_iter().find_map(|incoming| match incoming {
+            Incoming::Packet(packet) => Some(packet),
+            _ => None,
+        }) {
+            let ct = packet.ct.as_ref();
+            let tuple = ct.and_then(|view| view.tuple);
+            let planted = ct.map(|view| view.mark).unwrap_or(0);
+            match tuple {
+                Some(tuple) => break (Held::new(Carried(packet), Instant::now()), tuple, planted),
+                None => continue, // не IPv4/нет вида — пропускаем, ждём годный
+            }
+        }
+    };
+
+    // Наши биты поверх посаженного стендом чужого слова; закон проверит, что и наши встали, и чужие целы.
+    let ours = planted | 0x0000_00AB;
+    let mut recaller = DumpRecaller { tuple };
+    Ok(remembers(&mut socket, held, ours, planted, &mut recaller))
 }
 
 /// ЗАКОН ИНЪЕКЦИИ НА ЖИВОМ ЯДРЕ.
