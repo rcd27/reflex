@@ -40,8 +40,10 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
+use reflex_core::colimit::Layer;
 use reflex_core::dns::DnsMessage;
 use reflex_core::flow_table::FlowTable;
+use reflex_core::word::{Conversation, Target};
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tls;
@@ -464,16 +466,25 @@ impl<T: Transport> Keyed<T> {
             queue: self.queue,
             longest: detector.window(),
             probes: vec![detector.into_probe()],
+            about: None,
             transport: PhantomData,
         }
     }
 }
+
+/// Свёртка слов о разговорах в слово о ЦЕЛИ — приходит от потребителя ЗНАЧЕНИЕМ, как приходит свой
+/// автомат в `own(…)`. Какое слово рождается («молчат все», «молчит доля», «молчит хоть один») —
+/// описание угрозы, а не механики: фреймворк называет копредел, не угрозу.
+///
+/// Свёртка видит МНОЖЕСТВО последних слов: порядок ей не показан, кратность сняло хранилище.
+pub type Fold = Box<dyn Fn(&[&Distress]) -> Option<Distress> + Send>;
 
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
 pub struct Detecting<T: Transport> {
     queue: u16,
     probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
+    about: Option<Fold>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -485,6 +496,17 @@ impl<T: Transport> Detecting<T> {
         self
     }
 
+    /// Слово о ЦЕЛИ поверх слов о её разговорах — копредел по слою (§4: `Target ≅ ∐ Conversation`).
+    /// Свёртка приходит значением: фреймворк собирает последние слова разговоров цели и отдаёт их
+    /// ей, не зная, что она из них сделает.
+    ///
+    /// Без этого оператора движок говорит только о разговорах: двадцать потоков к молчащей цели
+    /// дают двадцать слов, а не одно.
+    pub fn about(mut self, fold: impl Fn(&[&Distress]) -> Option<Distress> + Send + 'static) -> Self {
+        self.about = Some(Box::new(fold));
+        self
+    }
+
     /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
     /// случилось. Пакет идёт как шёл.
     pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
@@ -492,6 +514,7 @@ impl<T: Transport> Detecting<T> {
             queue: self.queue,
             probes: self.probes,
             longest: self.longest,
+            about: self.about,
             react,
             transport: PhantomData,
         }
@@ -526,6 +549,7 @@ pub struct Running<T: Transport, F> {
     queue: u16,
     probes: Vec<Box<dyn Probe<T::Wire>>>,
     longest: Duration,
+    about: Option<Fold>,
     react: F,
     transport: PhantomData<fn() -> T>,
 }
@@ -559,6 +583,11 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
         let mut state = T::State::default();
         // Имя цели на ключ — для сигналов, рождённых тиком (у тика пакета с именем нет).
         let mut targets: HashMap<Flow, String> = HashMap::new();
+        // Слова разговоров, разложенные по цели: из них рождается слово О ЦЕЛИ, когда потребитель
+        // принёс свёртку (`.about(…)`). Ключ цели здесь — её имя, каким его назвал `extract`: фасад
+        // уже свёл `Named`/`Unnamed` в одну строку (имя либо адрес), и различение живёт выше, в
+        // `TargetKey`, а не тут.
+        let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
         let mut last_tick = Instant::now();
 
         loop {
@@ -574,6 +603,12 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                         let (signals, ()) = table.process(observed.flow, &observed.wire, now);
                         for signal in &signals {
                             react(&observed.target, signal.clone());
+                            layer.saw(
+                                TargetKey::Named(observed.target.clone().into()),
+                                observed.flow,
+                                signal.clone(),
+                                now,
+                            );
                         }
                         targets.insert(observed.flow, observed.target);
                     }
@@ -596,7 +631,32 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                     if let Some(target) = targets.get(&flow) {
                         for signal in &signals {
                             (self.react)(target, signal.clone());
+                            layer.saw(
+                                TargetKey::Named(target.clone().into()),
+                                flow,
+                                signal.clone(),
+                                now,
+                            );
                         }
+                    }
+                }
+                // Слово О ЦЕЛИ рождается здесь: слова её разговоров сводятся свёрткой потребителя.
+                // Затихшие разговоры уходят прежде сведения — иначе цель говорила бы голосом
+                // разговоров, которых уже нет.
+                if let Some(fold) = &self.about {
+                    layer.forget_idle(idle, now);
+                    let voices: Vec<(String, Distress)> = layer
+                        .targets()
+                        .filter_map(|key| {
+                            let said = layer.join(key, |words| fold(words))?;
+                            match key {
+                                TargetKey::Named(name) => Some((name.to_string(), said)),
+                                TargetKey::Unnamed(addr) => Some((addr.to_string(), said)),
+                            }
+                        })
+                        .collect();
+                    for (target, said) in voices {
+                        (self.react)(&target, said);
                     }
                 }
                 // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.

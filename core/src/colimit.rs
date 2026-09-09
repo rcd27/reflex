@@ -92,6 +92,12 @@ where
         gone
     }
 
+    /// Цели, о разговорах которых есть что сказать. Нужен зовущему, чтобы обойти слои: свести можно
+    /// лишь то, о чём слова уже есть, и спрашивать цель, которой в слое нет, незачем.
+    pub fn targets(&self) -> impl Iterator<Item = &Wide::Fibre> {
+        self.said.keys()
+    }
+
     /// Забыть один разговор — его слово больше не участвует в сведении.
     pub fn forget(&mut self, wide: &Wide::Fibre, narrow: &Narrow::Fibre) {
         if let Some(slice) = self.said.get_mut(wide) {
