@@ -1,4 +1,5 @@
 use reflex_engine::{Addr, Dir, FlowKey};
+use reflex_linux::conntrack::Tuple;
 
 pub const SERVER_PORT: u16 = 443;
 
@@ -365,12 +366,13 @@ pub fn keyed(client: u32, client_port: u16, server: u32, server_port: u16) -> Fl
     FlowKey(mixed(mixed(tuple) ^ (server as u64)))
 }
 
-/// Ключ из четвёрки ядра (`CTA_TUPLE_ORIG`). У неё инициатор — `src`, поэтому это ТА ЖЕ [`keyed`],
-/// что и у провода: обёртка добавляет ровно одно знание — «src ORIG'а есть клиент» — и не считает
-/// ничего. Своя арифметика была бы вторым правилом ковки, и два ключа одного разговора разошлись бы
-/// молча (ключ несимметричен: reply-кортеж зовущий обязан развернуть до вызова).
-pub fn keyed_of_tuple(src: u32, src_port: u16, dst: u32, dst_port: u16) -> FlowKey {
-    keyed(src, src_port, dst, dst_port)
+/// Ключ из ORIG-кортежа ядра (`CTA_TUPLE_ORIG`). Принимает кортеж ЦЕЛИКОМ, и имя кричит, какой:
+/// подать `CTA_TUPLE_REPLY` по ошибке можно, но ключ несимметричен — выйдет ДРУГОЙ разговор, и это
+/// ловит тест. Тело — та же [`keyed`], что и у провода: инициатор ORIG'а есть клиент, и это
+/// единственное знание, что добавляет обёртка. Своей арифметики нет — иначе была бы вторая ковка,
+/// и два ключа одного разговора разошлись бы молча.
+pub fn keyed_of_orig(orig: Tuple) -> FlowKey {
+    keyed(orig.src, orig.src_port, orig.dst, orig.dst_port)
 }
 
 fn mixed(word: u64) -> u64 {
