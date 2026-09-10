@@ -18,6 +18,25 @@ pub struct Frame {
     /// Для показа человеку: `Instant` в календарь не переводится.
     pub wall: SystemTime,
     pub bytes: Vec<u8>,
+    /// Каким канальным слоем обёрнут кадр. Хранится У КАДРА, а не выводится читателем: род объявлен
+    /// в заголовке файла ровно раз, и всякий, кто выводил бы смещение сам, разошёлся бы с записью
+    /// молча — а расходится он в сторону тишины (см. [`Frame::network`]).
+    pub link: Link,
+}
+
+/// Канальный слой записи — те роды, что этот читатель разбирает.
+///
+/// `Sll`/`Sll2` здесь не ради полноты: `tcpdump -i any` — самый частый способ снять запись, и он
+/// пишет НЕ Ethernet. Отказ читать такой файл означал бы, что дверь есть, а войти в неё обычным
+/// способом нельзя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    /// `LINKTYPE_ETHERNET`: две марки и род, 14 байт, плюс возможные метки VLAN.
+    Ethernet,
+    /// `LINKTYPE_LINUX_SLL` (113): «cooked» заголовок ядра, 16 байт, род в конце.
+    Sll,
+    /// `LINKTYPE_LINUX_SLL2` (276): то же второй редакции, 20 байт, род в НАЧАЛЕ.
+    Sll2,
 }
 
 /// Канальный слой Ethernet: две марки и род содержимого.
@@ -42,20 +61,29 @@ impl Frame {
     /// Метки VLAN снимаются стопкой (QinQ — тоже стопка), обрезанный кадр даёт пустой срез, а не
     /// панику: пустое разбор назовёт обрывом, и это правда о нём.
     pub fn network(&self) -> &[u8] {
-        let kind = |at: usize| {
-            self.bytes
-                .get(at..at + 2)
-                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        let after = match self.link {
+            // Род содержимого лежит на 12-м байте; всякая метка VLAN отодвигает его на свою длину.
+            Link::Ethernet => {
+                let kind = |at: usize| {
+                    self.bytes
+                        .get(at..at + 2)
+                        .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                };
+                let at = std::iter::successors(Some(LINK_HEADER - 2), |at| match kind(*at) {
+                    Some(kind) if VLAN.contains(&kind) => Some(at + VLAN_TAG),
+                    _ => None,
+                })
+                .last()
+                .unwrap_or(LINK_HEADER - 2);
+                at + 2
+            }
+            // У «cooked» заголовков длина постоянная, а метки VLAN ядро в них не кладёт: оно уже
+            // сняло их, разбирая пакет, и род сети в поле протокола стоит настоящий.
+            Link::Sll => SLL_HEADER,
+            Link::Sll2 => SLL2_HEADER,
         };
-        // Род содержимого лежит на 12-м байте; всякая метка VLAN отодвигает его на свою длину.
-        let at = std::iter::successors(Some(LINK_HEADER - 2), |at| match kind(*at) {
-            Some(kind) if VLAN.contains(&kind) => Some(at + VLAN_TAG),
-            _ => None,
-        })
-        .last()
-        .unwrap_or(LINK_HEADER - 2);
 
-        self.bytes.get(at + 2..).unwrap_or(&[])
+        self.bytes.get(after..).unwrap_or(&[])
     }
 }
 
@@ -81,6 +109,14 @@ const GLOBAL_HEADER: usize = 24;
 const RECORD_HEADER: usize = 16;
 /// `LINKTYPE_ETHERNET`.
 const ETHERNET: u32 = 1;
+/// `LINKTYPE_LINUX_SLL` — `tcpdump -i any` до второй редакции.
+const LINUX_SLL: u32 = 113;
+/// `LINKTYPE_LINUX_SLL2` — он же сегодня.
+const LINUX_SLL2: u32 = 276;
+/// Длина «cooked»-заголовка первой редакции: род пакета, род адреса, длина адреса, адрес, протокол.
+const SLL_HEADER: usize = 16;
+/// Длина второй редакции: протокол, резерв, индекс устройства, род адреса, род пакета, длина, адрес.
+const SLL2_HEADER: usize = 20;
 
 /// Разобрать файл в кадры. Время отсчитывается от первой записи и прикладывается к `base`.
 ///
@@ -90,12 +126,12 @@ const ETHERNET: u32 = 1;
 pub fn read(data: &[u8], base: Instant) -> (Vec<Frame>, Option<Broken>) {
     match header(data) {
         Err(broken) => (Vec::new(), Some(broken)),
-        Ok(swapped) => records(data, base, swapped),
+        Ok((swapped, link)) => records(data, base, swapped, link),
     }
 }
 
-/// Разбор глобального заголовка. Возвращает признак обратного порядка байтов.
-fn header(data: &[u8]) -> Result<bool, Broken> {
+/// Разбор глобального заголовка. Возвращает признак обратного порядка байтов и род канального слоя.
+fn header(data: &[u8]) -> Result<(bool, Link), Broken> {
     let magic = match data.get(..4) {
         None => return Err(Broken::TooShort),
         Some(bytes) => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -112,7 +148,9 @@ fn header(data: &[u8]) -> Result<bool, Broken> {
     match data.len() >= GLOBAL_HEADER {
         false => Err(Broken::TooShort),
         true => match word(&data[20..24], swapped) {
-            ETHERNET => Ok(swapped),
+            ETHERNET => Ok((swapped, Link::Ethernet)),
+            LINUX_SLL => Ok((swapped, Link::Sll)),
+            LINUX_SLL2 => Ok((swapped, Link::Sll2)),
             link_type => Err(Broken::UnsupportedLink { link_type }),
         },
     }
@@ -123,7 +161,12 @@ fn header(data: &[u8]) -> Result<bool, Broken> {
 /// Без изменяемого состояния и без рекурсии: смещения порождаются `successors` (ленивая
 /// последовательность). Рекурсия была бы хуже цикла (кадров сотни тысяч, стек не резиновый), `let
 /// mut` — хуже обоих: открывает место для правки, невидимой в сигнатуре.
-fn records(data: &[u8], base: Instant, swapped: bool) -> (Vec<Frame>, Option<Broken>) {
+fn records(
+    data: &[u8],
+    base: Instant,
+    swapped: bool,
+    link: Link,
+) -> (Vec<Frame>, Option<Broken>) {
     let taken: Vec<(u64, &[u8])> = offsets(data, swapped)
         .filter_map(|offset| record_at(data, offset, swapped))
         .collect();
@@ -136,6 +179,7 @@ fn records(data: &[u8], base: Instant, swapped: bool) -> (Vec<Frame>, Option<Bro
             at: base + Duration::from_micros(stamp.saturating_sub(first)),
             wall: UNIX_EPOCH + Duration::from_micros(*stamp),
             bytes: bytes.to_vec(),
+            link,
         })
         .collect();
 
@@ -335,16 +379,56 @@ mod tests {
         }
     }
 
-    /// Не-Ethernet не разбирается: гадать о канальном слое нечем.
+    /// Незнакомый канальный слой не разбирается, и отказ НАЗЫВАЕТ его номером: гадать о смещении
+    /// нечем, а промолчать значило бы объявить весь файл чужим протоколом. Род взят настоящий
+    /// (`LINKTYPE_IEEE802_11`, 105) — тот, что этот читатель и правда не умеет.
     #[test]
-    fn a_non_ethernet_capture_is_refused() {
+    fn an_unknown_link_layer_is_refused_by_name() {
         let mut file = pcap_of(&[]);
-        // Подменяем тип канального слоя на Linux SLL.
-        file.splice(20..24, 113u32.to_le_bytes());
+        file.splice(20..24, 105u32.to_le_bytes());
         assert!(matches!(
             read(&file, Instant::now()),
-            (_, Some(Broken::UnsupportedLink { link_type: 113 }))
+            (_, Some(Broken::UnsupportedLink { link_type: 105 }))
         ));
+    }
+
+    /// `tcpdump -i any` пишет «cooked»-заголовок, а не Ethernet — и это САМЫЙ ЧАСТЫЙ способ снять
+    /// запись. Обе редакции дают тот же сетевой пакет, что Ethernet: длина заголовка другая, поле
+    /// рода стоит в другом месте, а предмет один.
+    #[test]
+    fn cooked_captures_offer_the_same_network_packet() {
+        let packet = b"\x45\x00\x00\x28ip";
+
+        // SLL: 16 байт, род в конце (14..16).
+        let sll: Vec<u8> = [0u8; 14]
+            .into_iter()
+            .chain(0x0800u16.to_be_bytes())
+            .chain(packet.iter().copied())
+            .collect();
+        let mut file = pcap_of(&[(1, 0, &sll)]);
+        file.splice(20..24, 113u32.to_le_bytes());
+        let (frames, _broken) = read(&file, Instant::now());
+        assert_eq!(
+            frames.first().map(|frame| frame.network()),
+            Some(&packet[..]),
+            "SLL: сетевой пакет начинается после шестнадцати байт"
+        );
+
+        // SLL2: 20 байт, род в НАЧАЛЕ (0..2).
+        let sll2: Vec<u8> = 0x0800u16
+            .to_be_bytes()
+            .into_iter()
+            .chain([0u8; 18])
+            .chain(packet.iter().copied())
+            .collect();
+        let mut file = pcap_of(&[(1, 0, &sll2)]);
+        file.splice(20..24, 276u32.to_le_bytes());
+        let (frames, _broken) = read(&file, Instant::now());
+        assert_eq!(
+            frames.first().map(|frame| frame.network()),
+            Some(&packet[..]),
+            "SLL2: сетевой пакет начинается после двадцати байт"
+        );
     }
 
     /// Обрыв в конце не отменяет прочитанного: `tcpdump`, убитый сигналом, оставляет хвост.

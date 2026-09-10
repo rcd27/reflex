@@ -292,3 +292,33 @@ fn запись_снятая_чужими_руками_даёт_настояще
         "разбор пятнадцати кадров не должен занимать секунду"
     );
 }
+
+/// ПРЕДМЕТ: `tcpdump -i any` — самый частый способ снять запись, и канальный слой у него НЕ
+/// Ethernet, а Linux cooked v2 (`LINKTYPE_LINUX_SLL2`, 276). Заголовок другой длины и с полем рода
+/// в другом месте; кто этого не знает, читает первым байтом не IP-заголовок и объявляет весь файл
+/// чужим протоколом.
+///
+/// Оракул тот же и снят той же командой: OpenSSL, `tcpdump -i any`, подтверждение `tshark`.
+#[test]
+fn запись_снятая_через_any_тоже_даёт_имя_цели() {
+    let heard = std::sync::Mutex::new(Vec::new());
+
+    let report = pcap("tests/fixtures/handshake-any.pcap")
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Counter))
+        .on(|target: &str, _distress: Distress| {
+            heard
+                .lock()
+                .expect("журнал не отравлен")
+                .push(target.to_string())
+        })
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard.iter().any(|name| name == "proof.reflex.lab"),
+        "запись `-i any` обязана читаться так же, как Ethernet; услышано: {heard:?}, \
+         отчёт: {report:?}"
+    );
+}
