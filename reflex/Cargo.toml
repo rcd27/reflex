@@ -7,10 +7,24 @@ description = "Единственная дверь фреймворка: engine(
 
 # ФАСАД. Прячет core/engine/engine-nfq/instrument/linux целиком — наружу торчит только синтаксис
 # движка. Потребитель зависит от ОДНОГО крейта и не знает ни Plane, ни Interleave, ни DetectorEvent.
+#
+# КРОСС-СБОРКА (задача 12½): `cargo check -p reflex --target x86_64-pc-windows-msvc` теперь
+# `Finished`. Портативные зависимости — безусловно (`reflex-engine` несёт `parse`/`talk`, разбор
+# провода); Linux-специфичные (`engine-nfq`, `linux`) — только под `cfg(unix)`, см. ниже. Носитель
+# очереди на Windows не существует (`Nfqueue` там взять неоткуда), и это ожидаемо: дверь называет
+# носителя явно, а переносимость даёт всё, что НИЖЕ первой строки цепочки.
 [dependencies]
 reflex-core = { path = "../core", features = ["dns"] }
 reflex-engine = { path = "../engine" }
-reflex-engine-nfq = { path = "../engine-nfq" }
 reflex-instrument = { path = "../instrument" }
-reflex-linux = { path = "../linux", features = ["nfqueue"] }
 smallvec = "1"
+
+# НОСИТЕЛЬ ОЧЕРЕДИ (`src/nfqueue.rs`) — ЕДИНСТВЕННЫЙ ПОТРЕБИТЕЛЬ ЭТИХ ДВУХ (задача 12½). Цепочка
+# сборки, транспорты (`Tcp`/`Udp`), приборы и `drive` их не знают — переезд `parse`/`talk` в
+# `reflex-engine` (портативен, кросс-проверен) отвязал сердцевину. `cfg(unix)`, не голая
+# зависимость: `reflex-linux` безусловно зависит от `nfq`, чьи привязки `libc` не собираются на
+# `windows-msvc` (23 ошибки, замер задачи 12) — а не Windows-таргет попросту не участвует в сборке
+# графа, и падать там нечему.
+[target.'cfg(unix)'.dependencies]
+reflex-engine-nfq = { path = "../engine-nfq" }
+reflex-linux = { path = "../linux", features = ["nfqueue"] }

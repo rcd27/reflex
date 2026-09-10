@@ -66,10 +66,10 @@ pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::Serves;
 use reflex_core::{CanSever, Toward};
+use reflex_engine::parse::{self, Read};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
+use reflex_engine::talk::Talks;
 use reflex_engine::{Addr, Flow};
-use reflex_engine_nfq::parse::{self, Read};
-use reflex_engine_nfq::talk::Talks;
 use reflex_instrument::edge::{Layout, Memo};
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
@@ -80,7 +80,19 @@ pub use smallvec::{smallvec, SmallVec};
 /// Носитель очереди ядра — ЕДИНСТВЕННОЕ место фасада, знающее про Linux. Отдельным модулем, чтобы
 /// граница была проверяема ГРЕПОМ: имени линукс-крейта в `lib.rs` не должно встретиться ни разу,
 /// иначе «WinDivert встаёт в ту же дверь» остаётся обещанием, а не свойством.
+///
+/// `#[cfg(unix)]` НА ВСЁМ МОДУЛЕ (задача 12½) — греп мерил СЛЕДСТВИЕ закона (имя не названо), не
+/// сам закон (крейт собирается без Linux): до этой задачи `mod nfqueue` был безусловным, а
+/// `reflex-engine-nfq` (его прежний источник `parse`/`talk`) безусловно зависел от `reflex-linux`,
+/// и `cargo check --target x86_64-pc-windows-msvc` падал 23 ошибками из чужого крейта `nfq` —
+/// раньше, чем компилятор доходил до этого модуля. Теперь `parse`/`talk` портативны (переехали в
+/// `reflex-engine`), и единственное, что здесь остаётся Linux-специфичным — САМ носитель очереди:
+/// `Nfqueue`/`NfqueueCarrier` открывают `reflex_linux::queue::QueueSocket`, которого на Windows нет
+/// и быть не может. Потребитель на Windows пишет `engine(WinDivert::filter(..))` — дверь называет
+/// носителя явно, переносимость даёт всё, что НИЖЕ первой строки.
+#[cfg(unix)]
 mod nfqueue;
+#[cfg(unix)]
 pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.

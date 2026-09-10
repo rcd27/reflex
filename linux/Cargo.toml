@@ -32,8 +32,13 @@ conntrack = []
 # (#74) — буфер/lifecycle/backpressure сокета были вне юрисдикции → утечку не локализовать.
 tun = ["dep:smoltcp", "dep:spin"]
 
+# `reflex-engine` — ЗА ОДНИМ ТИПОМ (`conntrack::Tuple`, реэкспорт, задача 12½): форма кортежа
+# ORIG уехала туда вместе с `parse::keyed_of_orig`, единственным потребителем выше по стеку — один
+# предмет, одно определение. Зависимость безопасна по направлению: `reflex-engine` портативен и
+# сам ничего о Linux не знает, цикла нет.
 [dependencies]
 reflex-core = { path = "../core", features = ["tls"] }
+reflex-engine = { path = "../engine" }
 nfq = { version = "0.2", optional = true }
 tracing = "0.1"
 futures = "0.3"
