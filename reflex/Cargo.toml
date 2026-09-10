@@ -14,7 +14,9 @@ description = "Единственная дверь фреймворка: engine(
 # очереди на Windows не существует (`Nfqueue` там взять неоткуда), и это ожидаемо: дверь называет
 # носителя явно, а переносимость даёт всё, что НИЖЕ первой строки цепочки.
 [dependencies]
-reflex-core = { path = "../core", features = ["dns"] }
+# `pcap` — чтение записанного провода: своя дверь фасада (`reflex::pcap`). Названа здесь, а не
+# получена сборкой чужих фич: единая сборка включала её соседом, и дверь работала СЛУЧАЙНО.
+reflex-core = { path = "../core", features = ["dns", "pcap"] }
 reflex-engine = { path = "../engine" }
 reflex-instrument = { path = "../instrument" }
 smallvec = "1"

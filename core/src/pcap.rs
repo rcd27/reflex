@@ -20,6 +20,45 @@ pub struct Frame {
     pub bytes: Vec<u8>,
 }
 
+/// Канальный слой Ethernet: две марки и род содержимого.
+const LINK_HEADER: usize = 14;
+/// Метка VLAN: род «дальше метка» и сама метка (802.1Q, 802.1ad).
+const VLAN_TAG: usize = 4;
+const VLAN: [u16; 2] = [0x8100, 0x88a8];
+
+impl Frame {
+    /// СЕТЕВОЙ ПАКЕТ ВНУТРИ КАДРА — то, что ест разбор провода: `framed` ждёт первым байтом
+    /// IP-заголовок, а `bytes` хранит кадр как он снят, вместе с канальным слоем.
+    ///
+    /// Снимается ЗДЕСЬ, потому что здесь и только здесь известен род канального слоя: [`read`]
+    /// пропускает лишь `LINKTYPE_ETHERNET`, всё прочее не доходит до кадров вовсе
+    /// ([`Broken::UnsupportedLink`]). Кто снимал бы его у себя, выводил бы смещение заново — и
+    /// разошёлся бы молча на первой же записи с магистрального порта.
+    ///
+    /// Цена, за которую заплачено красным: до этого закона движок читал КАЖДЫЙ кадр записи как
+    /// чужой протокол (первый байт MAC-адреса — не `4` в старшей тетраде), приборы молчали, и
+    /// молчание читалось как «блокировок нет». Пустой отчёт лгал по построению.
+    ///
+    /// Метки VLAN снимаются стопкой (QinQ — тоже стопка), обрезанный кадр даёт пустой срез, а не
+    /// панику: пустое разбор назовёт обрывом, и это правда о нём.
+    pub fn network(&self) -> &[u8] {
+        let kind = |at: usize| {
+            self.bytes
+                .get(at..at + 2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        };
+        // Род содержимого лежит на 12-м байте; всякая метка VLAN отодвигает его на свою длину.
+        let at = std::iter::successors(Some(LINK_HEADER - 2), |at| match kind(*at) {
+            Some(kind) if VLAN.contains(&kind) => Some(at + VLAN_TAG),
+            _ => None,
+        })
+        .last()
+        .unwrap_or(LINK_HEADER - 2);
+
+        self.bytes.get(at + 2..).unwrap_or(&[])
+    }
+}
+
 /// Что не так с файлом. «Файл не прочитан» и «прочитан наполовину» — разные беды, вторая тише.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Broken {
@@ -193,6 +232,66 @@ mod tests {
                 .chain(body.iter().copied())
                 .collect()
         })
+    }
+
+    /// Собрать Ethernet-кадр вокруг сетевого пакета.
+    fn framed(ethertype: u16, tags: &[u16], packet: &[u8]) -> Vec<u8> {
+        let head: Vec<u8> = [0xff; 12].into_iter().collect();
+        let tagged: Vec<u8> = tags.iter().fold(head, |acc, tag| {
+            acc.into_iter()
+                .chain(0x8100u16.to_be_bytes())
+                .chain(tag.to_be_bytes())
+                .collect()
+        });
+        tagged
+            .into_iter()
+            .chain(ethertype.to_be_bytes())
+            .chain(packet.iter().copied())
+            .collect()
+    }
+
+    /// ПРЕДМЕТ: разбор провода ждёт первым байтом IP-заголовок, а запись хранит кадр с канальным
+    /// слоем. Пока снять его было некому, движок читал КАЖДЫЙ кадр записи как чужой протокол — и
+    /// молчание приборов на записи означало не «блокировок нет», а «не разобрано ничего».
+    #[test]
+    fn a_frame_offers_the_network_packet_without_the_link_layer() {
+        let packet = b"\x45\x00\x00\x28ip";
+        let (frames, _broken) = read(
+            &pcap_of(&[(1, 0, &framed(0x0800, &[], packet))]),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            frames.first().map(|frame| frame.network()),
+            Some(&packet[..]),
+            "сетевой пакет обязан начинаться с IP-заголовка"
+        );
+    }
+
+    /// VLAN снимается тоже — и стопкой: запись с магистрального порта иначе выглядела бы чужой
+    /// целиком, а «чужое на каждом кадре» неотличимо от «сеть чиста».
+    #[test]
+    fn vlan_tags_are_not_mistaken_for_the_network_packet() {
+        let packet = b"\x45\x00\x00\x28ip";
+        let (frames, _broken) = read(
+            &pcap_of(&[(1, 0, &framed(0x0800, &[100, 200], packet))]),
+            Instant::now(),
+        );
+
+        assert_eq!(
+            frames.first().map(|frame| frame.network()),
+            Some(&packet[..]),
+            "две метки VLAN — всё ещё канальный слой, а не пакет"
+        );
+    }
+
+    /// Кадр короче канального слоя не даёт сетевого пакета — и не паникует: обрыв записи назван
+    /// пустотой, которую разбор провода прочитает как `Truncated`, а не как чужой протокол.
+    #[test]
+    fn a_frame_shorter_than_the_link_layer_offers_nothing() {
+        let (frames, _broken) = read(&pcap_of(&[(1, 0, b"\xff\xff\xff")]), Instant::now());
+
+        assert_eq!(frames.first().map(|frame| frame.network()), Some(&[][..]));
     }
 
     /// Запись помнит, когда снята. `Instant` монотонный, в календарь не переводится (лента не
