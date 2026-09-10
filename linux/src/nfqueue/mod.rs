@@ -14,3 +14,6 @@ pub use pipeline::{
     NfqCounts, NfqHandler, NfqPacket, NfqPipeline, NfqShared, NfqStep, NfqVerdictKind,
 };
 pub use terminal::{Answer, NotTaken, Queued};
+// Только внутри крейта: `millis_until` — закон округления остатка до `poll`, общий с
+// `queue::terminal` (второй бэкенд на своём netlink-сокете, тот же предмет).
+pub(crate) use terminal::millis_until;

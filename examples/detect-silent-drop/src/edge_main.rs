@@ -48,7 +48,7 @@ fn main() {
     // терпения клиента — на вечном дропе повторы идут до ~15 с, возраст порог перешагнёт с запасом.
     let silence: EdgeSilence<CtEdge> = EdgeSilence::new(Duration::from_secs(2), layout);
 
-    let socket = match QueueSocket::open(QUEUE) {
+    let socket = match QueueSocket::open(QUEUE, base) {
         Ok(socket) => socket,
         Err(why) => {
             eprintln!("[край] сокет очереди {QUEUE}: {why:?}");

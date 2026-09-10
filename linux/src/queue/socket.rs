@@ -3,11 +3,15 @@
 //! приватным полем выравнивания). `NETLINK_NO_ENOBUFS` НЕ трогаем — умолчание ядра сообщать о
 //! переполнении нам и нужно: не сообщённое переполнение стало бы ложной бедой (см. связку рисков).
 
+use std::collections::VecDeque;
+use std::time::Instant;
+
 use libc::{c_int, c_void, close, poll, pollfd, recv, send, socket, AF_NETLINK, POLLIN, SOCK_RAW};
 
 use super::wire::{
     bind_request, conntrack_flag_request, incoming_of, params_request, verdict_message, Incoming,
 };
+use crate::conntrack::TimeoutBase;
 use crate::netlink::errno;
 use crate::nfqueue::Waited;
 
@@ -38,21 +42,39 @@ impl QueueError {
 }
 
 /// Сокет к очереди `queue`. Хранит СВОЙ дескриптор — `/proc/self/fd` не нужен (в отличие от старой
-/// двери через крейт `nfq`, добывавшей fd разницей множеств).
+/// двери через крейт `nfq`, добывавшей fd разницей множеств). Хранит и `base`: `Held::new` у
+/// каждого взятого пакета нуждается в ней, а читать её здесь заново значило бы завести второго
+/// читателя одной величины рядом с тем единственным, что уже читает её при открытии цепочки (§9 —
+/// два закона об одном предмете расходятся молча). `pending` — пачка, которую вернул `recv`: он
+/// отдаёт МНОГО, `Serves::serve` отдаёт по одному, и разница живёт здесь же, у источника.
 pub struct QueueSocket {
     fd: c_int,
     queue: u16,
+    pub(crate) base: TimeoutBase,
+    /// `(Incoming, Instant)` — момент ОБЯЗАН ехать вместе с сообщением, а не сниматься заново при
+    /// разборе: он штампуется в `recv` на ПРИЁМЕ пачки (см. `Serves::serve` в `terminal.rs`). Сними
+    /// его при снятии из буфера — и второй, третий пакет пачки получили бы момент позже своего
+    /// прихода, а монотонность букв (`core::interleave`) сломалась бы молча.
+    pub(crate) pending: VecDeque<(Incoming, Instant)>,
 }
 
 impl QueueSocket {
     /// Открыть и настроить очередь: bind, copy-packet, включение `NFQA_CT`. Три конфигурационных
-    /// сообщения подряд (ответа-ack не ждём: netlink к очереди их не шлёт по умолчанию).
-    pub fn open(queue: u16) -> Result<QueueSocket, QueueError> {
+    /// сообщения подряд (ответа-ack не ждём: netlink к очереди их не шлёт по умолчанию). `base`
+    /// приходит АРГУМЕНТОМ: снимает её ровно один читатель выше по цепочке (`Nfqueue::open`),
+    /// `TimeoutBase::read()` здесь не зовётся — вторым чтением этот сокет развёл бы с ним закон об
+    /// одной величине внутри одного прогона.
+    pub fn open(queue: u16, base: TimeoutBase) -> Result<QueueSocket, QueueError> {
         let fd = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER) };
         if fd < 0 {
             return Err(QueueError::Socket(errno()));
         }
-        let sock = QueueSocket { fd, queue };
+        let sock = QueueSocket {
+            fd,
+            queue,
+            base,
+            pending: VecDeque::new(),
+        };
         sock.send(&bind_request(queue, 1))?;
         sock.send(&params_request(queue, 2, COPY_RANGE))?;
         sock.send(&conntrack_flag_request(queue, 3))?;

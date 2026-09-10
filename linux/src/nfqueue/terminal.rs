@@ -144,8 +144,10 @@ impl reflex_core::CanMark for NfqueueBackend {
 }
 
 /// Остаток до срока в миллисекундах для `poll`. Прошедший срок — ноль, не отрицательное:
-/// `poll` с отрицательным ждёт вечно, и опоздавший цикл встал бы навсегда.
-fn millis_until(until: std::time::Instant) -> i32 {
+/// `poll` с отрицательным ждёт вечно, и опоздавший цикл встал бы навсегда. `pub(crate)` — тот же
+/// закон нужен `queue::terminal` (второй бэкенд на своём `poll`); второе определение развело бы
+/// один предмет на два закона молча.
+pub(crate) fn millis_until(until: std::time::Instant) -> i32 {
     i32::try_from(until.saturating_duration_since(std::time::Instant::now()).as_millis())
         .unwrap_or(i32::MAX)
 }

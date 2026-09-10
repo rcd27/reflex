@@ -1050,13 +1050,10 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
     /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на [`Distress`].
     /// Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
     pub fn run(mut self) -> Report {
-        let socket = match QueueSocket::open(self.queue) {
-            Ok(socket) => socket,
-            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
-        };
         // База таймаутов conntrack — предпосылка КРАЯ: без неё возраст потока не пересчитать, а
         // возраст есть единственные честные часы «сколько цель молчит с открытия». Спрашиваем один
-        // раз при старте: величина ядра меняется не чаще, чем sysctl'ом.
+        // раз при старте (величина ядра меняется не чаще, чем sysctl'ом) и несём в `QueueSocket`
+        // аргументом: вторым чтением здесь стал бы второй закон об одной величине в одном прогоне.
         let base = match TimeoutBase::read() {
             Some(base) => base,
             None => return Report::not_started(
@@ -1064,6 +1061,10 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
                 "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
                     .to_string(),
             ),
+        };
+        let socket = match QueueSocket::open(self.queue, base) {
+            Ok(socket) => socket,
+            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
         };
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
@@ -1287,10 +1288,6 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act<QueueSocket>> Acting<T, F> {
     /// Краевые приборы работают и тут: их слова так же идут в реакцию, а памятка так же уезжает в
     /// марку тем же словом, что и вердикт.
     pub fn run(mut self) -> Report {
-        let socket = match QueueSocket::open(self.queue) {
-            Ok(socket) => socket,
-            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
-        };
         let base = match TimeoutBase::read() {
             Some(base) => base,
             None => return Report::not_started(
@@ -1298,6 +1295,10 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act<QueueSocket>> Acting<T, F> {
                 "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
                     .to_string(),
             ),
+        };
+        let socket = match QueueSocket::open(self.queue, base) {
+            Ok(socket) => socket,
+            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
         };
         // Свой сокет инъекции: RST уходит мимо очереди, помеченный, чтобы не вернуться в неё.
         let sender = match RawSender::open(INJECT_MARK) {
