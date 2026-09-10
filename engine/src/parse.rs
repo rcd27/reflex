@@ -1,7 +1,6 @@
 use reflex_core::types::{Flow, Protocol};
-use reflex_engine::{Addr, Dir};
+use crate::{Addr, Dir};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use reflex_linux::conntrack::Tuple;
 
 pub const SERVER_PORT: u16 = 443;
 
@@ -35,6 +34,22 @@ pub struct Ends {
     pub dst_ip: u32,
     pub src_port: u16,
     pub dst_port: u16,
+}
+
+/// Четвёрка разговора в том виде, в каком его завели, ПЛЮС протокол — форма кортежа conntrack
+/// (`CTA_TUPLE_ORIG`). Переехал сюда из `reflex-linux::conntrack::wire` (задача 12½) вместе с
+/// [`keyed_of_orig`], единственным потребителем: сам тип не зовёт netlink и не знает ядра — пять
+/// плоских полей, разбор ctnetlink лишь ИХ ЗАПОЛНЯЕТ. `reflex_linux::conntrack::wire::Tuple`
+/// теперь реэкспорт ОТСЮДА (один предмет — один закон, не вторая копия формы): дом переехал туда,
+/// где у формы нет соседей, тянущих Linux, а разбор дампа ctnetlink продолжает жить в `reflex-linux`
+/// и строит эти же поля так же, как строил.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Tuple {
+    pub src: u32,
+    pub dst: u32,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub proto: u8,
 }
 
 /// Заголовочные поля разговора. Домену не нужны: он говорит о цели и направлении.

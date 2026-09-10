@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use reflex_engine::{Dir, Flow};
+use crate::{Dir, Flow};
 use reflex_instrument::wire::{ResetBy, Seen, SeenTcp};
 
 use crate::parse::{Datagram, Wire};
