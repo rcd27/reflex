@@ -235,3 +235,103 @@ fn нулевой_шаг_даёт_отсутствие_сетки() {
     let (_seam, out) = seam.idle::<()>(start + Duration::from_secs(1));
     assert_eq!(shape(&out, start), vec![], "idle на нулевой сетке не выдаёт узлов");
 }
+
+// ─── ЧЕТВЁРТАЯ ДВЕРЬ: ОТКЛИК НА СПРОШЕННОЕ ──────────────────────────────────────────────────────
+//
+// До сегодня у неё не было ни вызова, ни прогона: закон написан, докблок продуман, способность не
+// предъявлена ничем. Механизм, потреблённый ноль раз, стоит ноль — и хуже того, он выглядит
+// готовым. Тесты ниже предъявляют ровно то, что докблок обещает.
+
+use reflex_core::tape::TapeLetter;
+
+/// Что вышло из двери отклика — породой и моментом.
+fn tape_shape<T, K, C>(letters: &[TapeLetter<T, K, C>], start: Instant) -> Vec<(char, u64)> {
+    letters
+        .iter()
+        .map(|letter| {
+            let millis = letter.at().saturating_duration_since(start).as_millis() as u64;
+            match letter {
+                TapeLetter::Event { event, .. } => match event {
+                    DetectorEvent::Tick { .. } => ('t', millis),
+                    DetectorEvent::Packet { .. } => ('p', millis),
+                    DetectorEvent::Opaque { .. } => ('o', millis),
+                    DetectorEvent::Torn { .. } => ('x', millis),
+                },
+                // 'a' — отклик: он НЕ буква провода и в алфавит приборов не входит вовсе.
+                TapeLetter::Answer(_) => ('a', millis),
+            }
+        })
+        .collect()
+}
+
+/// ПРЕДМЕТ: узлы, которые отклик перешагнул, выходят ПЕРЕД ним. Порядок держит конструкция двери, а
+/// не дисциплина зовущего, — ровно как у `saw`. Иначе лента перестала бы быть упорядоченной, и
+/// переигровка сравнивала бы два разных входа.
+#[test]
+fn an_answer_lets_the_nodes_it_stepped_over_out_first() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (_seam, letters) = seam.answered::<u8, &str, &str>("example.com", "заблокировано", at(start, 350));
+
+    assert_eq!(
+        tape_shape(&letters, start),
+        vec![('t', 100), ('t', 200), ('t', 300), ('a', 350)],
+        "три узла сетки обязаны выйти перед откликом, а отклик — последним"
+    );
+}
+
+/// ОТКЛИК НЕСЁТ КЛЮЧ, И КЛЮЧ НЕСУЩИЙ: ответ приходит позже вопроса и сам по себе не говорит, чей
+/// он. Без ключа драйверу осталось бы отдать его первой попавшейся машине либо всем — и то и другое
+/// сделало бы ответ чужим наблюдением (§4).
+#[test]
+fn an_answer_carries_the_key_that_says_whose_it_is() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (_seam, letters) = seam.answered::<u8, &str, u32>("rutracker.org", 42, at(start, 120));
+
+    let letter = letters
+        .iter()
+        .find(|letter| matches!(letter, TapeLetter::Answer(_)))
+        .expect("отклик обязан быть на ленте");
+
+    let TapeLetter::Answer(answer) = letter else {
+        unreachable!("только что нашли отклик")
+    };
+    assert_eq!(answer.key, "rutracker.org");
+    assert_eq!(answer.input, 42);
+
+    // Адрес спрашивают У БУКВЫ ЛЕНТЫ, а не у отклика: обе породы отвечают на один вопрос «твоё ли
+    // это», и тем переигровка маршрутизирует их одинаково, не различая пород.
+    assert!(letter.answers(&"rutracker.org"), "буква обязана узнавать свой ключ");
+    assert!(!letter.answers(&"example.com"), "и не узнавать чужой");
+}
+
+/// ОТКЛИК ДВИГАЕТ СЕТКУ, НО НЕ ОТМЕНЯЕТ ТИШИНЫ ПРОВОДА, и это не тонкость, а предмет: цель, что
+/// отвечает нашему контуру, пока провод молчит, — ЭТО И ЕСТЬ тихий дроп. Отодвинь отклик тишину, и
+/// дропнутый поток, чей контур сказал «блок», выглядел бы НЕ-тихим — ровно наоборот правде.
+///
+/// Проверяется тем, что после отклика узлы продолжают идти от его момента: сетка сдвинулась,
+/// а буквой провода отклик не стал (`seen()` его не отдаёт).
+#[test]
+fn an_answer_moves_the_grid_without_becoming_a_wire_letter() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, STEP);
+
+    let (seam, letters) = seam.answered::<u8, &str, &str>("example.com", "ответ", at(start, 250));
+    assert!(
+        letters.iter().all(|letter| match letter {
+            TapeLetter::Answer(_) => letter.seen().is_none(),
+            TapeLetter::Event { .. } => letter.seen().is_some(),
+        }),
+        "отклик буквой провода не является и приборам не достаётся"
+    );
+
+    let (_seam, after) = seam.idle::<u8>(at(start, 450));
+    assert_eq!(
+        shape(&after, start),
+        vec![('t', 300), ('t', 400)],
+        "сетка обязана продолжиться от момента отклика, а не от начала"
+    );
+}
