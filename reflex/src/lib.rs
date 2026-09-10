@@ -96,6 +96,11 @@ mod nfqueue;
 #[cfg(unix)]
 pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
 
+/// Причина, по которой кадр не прочитан. Реэкспорт, а не внутреннее имя: она стоит в подписи
+/// [`Transport::observe`], и без неё свой транспорт снаружи не написать — а `Truncated` из неё
+/// решает, ослепнут приборы на этой букве или нет (`DetectorEvent::hides_observation`).
+pub use reflex_core::parse::Unread;
+
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};
 
@@ -206,8 +211,36 @@ pub trait Transport {
     const PORT: u16;
     /// Состояние разбора (память разговоров, личность цели) — своё у каждого транспорта.
     type State: Default;
-    /// Из разобранного кадра — наблюдение, либо ничего (не наш кадр).
-    fn observe(state: &mut Self::State, read: Read<'_>) -> Option<Observed<Self::Wire>>;
+    /// Что вышло из кадра. ТРИ исхода, не два: наблюдение, ПРОПАВШЕЕ наблюдение и чужой кадр.
+    ///
+    /// Прежде подпись отдавала `Option`, и «кадр обрезан» схлопывалось с «не мой транспорт» в один
+    /// `None`. Цена схлопывания замерена и была двойной: (1) обрезанный кадр доезжал до цикла
+    /// неотличимым от чужого и двигал часы тишины через `Interleave::idle` — то есть кадр,
+    /// СПРЯТАВШИЙ ответ цели, работал свидетельством молчания; (2) буква `Opaque { why: Truncated }`
+    /// с боевого пути не рождалась вовсе, и работа пяти приборов по прячущей букве
+    /// (`DetectorEvent::hides_observation`) не срабатывала ни разу за жизнь продукта — механизм,
+    /// потреблённый ноль раз. `Read::Truncated` доезжал сюда из `parse::read` и терялся ровно здесь.
+    ///
+    /// Кто пишет свой транспорт: `Observation::Unread` — только для кадра, который БЫЛ и МОГ нести
+    /// ответ этого разговора (сегодня это `Read::Truncated`). Чужой протокол, чужой порт, не-IPv4 —
+    /// `Observation::Foreign`: ослепнуть на них значило бы онеметь зря (тот же довод, что в
+    /// `DetectorEvent::hides_observation`).
+    fn observe(state: &mut Self::State, read: Read<'_>) -> Observation<Self::Wire>;
+}
+
+/// Исход разбора кадра транспортом. Три клетки, потому что цикл отвечает на них ТРЕМЯ разными
+/// буквами шва, и слить любые две значило бы солгать приборам о том, что было на проводе.
+pub enum Observation<W> {
+    /// Наблюдение состоялось — [`Interleave::saw`].
+    Seen(Observed<W>),
+    /// Кадр БЫЛ и мог нести ответ цели, но прочесть его не удалось. Причина едет в букве:
+    /// [`Interleave::unread`] родит `Opaque { why }`, и приборы, судящие по ОТСУТСТВИЮ, на такой
+    /// букве слепнут — отсутствие наблюдений в окне перестало быть установленным.
+    Unread(Unread),
+    /// Кадр не нашего разговора: чужой протокол, чужой порт, не-IPv4, либо наш протокол, но
+    /// состояние разбора наблюдения из него не сделало. Момент прихода СЕТКУ ДВИГАЕТ (иначе поток
+    /// чужого трафика выглядел бы тишиной), а зрения не отнимает.
+    Foreign,
 }
 
 /// Транспорт TCP: словарь соединения (`Reading`), порт 443, личность по SNI.
@@ -251,9 +284,17 @@ impl Transport for Tcp {
     const PORT: u16 = 443;
     type State = TcpState;
 
-    fn observe(state: &mut TcpState, read: Read<'_>) -> Option<Observed<Reading>> {
-        let Read::Tcp(wire) = read else {
-            return None;
+    fn observe(state: &mut TcpState, read: Read<'_>) -> Observation<Reading> {
+        let wire = match read {
+            Read::Tcp(wire) => wire,
+            // Обрезанный кадр — ПОТЕРЯ, а не свойство чужого трафика: заголовок не поместился
+            // целиком, и байты этого разговора могли быть в нём (`parse::ipv4` различает «обрезан»
+            // и «чужой протокол» нарочно). Молчать о нём значило бы отдать приборам окно, которое
+            // выглядит свободным от пропажи и им не является.
+            Read::Truncated => return Observation::Unread(Unread::Truncated),
+            Read::Udp(_) | Read::NotIpv4 | Read::NotOurProtocol | Read::NotOurPort => {
+                return Observation::Foreign
+            }
         };
         // Личность копится; отсутствие SNI не теряется — цель по адресу.
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
@@ -264,11 +305,16 @@ impl Transport for Tcp {
             ident.naming = Naming::Spoken(sni.into());
         }
         let key = ident.key();
-        state.talks.read(&wire).map(|tcp| Observed {
-            flow: wire.flow,
-            key,
-            wire: Reading::Tcp(tcp),
-        })
+        // Разбор состоялся, а наблюдения из него не вышло (`Talks` не всякий сегмент переводит в
+        // слово): кадр наш и целый — прятать нечего, потому `Foreign`, а не `Unread`.
+        match state.talks.read(&wire) {
+            Some(tcp) => Observation::Seen(Observed {
+                flow: wire.flow,
+                key,
+                wire: Reading::Tcp(tcp),
+            }),
+            None => Observation::Foreign,
+        }
     }
 }
 
@@ -285,11 +331,20 @@ impl Transport for Udp {
     const PORT: u16 = 53;
     type State = UdpState;
 
-    fn observe(_state: &mut UdpState, read: Read<'_>) -> Option<Observed<DnsMessage>> {
-        let Read::Udp(datagram) = read else {
-            return None;
+    fn observe(_state: &mut UdpState, read: Read<'_>) -> Observation<DnsMessage> {
+        let datagram = match read {
+            Read::Udp(datagram) => datagram,
+            // Довод тот же, что у `Tcp::observe`: обрезанный кадр мог быть нашей датаграммой.
+            Read::Truncated => return Observation::Unread(Unread::Truncated),
+            Read::Tcp(_) | Read::NotIpv4 | Read::NotOurProtocol | Read::NotOurPort => {
+                return Observation::Foreign
+            }
         };
-        let message = DnsMessage::parse(datagram.payload)?;
+        // Датаграмма ЦЕЛА (иначе выше был бы `Truncated`), а DNS в ней не разобрался — не наш
+        // разговор на нашем порту: скрывать ему нечего.
+        let Some(message) = DnsMessage::parse(datagram.payload) else {
+            return Observation::Foreign;
+        };
         // Цель — имя из вопроса (оно же и отравляют); вопроса нет — цель безымянна, и ключуется
         // адресом резолвера. Тег сохраняется: `Unnamed` не притворяется именем.
         let key = message
@@ -297,7 +352,7 @@ impl Transport for Udp {
             .first()
             .map(|query| TargetKey::Named(query.name.clone().into_boxed_str()))
             .unwrap_or(TargetKey::Unnamed(datagram.dst));
-        Some(Observed {
+        Observation::Seen(Observed {
             flow: datagram.flow,
             key,
             wire: message,
@@ -1535,13 +1590,22 @@ where
             let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
             let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
             let (moved, letters, whose) = match T::observe(&mut state, parse::read(seen, T::PORT)) {
-                Some(observed) => {
+                Observation::Seen(observed) => {
                     let (moved, letters) = grid.saw((observed.wire, edge), at);
                     (moved, letters, Some((observed.flow, observed.key)))
                 }
+                // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
+                // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
+                // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
+                // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
+                // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
+                Observation::Unread(why) => {
+                    let (moved, letters) = grid.unread(why, at);
+                    (moved, letters, None)
+                }
                 // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
                 // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
-                None => {
+                Observation::Foreign => {
                     let (moved, letters) = grid.idle(at);
                     (moved, letters, None)
                 }
