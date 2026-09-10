@@ -54,7 +54,12 @@ use std::time::{Duration, Instant};
 
 use reflex_core::backend::Sink;
 use reflex_core::capability::{CanAsk, CanHold, CanInject, CanRemember};
-use reflex_core::certify::replays::{replays, Replayed};
+use reflex_core::certify::replays::replays;
+/// Вердикт восьмого закона (§10) — публичен, а не внутреннее имя: он стоит в подписи
+/// [`Report::certified`], и без него исход прогона нельзя ни назвать, ни разобрать, не притащив
+/// `reflex-core` второй зависимостью. Дверь у фасада одна — значит и типы её подписи проходят
+/// через неё.
+pub use reflex_core::certify::replays::Replayed;
 use reflex_core::colimit::Layer;
 use reflex_core::word::Word;
 use reflex_core::command::InjectablePacket;
@@ -119,6 +124,7 @@ pub use pcap::{pcap, Recording};
 /// [`Transport::observe`], и без неё свой транспорт снаружи не написать — а `Truncated` из неё
 /// решает, ослепнут приборы на этой букве или нет (`DetectorEvent::hides_observation`).
 pub use reflex_core::parse::Unread;
+
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};
@@ -1758,7 +1764,7 @@ where
         Err(report) => return report,
     };
     while turning.pump(voice) {}
-    Report::finished(turning.name)
+    Report::finished(turning.name, turning.certified)
 }
 
 /// ПРОГОН, ОСТАНОВЛЕННЫЙ МЕЖДУ ОБОРОТАМИ.
@@ -1781,6 +1787,9 @@ struct Turning<C: Bordered, T: Transport, S> {
     seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>>,
     /// Имя носителя — для [`Report`]. Живёт здесь, потому что открывший носителя рецепт съеден.
     name: String,
+    /// Чем кончилось свидетельство §10, если его просили. Живёт на обороте, а не в `Alive`: это
+    /// исход ПРОГОНА, и уходит он в [`Report`], когда источник кончился.
+    certified: Option<Replayed>,
 }
 
 impl<C, T, S> Turning<C, T, S>
@@ -1852,6 +1861,7 @@ where
             seam,
             seeds,
             name,
+            certified: None,
         })
     }
 
@@ -1863,6 +1873,9 @@ where
     fn pump<V: Voice<C::Carrier, S>>(&mut self, voice: &mut V) -> bool {
         // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ — довод ниже, в теле.
         if self.carrier.exhausted() {
+            // Источник кончился — судим по набранному окну, даже неполному. Иначе на КОНЕЧНОМ
+            // носителе закон молчал бы обо всём прогоне, и молчание читалось бы как согласие.
+            self.certified = self.alive.certified(&self.seeds, true).or(self.certified.take());
             return false;
         }
         let Turning {
@@ -1960,7 +1973,7 @@ where
     // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
     if crossed.is_some() {
         alive.forget_evicted();
-        alive.certified(seeds);
+        alive.certified(seeds, false);
     }
         true
     }
@@ -2152,16 +2165,25 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
     /// ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его свежей семье
     /// дважды и сверяем сказанное. Свидетель предъявляется тут же: молча держать закон значит не
     /// держать его вовсе.
-    fn certified(&mut self, seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>]) {
-        if !self.certify || self.tape.len() < TAPE_WINDOW {
-            return;
+    /// `closing` — источник кончился, и другого окна не будет. Тогда судим по тому, что набрано:
+    /// на КОНЕЧНОМ носителе (запись) полное окно может не собраться никогда, и закон, ждущий
+    /// шестидесяти четырёх букв, промолчал бы обо всём файле — ни вердикта, ни «свидетельства
+    /// нет». Молчание о собственной предъявимости хуже отказа: отказ назван клеткой (`NoTape`,
+    /// `Silent`), а молчание неотличимо от «всё в порядке».
+    fn certified(
+        &mut self,
+        seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>],
+        closing: bool,
+    ) -> Option<Replayed> {
+        if !self.certify || (self.tape.len() < TAPE_WINDOW && !closing) {
+            return None;
         }
         let fold = self.about.as_ref().map(|(fold, _say)| fold);
         let idle = self.idle;
         let verdict = replays(&self.tape, |mode, letters| {
             replay::<Wide<T::Wire, C::Edge>, S>(seeds, fold, idle, mode, letters)
         });
-        match verdict {
+        match &verdict {
             Replayed::Reproduced => {
                 report!("§10: окно из {} букв воспроизведено", self.tape.len())
             }
@@ -2178,6 +2200,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
         }
         // Окно закрыто: следующее пишется с чистого места, иначе лента росла бы вечно.
         self.tape = Tape::new();
+        Some(verdict)
     }
 }
 
@@ -2192,6 +2215,10 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
 pub struct Report {
     name: String,
     why: Option<String>,
+    /// Чем кончилось свидетельство §10 — `None`, если его не просили ([`Running::certifying`]).
+    /// ЗНАЧЕНИЕМ, а не строкой в логе: закон, который нельзя предъявить вызывающему, проверяется
+    /// только глазами человека, читающего вывод, — то есть не проверяется.
+    certified: Option<Replayed>,
 }
 
 impl Report {
@@ -2199,13 +2226,24 @@ impl Report {
         Report {
             name,
             why: Some(why),
+            certified: None,
         }
     }
 
     /// Носитель сказал, что работы больше не будет никогда, и цикл вышел. Отдельно от «не
     /// открылся» (§7: «не смотрели» ≠ «смотрели и кончилось»).
-    fn finished(name: String) -> Report {
-        Report { name, why: None }
+    fn finished(name: String, certified: Option<Replayed>) -> Report {
+        Report {
+            name,
+            why: None,
+            certified,
+        }
+    }
+
+    /// Чем кончилось свидетельство восьмого закона (§10). `None` — не просили: клетка «не
+    /// смотрели» отдельно от всякого вердикта (§7).
+    pub fn certified(&self) -> Option<&Replayed> {
+        self.certified.as_ref()
     }
 
     /// Почему запуск не состоялся; `None` — состоялся. Значение, а не печать: тот же закон, по

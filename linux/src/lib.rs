@@ -151,7 +151,9 @@ impl AfPacketBackend {
     }
 }
 
-// --- TC-BPF + AF_PACKET backend: CanObserve + CanInject + CanDrop + CanModify ---
+// --- TC-BPF + AF_PACKET backend: CanObserve + CanInject + CanDrop ---
+// `CanModify` в этом перечне стоял и был неправдой: замер ниже (у самого `impl`) объясняет, почему
+// способность не заявляется. Заголовок обещал то, что код девяноста строками ниже отрицает.
 
 #[cfg(feature = "tc")]
 #[allow(deprecated)]

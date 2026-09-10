@@ -322,3 +322,73 @@ fn запись_снятая_через_any_тоже_даёт_имя_цели() 
          отчёт: {report:?}"
     );
 }
+
+/// ПРЕДМЕТ: восьмой закон (§10) на ЗАПИСИ — предъявимость становится обычным тестом, без прав, без
+/// сети и без стенда. На живой очереди свидетельство ждёт полного окна и приходит по ходу прогона;
+/// у конечного источника окно может не собраться никогда, и закон обязан судить по набранному —
+/// иначе он промолчал бы обо всём файле, а молчание о собственной предъявимости читается как
+/// согласие.
+///
+/// Вердикт берётся ЗНАЧЕНИЕМ из отчёта, а не глазами из лога: закон, который нельзя предъявить
+/// вызывающему, проверяется только человеком, читающим вывод, — то есть не проверяется.
+#[test]
+fn восьмой_закон_предъявляется_на_записи() {
+    let report = pcap("tests/fixtures/handshake.pcap")
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Counter))
+        .on(|_target: &str, _distress: Distress| {})
+        .certifying()
+        .run();
+
+    assert_eq!(
+        report.certified(),
+        Some(&Replayed::Reproduced),
+        "запись обязана давать свидетельство: вход детерминирован целиком"
+    );
+}
+
+/// Половина вторая: свидетель обязан УМЕТЬ ОТКАЗАТЬ. Прибор со скрытым входом читает счётчик,
+/// живущий вне его состояния, — то есть имеет вход, которого нет в его алфавите, и два прогона
+/// одной ленты расходятся. Зелёный свидетель, не умеющий покраснеть, хуже отсутствующего.
+#[test]
+fn скрытый_вход_ломает_свидетельство_на_той_же_записи() {
+    let report = pcap("tests/fixtures/handshake.pcap")
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Peeking::default()))
+        .on(|_target: &str, _distress: Distress| {})
+        .certifying()
+        .run();
+
+    assert!(
+        matches!(report.certified(), Some(Replayed::Unstable { .. })),
+        "машина со скрытым входом обязана быть уличена; вердикт: {:?}",
+        report.certified()
+    );
+}
+
+/// Прибор со СКРЫТЫМ входом: величину берёт из счётчика, живущего вне его состояния. Ровно то, что
+/// восьмой закон обязан ловить.
+#[derive(Clone, Copy, Default)]
+struct Peeking;
+
+static PEEKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+impl Mealy for Peeking {
+    type In = DetectorEvent<Seen>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
+
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        match event {
+            DetectorEvent::Packet { .. } => {
+                let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (self, smallvec![Distress::Silence { ms }], ())
+            }
+            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
+                (self, SmallVec::new(), ())
+            }
+        }
+    }
+}
