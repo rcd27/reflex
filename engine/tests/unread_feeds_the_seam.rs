@@ -26,7 +26,7 @@ use reflex_core::clock::TestClock;
 use reflex_core::detector::{DetectorEvent, Sensed};
 use reflex_core::mealy::{Mealy, MealyExt};
 use reflex_core::parse::Unread;
-use reflex_engine_nfq::parse::{framed, Framed, SERVER_PORT};
+use reflex_engine::parse::{framed, Framed, SERVER_PORT};
 use reflex_runtime::timed::on_grid;
 
 const CLIENT: u32 = 0xC0A8_0164;

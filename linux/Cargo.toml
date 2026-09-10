@@ -80,3 +80,12 @@ required-features = ["nfqueue"]
 name = "ct-dump"
 path = "examples/ct-dump.rs"
 required-features = ["conntrack"]
+
+# ТОЖДЕСТВО РАЗГОВОРА НА СТЫКЕ ДВУХ КРЕЙТОВ: `parse::keyed_of_orig` (переносимый разбор) обязан
+# давать тот же ключ, что кортеж ORIG у `conntrack::Tuple` (знание ядра). Закон о СОГЛАСИИ двух, и
+# потому живёт здесь: `reflex-engine` о conntrack не знает и знать не должен, а этот крейт знает
+# обоих. `required-features`, потому что предмет второй половины — под фичей.
+[[test]]
+name = "flow_identity"
+path = "tests/flow_identity.rs"
+required-features = ["conntrack"]

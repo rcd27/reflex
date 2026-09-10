@@ -6,7 +6,7 @@
 //! `f(x) == f(x)` зелена на любой реализации и охраняет пустоту.
 
 use reflex_core::types::Protocol;
-use reflex_engine_nfq::parse::{datagrammed, keyed, keyed_of_orig, wired, Ends, Header, Payload, Segment};
+use reflex_engine::parse::{datagrammed, keyed, keyed_of_orig, wired, Ends, Header, Payload, Segment};
 use reflex_linux::conntrack::Tuple;
 
 /// SYN-сегмент клиента к серверу — минимум, чтобы `wired` выковал ключ по проводу.
@@ -124,5 +124,36 @@ fn tcp_and_udp_are_different_conversations_of_one_target() {
         (over_tcp.src, over_tcp.dst),
         (over_udp.src, over_udp.dst),
         "цель у них одна: сводит слой ЦЕЛИ, а не ключ разговора"
+    );
+}
+
+/// ТО ЖЕ СОГЛАСИЕ ДВУХ ИСТОЧНИКОВ, НО НА UDP — и оно не следствие проверенного на TCP.
+///
+/// Проводные пути у транспортов РАЗНЫЕ функции (`wired` и `datagrammed`), и каждая сама решает,
+/// кто клиент, а кто сервер. Согласие одной с ядром ничего не обещает о второй: перепутай стороны
+/// в `datagrammed` — TCP-тесты выше останутся зелены все до одного.
+///
+/// Закон нужен не ради симметрии: на UDP едет разбор DNS, и разошедшийся ключ значил бы, что
+/// подмена, найденная по ответу, не найдёт разговора, заведённого по запросу.
+///
+/// Прежде здесь был лишь заготовленный [`payload_from`], которого никто не звал: помощник без
+/// закона — обещание, за которое ничего не отвечает. Компилятор говорил о нём предупреждением
+/// целый день, и оно ЧИСЛИЛОСЬ ПРИНЯТЫМ в бюджете (`scripts/warnings.sh`) — принятым было не
+/// «мёртвый код», а ненаписанный тест.
+#[test]
+fn both_sources_agree_over_udp_too() {
+    let datagram = payload_from(0x0A00_0001, 44321, 0x5DB8_D822, 443);
+    let from_wire = datagrammed(datagram, true).flow;
+    let tuple = Tuple {
+        src: 0x0A00_0001,
+        dst: 0x5DB8_D822,
+        src_port: 44321,
+        dst_port: 443,
+        proto: 17,
+    };
+    assert_eq!(
+        keyed_of_orig(tuple),
+        from_wire,
+        "ORIG-инициатор датаграммы и upward-клиент — одно лицо"
     );
 }
