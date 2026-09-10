@@ -89,10 +89,13 @@ fn imprint_of(up: Option<u64>) -> u8 {
     (up.unwrap_or(0) & 0xFF) as u8
 }
 
-/// Отдал ли поток сверх заголовков не меньше `FLOOR` байт: `bytes > packets × HDR + FLOOR`. `None`
-/// любой из величин (край не считает) — не «отдал»: сравнивать нечем.
-fn carried(bytes: Option<u64>, packets: Option<u64>) -> bool {
-    matches!((bytes, packets), (Some(b), Some(p)) if b > p.saturating_mul(HDR) + FLOOR)
+/// Отдал ли клиент что-то сверх заголовков. Отдельной функцией, а не выражением в ветке: это
+/// ЗАКОН о величинах края, и его проверяют таблицей, а не прогоном автомата целиком.
+pub(crate) fn asked_for_something<E: EdgeView>(edge: &E) -> bool {
+    match (edge.down_bytes(), edge.down_packets()) {
+        (Some(bytes), Some(packets)) => bytes > packets.saturating_mul(HDR) + FLOOR,
+        _ => false,
+    }
 }
 
 impl<V: EdgeView> EdgeSilence<V> {
@@ -157,7 +160,7 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
         let target_alive = matches!(up_pk, Some(pk) if pk >= 2);
         let only_synack = up_pk == Some(1);
         let no_synack = up_pk == Some(0);
-        let client_spoke = carried(edge.down_bytes(), edge.down_packets());
+        let client_spoke = asked_for_something(edge);
         let overdue = matches!(edge.age(), Some(age) if age >= self.after);
 
         let out: Verdict = match phase {
@@ -195,5 +198,55 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
             }
         };
         (self, out, ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Край, у которого известны только эти две величины: остальное — «не считали» (§7).
+    struct Frames { packets: u64, bytes: u64 }
+
+    impl EdgeView for Frames {
+        fn down_packets(&self) -> Option<u64> { Some(self.packets) }
+        fn down_bytes(&self) -> Option<u64> { Some(self.bytes) }
+        fn up_packets(&self) -> Option<u64> { None }
+        fn up_bytes(&self) -> Option<u64> { None }
+        fn idle(&self) -> Option<Duration> { None }
+        fn age(&self) -> Option<Duration> { None }
+        fn mark(&self) -> u32 { 0 }
+    }
+
+    /// Порог «клиент отдал запрос» считает КАДРЫ, и это контракт, а не совпадение с conntrack.
+    /// Считай край нагрузку — порог завысился бы на заголовок каждого пакета, и запрос перестал
+    /// бы наблюдаться. Мера: conntrack нагрузки не знает и знать не может.
+    #[test]
+    fn порог_запроса_считает_кадры_а_не_нагрузку() {
+        // Три пакета вниз, кроме заголовков — ничего: запроса не было.
+        assert!(!asked_for_something(&Frames { packets: 3, bytes: 3 * HDR }));
+        // Те же три пакета, но сверх заголовков 200 байт: запрос отдан.
+        assert!(asked_for_something(&Frames { packets: 3, bytes: 3 * HDR + 200 }));
+        // Сверх заголовков есть 50 байт, но это меньше FLOOR (100) — ещё не запрос, а, например,
+        // случайный ACK с опцией. Без этого случая мутация «убрать FLOOR» осталась бы незамеченной:
+        // оба случая выше не зависят от FLOOR (0 и 200 — по разные стороны и нуля, и сотни).
+        assert!(!asked_for_something(&Frames { packets: 3, bytes: 3 * HDR + 50 }));
+    }
+
+    /// Учёт выключен — не «ноль запроса», а «не считали». Иначе край без учёта выглядел бы как
+    /// клиент, не отправивший ничего, и прибор судил бы о мире по собственной слепоте.
+    #[test]
+    fn край_без_учёта_не_считается_отсутствием_запроса() {
+        struct Blind;
+        impl EdgeView for Blind {
+            fn down_packets(&self) -> Option<u64> { None }
+            fn down_bytes(&self) -> Option<u64> { None }
+            fn up_packets(&self) -> Option<u64> { None }
+            fn up_bytes(&self) -> Option<u64> { None }
+            fn idle(&self) -> Option<Duration> { None }
+            fn age(&self) -> Option<Duration> { None }
+            fn mark(&self) -> u32 { 0 }
+        }
+        assert!(!asked_for_something(&Blind));
     }
 }
