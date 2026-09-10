@@ -25,6 +25,9 @@ pub mod interleave;
 #[cfg(feature = "tls")]
 pub mod l7;
 pub mod local;
+// ОБЛАСТЬ МАРКИ — объявленное владение битами вместо подразумеваемого. Не под фичей: закон о
+// параметре, зависимостей нет, и нужен он всякому, кто делит марку с соседом по машине.
+pub mod mark;
 pub mod mealy;
 pub mod meter;
 pub mod notice;
