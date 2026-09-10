@@ -261,7 +261,9 @@ fn run(mut queue: NfqueueBackend, sender: RawSender, table: Table) {
     // ЖИВЁТ, ПОКА ЖИВ ПРОЦЕСС. Уйти отсюда по своей воле нельзя: правило очереди без слушателя
     // дропает трафик, то есть выход означал бы обрыв сети у человека, а не остановку прибора.
     loop {
-        match queue.serve(|held| handle(held, &table, &sender)) {
+        // `Instant::now()` сохраняет прежнее поведение (`wait(0)` внутри шва): цикл ждёт сам,
+        // ниже, через `queue.wait(POLL_MS)` на исходе `Served::Idle`.
+        match queue.serve(std::time::Instant::now(), |held| handle(held, &table, &sender)) {
             // ЯДРО ПРИНЯЛО. Молчим о безразличии и говорим о вмешательстве: прибор, печатающий
             // каждый пропущенный пакет, приучает себя не читать.
             Served::Answered(Ok(delivered)) => match delivered.answer {
@@ -284,6 +286,9 @@ fn run(mut queue: NfqueueBackend, sender: RawSender, table: Table) {
             // ЖДАТЬ НЕ НА ЧЕМ. Отдельно от `Idle` намеренно: «пусто» и «прибор ослеп» чинятся
             // по-разному, и слив их, мы получили бы движок, чья тишина неотличима от поломки.
             Served::Blind => eprintln!("[очередь] ослепла: дескриптор не добыт"),
+            // Эта очередь клетку не производит (`nfq` глушит `ENOBUFS`), арм — для тотальности
+            // матча на всём алфавите `Served`.
+            Served::Torn => eprintln!("[очередь] потеря: наблюдения были и не дошли"),
         }
     }
 }

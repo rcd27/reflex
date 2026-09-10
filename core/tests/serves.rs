@@ -9,7 +9,7 @@ use reflex_core::serves::Served;
 use reflex_core::Serves;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 struct Envelope(Vec<u8>);
 
@@ -42,13 +42,39 @@ impl Terminal for Memo {
     }
 }
 
+impl Memo {
+    /// Носитель без работы — играет обе безответные клетки шва (`Idle` в реальной очереди и
+    /// `Blind` слепого дескриптора неотличимы отсюда: ни у той, ни у другой нет наблюдения). Закон
+    /// шва один на обе: не возвращаться раньше `until`.
+    fn empty() -> Self {
+        Memo {
+            waiting: Vec::new(),
+            answered: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    /// Носитель с одним пакетом наготове — работа есть, срок её не касается.
+    fn with_one_packet() -> Self {
+        Memo {
+            waiting: vec![b"a".to_vec()],
+            answered: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+}
+
 impl Serves for Memo {
-    fn serve<F>(&mut self, decide: F) -> Served<Delivered<u8>, Refused<u8, ()>>
+    fn serve<F>(&mut self, until: Instant, decide: F) -> Served<Delivered<u8>, Refused<u8, ()>>
     where
         F: FnOnce(&Held<Envelope>) -> u8,
     {
         match self.waiting.is_empty() {
-            true => Served::Idle,
+            // Закон шва: без работы носитель спит до `until` сам — часы у того же, у кого
+            // дескриптор. Без сна здесь ведущий цикл был бы вынужден заводить своё ожидание мимо
+            // шва, как это уже случилось (регресс 3202628).
+            true => {
+                std::thread::sleep(until.saturating_duration_since(Instant::now()));
+                Served::Idle
+            }
             false => {
                 let held = Held::new(Envelope(self.waiting.remove(0)), Instant::now());
                 let answer = decide(&held);
@@ -67,7 +93,7 @@ fn a_decision_made_from_the_observation_reaches_the_world() {
         answered: Rc::clone(&answered),
     };
 
-    let outcome = queue.serve(|held| held.seen().len() as u8);
+    let outcome = queue.serve(Instant::now(), |held| held.seen().len() as u8);
 
     assert!(
         matches!(outcome, Served::Answered(Ok(_))),
@@ -87,7 +113,7 @@ fn nothing_to_serve_is_not_a_failure() {
         answered: Rc::new(RefCell::new(Vec::new())),
     };
 
-    assert_eq!(queue.serve(|_held| 0), Served::Idle);
+    assert_eq!(queue.serve(Instant::now(), |_held| 0), Served::Idle);
 }
 
 /// КАЖДЫЙ ВЗЯТЫЙ ПОЛУЧАЕТ РОВНО ОДИН ОТВЕТ.
@@ -99,12 +125,39 @@ fn every_taken_packet_gets_exactly_one_answer() {
         answered: Rc::clone(&answered),
     };
 
-    let served = std::iter::from_fn(|| match queue.serve(|held| held.seen().len() as u8) {
-        Served::Answered(done) => Some(done),
-        Served::Idle | Served::Blind => None,
-    })
+    let served = std::iter::from_fn(
+        || match queue.serve(Instant::now(), |held| held.seen().len() as u8) {
+            Served::Answered(done) => Some(done),
+            Served::Idle | Served::Blind | Served::Torn => None,
+        },
+    )
     .count();
 
     assert_eq!(served, 3);
     assert_eq!(*answered.borrow(), vec![1, 2, 3]);
+}
+
+/// Закон шва: не возвращаться раньше срока, кроме как с работой. Не будь его, ведущий цикл
+/// крутился бы вхолостую на пустой очереди — и завёл бы своё ожидание мимо шва, что и случилось.
+#[test]
+fn пустой_носитель_держит_срок() {
+    let mut carrier = Memo::empty();
+    let until = Instant::now() + Duration::from_millis(50);
+
+    let outcome = carrier.serve(until, |_held| unreachable!("работы не было"));
+
+    assert!(matches!(outcome, Served::Idle));
+    assert!(Instant::now() >= until, "вернулся раньше срока");
+}
+
+/// Работа не ждёт срока: пакет отдаётся сразу, иначе задержка решения равнялась бы шагу сетки.
+#[test]
+fn работа_возвращается_сразу() {
+    let mut carrier = Memo::with_one_packet();
+    let until = Instant::now() + Duration::from_secs(60);
+
+    let outcome = carrier.serve(until, |_held| 1);
+
+    assert!(matches!(outcome, Served::Answered(Ok(_))));
+    assert!(Instant::now() < until, "ждал срока, имея работу");
 }

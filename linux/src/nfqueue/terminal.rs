@@ -143,6 +143,13 @@ impl reflex_core::CanMark for NfqueueBackend {
     }
 }
 
+/// Остаток до срока в миллисекундах для `poll`. Прошедший срок — ноль, не отрицательное:
+/// `poll` с отрицательным ждёт вечно, и опоздавший цикл встал бы навсегда.
+fn millis_until(until: std::time::Instant) -> i32 {
+    i32::try_from(until.saturating_duration_since(std::time::Instant::now()).as_millis())
+        .unwrap_or(i32::MAX)
+}
+
 /// Очередь вошла в категорию — не как `Source`, а как [`Serves`](reflex_core::serves::Serves)
 /// (#326). `Source::packets(&mut self)` держит бэкенд заимствованным, пока жив поток, а ответ
 /// требует второго `&mut` (`E0499`). Природа: у `AfPacketBackend` два устройства (`split()` их
@@ -151,19 +158,31 @@ impl reflex_core::CanMark for NfqueueBackend {
 impl reflex_core::Serves for NfqueueBackend {
     fn serve<F>(
         &mut self,
+        until: std::time::Instant,
         decide: F,
     ) -> reflex_core::serves::Served<Delivered<Answer>, Refused<Answer, NotTaken>>
     where
         F: FnOnce(&reflex_core::held::Held<Queued>) -> Answer,
     {
         use reflex_core::serves::Served;
-        // Не ждём здесь: ожидание — это часы, а у бэкенда их нет (сколько крутиться на пустой
-        // очереди, знает ведущий цикл). `wait` остаётся отдельным и добровольным.
-        match self.wait(0) {
-            super::Waited::Blind => Served::Blind,
+        // Ждём здесь, до `until`: дескриптор у бэкенда, часы — у зовущего, срок в подписи мирит
+        // обоих (§9.3). Прежде стоял `wait(0)`, а сколько крутиться, «знал ведущий цикл» — которому
+        // ждать было не на чем (дескриптор внутри бэкенда); оттуда и собственное ожидание фасада
+        // мимо шва, и вместе с ним регресс 3202628.
+        match self.wait(millis_until(until)) {
+            super::Waited::Blind => {
+                // Со сроком в подписи носитель обязан проспать остаток сам: иначе слепой цикл жжёт
+                // ядро на пустом опросе, полагаясь на соглашение снаружи шва — то самое, что не
+                // удержалось однажды.
+                std::thread::sleep(until.saturating_duration_since(std::time::Instant::now()));
+                Served::Blind
+            }
             super::Waited::Idle => Served::Idle,
             super::Waited::Ready => match self.recv() {
                 // Пусто при готовом дескрипторе — `EAGAIN`: работы не было, ждать есть на чем.
+                // `Torn` этому пути неоткуда взять: крейт `nfq` глушит `ENOBUFS` (см. докблок
+                // `queue/mod.rs`) — переполнение и обычный пустой приём здесь неразличимы, и
+                // подделывать источник, которого нет, нельзя.
                 Err(_nothing) => Served::Idle,
                 Ok(message) => {
                     let held =

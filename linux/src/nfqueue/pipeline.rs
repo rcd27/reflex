@@ -51,6 +51,10 @@ pub struct NfqShared {
     pub again: std::sync::atomic::AtomicU64,
     pub failed: std::sync::atomic::AtomicU64,
     pub blind: std::sync::atomic::AtomicU64,
+    /// Носитель объявил потерю (`Served::Torn`). Счётчик заведён на всякий бэкенд, отвечающий этим
+    /// словом шва, но `NfqueueBackend` его не порождает: `nfq` глушит `ENOBUFS`, переполнение от
+    /// пустого приёма не отличить, а подделывать источник потери нельзя — клетка здесь необитаема.
+    pub torn: std::sync::atomic::AtomicU64,
     /// Ответов, которых ядро не приняло. Прежде величины не было: отказ выбрасывался через `let _ =
     /// queue.verdict(msg)` — «мы ответили» неотличимо от «ответ не доехал».
     pub not_taken: std::sync::atomic::AtomicU64,
@@ -66,6 +70,7 @@ impl NfqShared {
             again: self.again.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             blind: self.blind.load(Ordering::Relaxed),
+            torn: self.torn.load(Ordering::Relaxed),
             not_taken: self.not_taken.load(Ordering::Relaxed),
         }
     }
@@ -86,6 +91,8 @@ pub struct NfqCounts {
     pub failed: u64,
     /// Ожиданий вслепую — дескриптор очереди добыть не удалось.
     pub blind: u64,
+    /// Носитель объявил потерю наблюдений. На `NfqueueBackend` всегда ноль — см. `NfqShared::torn`.
+    pub torn: u64,
     /// Ответов, отвергнутых ядром. Факт о МИРЕ: мы решили, а решение не доехало.
     pub not_taken: u64,
 }
@@ -183,7 +190,9 @@ impl<H: NfqHandler> NfqPipeline<H> {
         } = self;
         let ours = *our_fwmark;
 
-        let outcome = nfq.serve(|held| {
+        // `Instant::now()` — поведение сохраняется, прежний `wait(0)` внутри шва: этот шаг уже
+        // ждал на дескрипторе выше (`POLL_MILLIS`), второе ожидание внутри `serve` здесь не нужно.
+        let outcome = nfq.serve(std::time::Instant::now(), |held| {
             counts
                 .received
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -250,6 +259,15 @@ impl<H: NfqHandler> NfqPipeline<H> {
             reflex_core::serves::Served::Blind => {
                 self.counts
                     .blind
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(false)
+            }
+            // `NfqueueBackend::serve` эту клетку не производит (см. докблок `NfqShared::torn`);
+            // арм заведён, чтобы матч оставался тотальным на всём алфавите `Served`, а не потому,
+            // что этот носитель её видел.
+            reflex_core::serves::Served::Torn => {
+                self.counts
+                    .torn
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Ok(false)
             }
