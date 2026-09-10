@@ -5,6 +5,8 @@
 //! «буквы дошли». Единственный способ отличить одно от другого — пустить настоящие байты и
 //! спросить реакцию.
 
+mod paper;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -230,5 +232,65 @@ fn два_прибора_над_одной_записью_говорят_каж�
         heard.contains(&Distress::NoBytes),
         "медленный прибор обязан подтвердить — в одиночку на этой же записи он это делает; \
          услышано: {heard:?}"
+    );
+}
+
+
+/// Прибор, который говорит на КАЖДОМ пакете. Нужен затем, что здоровый разговор беды не рождает, а
+/// предмет теста — «дошли ли буквы», а не «нашлась ли блокировка».
+#[derive(Clone, Copy, Default)]
+struct Counter;
+
+impl Mealy for Counter {
+    type In = DetectorEvent<Seen>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
+
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        match event {
+            DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
+            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
+                (self, SmallVec::new(), ())
+            }
+        }
+    }
+}
+
+/// ПРЕДМЕТ: запись, снятая НЕ НАМИ, доходит до цепочки и даёт НАСТОЯЩЕЕ имя цели.
+///
+/// Цепочка производителей здесь не содержит ни одного нашего байта, и в этом весь смысл теста:
+/// `ClientHello` собрал OpenSSL, кадры записал `tcpdump -i lo`, а имя `proof.reflex.lab`
+/// независимо подтвердил `tshark -T fields -e tls.handshake.extensions_server_name`. Синтетический
+/// корпус (`recording(&[…])` выше) проверяет НАС ЖЕ обоими концами — он ловит логику, но не ловит
+/// расхождения с форматом, который пишет мир. Этот ловит.
+///
+/// Фикстура — 15 кадров и 3.5КБ: рукопожатие к своему же серверу на петле, без чужих адресов и без
+/// личных данных. Снята заново командой из докблока `examples/replay-recording`.
+#[test]
+fn запись_снятая_чужими_руками_даёт_настоящее_имя_цели() {
+    let started = std::time::Instant::now();
+    let heard = std::sync::Mutex::new(Vec::new());
+
+    let report = pcap("tests/fixtures/handshake.pcap")
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Counter))
+        .on(|target: &str, _distress: Distress| {
+            heard
+                .lock()
+                .expect("журнал не отравлен")
+                .push(target.to_string())
+        })
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard.iter().any(|name| name == "proof.reflex.lab"),
+        "имя цели обязано прийти из настоящего `ClientHello`, а не из нашего сборщика; \
+         услышано: {heard:?}, отчёт: {report:?}"
+    );
+    assert!(
+        started.elapsed() < secs(1),
+        "разбор пятнадцати кадров не должен занимать секунду"
     );
 }

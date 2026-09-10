@@ -218,6 +218,24 @@ pub trait CanSever: CanRefuse {
 ///
 /// Строит вопрос ЧИСТАЯ таблица, как и у обрыва: `вопрос → пакет-к-контуру`. Отправляет драйвер —
 /// эффект принадлежит ему (§9), не способности.
+///
+/// Заявить, не назвав, чем спрашивать, нельзя:
+///
+/// ```compile_fail,E0046
+/// use reflex_core::capability::CanAsk;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+/// struct Speechless;
+/// impl Terminal for Speechless {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
+/// }
+/// impl CanAsk for Speechless {}
+/// ```
 pub trait CanAsk: crate::held::Terminal {
     /// Чем спросить контур. `None` — «на этом носителе спросить нечем»: не всякая дверь умеет
     /// говорить наружу, и движок обязан узнать это ДО решения спрашивать.
@@ -230,6 +248,24 @@ pub trait CanAsk: crate::held::Terminal {
 ///
 /// Сторож: `памятка_ложится_домой_и_читается_маркой` (`core/tests/local.rs`),
 /// `kernel_remembers_what_was_told` (`core/tests/certify_remembering.rs`).
+///
+/// Заявить, не назвав слова памяти, нельзя:
+///
+/// ```compile_fail,E0046
+/// use reflex_core::capability::CanRemember;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+/// struct Forgetful;
+/// impl Terminal for Forgetful {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
+/// }
+/// impl CanRemember for Forgetful {}
+/// ```
 pub trait CanRemember: crate::held::Terminal {
     fn remember(state: u32, accept: bool) -> Self::Answer;
 }
