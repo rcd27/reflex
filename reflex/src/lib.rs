@@ -46,22 +46,25 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-use reflex_core::capability::{CanAsk, CanHold, CanRemember};
+use reflex_core::backend::Sink;
+use reflex_core::capability::{CanAsk, CanHold, CanInject, CanRemember};
 use reflex_core::certify::replays::{replays, Replayed};
 use reflex_core::colimit::Layer;
 use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
+use reflex_core::edge::EdgeView;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
-use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+use reflex_core::held::{Edging, Held, Terminal};
+use reflex_core::interleave::Interleave;
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
-use reflex_core::Serves;
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use reflex_core::tls;
 use reflex_core::word::{Conversation, Target};
-pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
+use reflex_core::Serves;
+pub use reflex_core::DetectorEvent;
 use reflex_core::{CanSever, Toward};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::{Addr, Flow};
@@ -72,11 +75,13 @@ use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::retransmit::RetransmitInstrument;
 pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
-use reflex_linux::conntrack::{CtEdge, TimeoutBase};
-use reflex_linux::nfqueue::Waited;
-use reflex_linux::queue::{Answer as Kept, Incoming, QueueSocket};
-use reflex_linux::rawsend::RawSender;
 pub use smallvec::{smallvec, SmallVec};
+
+/// Носитель очереди ядра — ЕДИНСТВЕННОЕ место фасада, знающее про Linux. Отдельным модулем, чтобы
+/// граница была проверяема ГРЕПОМ: имени линукс-крейта в `lib.rs` не должно встретиться ни разу,
+/// иначе «WinDivert встаёт в ту же дверь» остаётся обещанием, а не свойством.
+mod nfqueue;
+pub use nfqueue::{Nfqueue, NfqueueCarrier, INJECT_MARK};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};
@@ -93,44 +98,6 @@ macro_rules! report {
         eprintln!("[reflex] {}", ::core::format_args!($($arg)*))
     };
 }
-
-/// Носитель — очередь ядра. `engine(Nfqueue::queue(200))` открывает движок над ней.
-pub struct Nfqueue {
-    queue: u16,
-    layout: Layout,
-}
-
-/// НАШИ биты марки по умолчанию: 15 бит (тег 4 + фаза 3 + оттиск 8), сдвинутые в старшую половину.
-/// Умолчание, а не константа закона: на машине мы не одни, и сосед вправе занимать своё. Кто знает
-/// про соседа — говорит [`Nfqueue::marking`].
-const MARK_MASK: u32 = 0x0FFF_E000;
-/// Подпись писателя по умолчанию. Ненулевая: нулём подписан «никто», и по нему тег не отличить от
-/// нетронутой марки.
-const MARK_TAG: u8 = 0b101;
-
-impl Nfqueue {
-    /// Очередь netfilter с этим номером. Правило (`queue num N`) ставится снаружи — движок правил
-    /// не ставит: кто поставил, тот и снимает.
-    pub fn queue(num: u16) -> Nfqueue {
-        Nfqueue {
-            queue: num,
-            layout: Layout::new(MARK_MASK, MARK_TAG).expect("умолчание: 15 бит, ненулевой тег"),
-        }
-    }
-
-    /// Какие биты марки НАШИ и чем подписан их писатель. Нужно тому, кто делит машину с другим
-    /// агентом: чужие биты вне маски переживают наш шаг (read-modify-write), а тег отличает нашу
-    /// запись от чужой — по нему движок и узнаёт соседа (`Distress::Diverged`) вместо того, чтобы
-    /// принять его слово за своё.
-    ///
-    /// `None` — маска не 15-битная либо тег нулевой: раскладка непредставима, и цепочка её не
-    /// получит (предпосылку проверяет [`Layout::new`], а не отладочная проверка, исчезающая в
-    /// release).
-    pub fn marking(self, mask: u32, tag: u8) -> Option<Nfqueue> {
-        Layout::new(mask, tag).map(|layout| Nfqueue { layout, ..self })
-    }
-}
-
 /// Причина, по которой носитель не открылся, — ЗНАЧЕНИЕ, а не печать. Тот же закон, по которому
 /// `Refused` (`core/src/held.rs`) вытеснил `let _ =`: отказ мира есть знание, и его показывает
 /// [`Report`], а не журнал.
@@ -161,81 +128,49 @@ pub trait IntoCarrier {
     fn name(&self) -> String;
 }
 
-/// Открытый носитель очереди: сокет очереди И сокет инъекции — оба поднимает [`Nfqueue::open`]
-/// (через [`IntoCarrier`]), а не ведущий цикл. Сырой сокет живёт здесь ВСЕГДА, даже у цепочки,
-/// которая инжектить не станет (`.on`, не `.act`): ленивое открытие на первом `emit` меняло бы
-/// быстрый отказ на старте (`Report::not_started`) на отказ посреди боя — лишний сокет дешевле
-/// потерянного отказа.
-pub struct NfqueueCarrier {
-    socket: QueueSocket,
-    sender: RawSender,
+/// НОСИТЕЛЬ, ЧЬИ СООБЩЕНИЯ НЕСУТ КРАЙ, — одним именем вместо проекции в три звена
+/// (`<<C::Carrier as Terminal>::Carrier as Edging>::Edge`). Не украшение: проекция стоит в границах
+/// восьми стадий цепочки, и записанная восемь раз она была бы восемью местами, где её можно
+/// записать по-разному.
+///
+/// Реализуется САМА, всяким рецептом, чей носитель сообщения умеет [`Edging`]: заявлять её руками
+/// нечего, иначе носитель мог бы объявить одним краем то, что показывает другим.
+pub trait Bordered: IntoCarrier {
+    /// Чей край едет в широком слове цепочки. `Clone` и `'static` — требование не закона, а хранения:
+    /// край едет копией в каждой букве и живёт в ленте дольше пакета.
+    type Edge: EdgeView + Clone + 'static;
+
+    /// Что удержанное сообщение ПОКАЗЫВАЕТ: провод (байты кадра) и вид края о разговоре, которому
+    /// кадр принадлежит. Одной дверью, а не двумя границами (`Observed` + `Edging`) на каждой
+    /// стадии цепочки: спрашивают их всегда вместе и всегда в одном месте — внутри решения, где
+    /// носитель заимствован и второго `&mut` не будет.
+    ///
+    /// `None` у края — обитаемая клетка (§7): край о разговоре ещё ничего не ведёт.
+    fn shown(held: &Held<Carried<Self>>) -> (&[u8], Option<Self::Edge>);
 }
 
-/// Носитель `Serves`ит тем же швом, что и голый `QueueSocket` (задача 6) — делегирование, не
-/// вторая реализация: второй закон об одном и том же приёме разошёлся бы с первым молча.
-impl Terminal for NfqueueCarrier {
-    type Carrier = <QueueSocket as Terminal>::Carrier;
-    type Answer = <QueueSocket as Terminal>::Answer;
-    type Refusal = <QueueSocket as Terminal>::Refusal;
+/// Носитель СООБЩЕНИЯ — тот, у кого спрашивают край (внутри `serve`, где бэкенд занят одним
+/// наблюдением).
+type Carried<C> = <<C as IntoCarrier>::Carrier as Terminal>::Carrier;
 
-    fn apply(
-        &mut self,
-        answered: Answered<Self::Carrier, Self::Answer>,
-    ) -> Result<Delivered<Self::Answer>, Refused<Self::Answer, Self::Refusal>> {
-        self.socket.apply(answered)
-    }
-}
+impl<C> Bordered for C
+where
+    C: IntoCarrier,
+    Carried<C>: Edging + reflex_core::held::Observed,
+    <Carried<C> as Edging>::Edge: Clone + 'static,
+{
+    type Edge = <Carried<C> as Edging>::Edge;
 
-impl Serves for NfqueueCarrier {
-    fn serve<F>(
-        &mut self,
-        until: Instant,
-        decide: F,
-    ) -> Served<Delivered<Self::Answer>, Refused<Self::Answer, Self::Refusal>>
-    where
-        F: FnOnce(&reflex_core::held::Held<Self::Carrier>) -> Self::Answer,
-    {
-        self.socket.serve(until, decide)
-    }
-}
-
-impl IntoCarrier for Nfqueue {
-    type Carrier = NfqueueCarrier;
-
-    /// База таймаутов conntrack — предпосылка КРАЯ, и её читает РОВНО одно место продуктовой
-    /// цепочки: здесь. Обобщённый цикл (задача 8) знать о ней не может — предпосылка носителя есть
-    /// дело носителя, а в обобщённом цикле она была бы абсурдна (WinDivert про conntrack не
-    /// слышал). Сырой сокет инъекции поднимается следом, тоже здесь и тоже безусловно (см. докблок
-    /// [`NfqueueCarrier`]).
-    fn open(self) -> Result<NfqueueCarrier, Cause> {
-        let base = TimeoutBase::read().ok_or_else(|| {
-            Cause(
-                "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
-                    .to_string(),
-            )
-        })?;
-        let socket =
-            QueueSocket::open(self.queue, base).map_err(|why| Cause(format!("{why:?}")))?;
-        let sender = RawSender::open(INJECT_MARK)
-            .map_err(|why| Cause(format!("сокет инъекции: {why}")))?;
-        Ok(NfqueueCarrier { socket, sender })
-    }
-
-    fn layout(&self) -> Layout {
-        self.layout
-    }
-
-    fn name(&self) -> String {
-        format!("очередь {}", self.queue)
+    fn shown(held: &Held<Carried<C>>) -> (&[u8], Option<Self::Edge>) {
+        (held.seen(), held.carrier().edge())
     }
 }
 
-/// Открыть движок над носителем — единственная точка входа фреймворка.
-pub fn engine(backend: Nfqueue) -> Engine {
-    Engine {
-        queue: backend.queue,
-        layout: backend.layout,
-    }
+/// Открыть движок над носителем — единственная точка входа фреймворка. Берёт РЕЦЕПТ, а не открытый
+/// носитель: несостоявшийся запуск обязан быть значением ([`Report::not_started`]), а не паникой на
+/// первой строке потребительской цепочки.
+pub fn engine<C: IntoCarrier>(carrier: C) -> Engine<C> {
+    Engine { carrier }
 }
 
 // ─── Транспорт: ось `.from` ───────────────────────────────────────────────────────────────────
@@ -404,15 +339,18 @@ impl DnsPoison {
         DnsPoison
     }
 }
-
 /// ШИРОКОЕ слово фасада: провод транспорта И вид края о том же разговоре. Пара, а не два входа:
 /// область у них ОДНА (`Of = Conversation`) — провод говорит о разговоре с провода, край несёт о
 /// НЁМ ЖЕ добавочные величины (счётчики, возраст). Одна область — одна дверь; §5 разводит области,
 /// а не источники.
 ///
-/// `Option` у края — обитаемая клетка (§7): пакет, которого ядро ещё не завело в conntrack (первый
-/// `SYN` вне таблицы), вида не имеет, и «не считали» обязано отличаться от «не ответила».
-pub type Wide<W> = (W, Option<CtEdge>);
+/// `Option` у края — обитаемая клетка (§7): пакет, которого край ещё не завёл в свою таблицу
+/// (первый `SYN` вне conntrack), вида не имеет, и «не считали» обязано отличаться от «не ответила».
+///
+/// `E` — ЧЕЙ это край, и он параметр, а не `CtEdge`. Пока в слове стоял тип из `reflex-linux`,
+/// прибор — вещь, о носителе не знающая по построению, — получал его через всю цепочку до себя, и
+/// «носитель есть параметр» держалось на честном слове, а не на типе.
+pub type Wide<W, E> = (W, Option<E>);
 
 /// Прибор в пайпе: шагает над ШИРОКИМ словом транспорта, сам сузив его до своего алфавита. `dyn` —
 /// чтобы приборы разных алфавитов лежали одним списком; шаг дёшев, диспетч не на горячем счёте.
@@ -559,17 +497,20 @@ where
     })
 }
 
-/// Тишина живёт НА КРАЕ: её предмет — «цель не отвечает», а это ядро видит счётчиками, и держать
+/// Тишина живёт НА КРАЕ: её предмет — «цель не отвечает», а это край видит счётчиками, и держать
 /// параллельно свои часы значило бы вести второй закон об одном предмете. Порог по ВОЗРАСТУ потока
-/// (`age` conntrack), а не по нашему тику: возраст монотонен, тик — нет.
+/// (`age`), а не по нашему тику: возраст монотонен, тик — нет.
 ///
 /// Блэкхол сюда же и входит той же прогрессией фаз: `up.packets` 0 — соединения не было, 1 — только
 /// `SYN+ACK` и молчание, ≥2 — цель жива. Одна величина, один прибор; разводить их значило бы завести
 /// две фазы над одним счётчиком.
-impl IntoProbe<Wide<Reading>> for Silence {
-    fn place(self, layout: Layout) -> Placed<Wide<Reading>> {
+///
+/// Край — ПАРАМЕТР `E`, а не conntrack: прибор читает закон [`EdgeView`], и другой носитель ставит
+/// сюда свой край, не трогая ни строки парка.
+impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
+    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>> {
         Placed::AtEdge(Box::new(AtEdge {
-            machine: EdgeSilence::<CtEdge>::new(self.after, layout),
+            machine: EdgeSilence::<E>::new(self.after, layout),
             alphabet: PhantomData,
         }))
     }
@@ -578,12 +519,12 @@ impl IntoProbe<Wide<Reading>> for Silence {
     }
 }
 
-/// Повтор клиента остаётся В ПРОВОДЕ: его улика — совпавший `seq`, а счётчики conntrack номеров не
-/// хранят. Ядро предмета НЕ видит — значит и состоянию его в ядре не место (§9.1: носитель следует
+/// Повтор клиента остаётся В ПРОВОДЕ: его улика — совпавший `seq`, а счётчики края номеров не
+/// хранят. Носитель предмета НЕ видит — значит и состоянию его там не место (§9.1: носитель следует
 /// за тем, что подложка умеет видеть).
-impl IntoProbe<Wide<Reading>> for Retransmit {
-    fn place(self, _layout: Layout) -> Placed<Wide<Reading>> {
-        Placed::PerFlow(lift::<Wide<Reading>, Seen, _>(RetransmitInstrument::new()))
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Retransmit {
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _>(RetransmitInstrument::new()))
     }
 }
 
@@ -594,10 +535,10 @@ impl IntoProbe<Wide<Reading>> for Retransmit {
 /// Часы при этом сменились честно: проводной ловил повтор `SYN` (RTO клиента, сотни мс), краевой
 /// ловит возраст потока. Предмет тот же — адрес молчит; ранняя реакция на быстром повторе уходит, и
 /// это цена переезда, названная вслух.
-impl IntoProbe<Wide<Reading>> for SynDrop {
-    fn place(self, layout: Layout) -> Placed<Wide<Reading>> {
+impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
+    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>> {
         Placed::AtEdge(Box::new(AtEdge {
-            machine: EdgeSilence::<CtEdge>::new(BLACKHOLE_WINDOW, layout),
+            machine: EdgeSilence::<E>::new(BLACKHOLE_WINDOW, layout),
             alphabet: PhantomData,
         }))
     }
@@ -606,11 +547,11 @@ impl IntoProbe<Wide<Reading>> for SynDrop {
     }
 }
 
-/// Отравление DNS — В ПРОВОДЕ: предмет его СОДЕРЖИМОЕ ответа (инжект `NXDOMAIN`), а conntrack
+/// Отравление DNS — В ПРОВОДЕ: предмет его СОДЕРЖИМОЕ ответа (инжект `NXDOMAIN`), а край
 /// содержимого не читает вовсе.
-impl IntoProbe<Wide<DnsMessage>> for DnsPoison {
-    fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage>> {
-        Placed::PerFlow(lift::<Wide<DnsMessage>, DnsMessage, _>(
+impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for DnsPoison {
+    fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>> {
+        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _>(
             DnsPoisonInstrument::new(),
         ))
     }
@@ -680,59 +621,57 @@ impl<W: Clone + 'static> Mealy for Probes<W> {
 /// не теряется: Телеграм, чистый IP, ECH опознаются по IP.
 pub struct Sni;
 
-/// Движок над носителем — ждёт выбора транспорта.
-pub struct Engine {
-    queue: u16,
-    layout: Layout,
+/// Движок над носителем — ждёт выбора транспорта. Носитель едет РЕЦЕПТОМ через всю цепочку и
+/// открывается в `run`: цепочка собирается там, где её пишут, а мир трогается там, где бегут.
+pub struct Engine<C> {
+    carrier: C,
 }
 
-impl Engine {
+impl<C: IntoCarrier> Engine<C> {
     /// Поток разговоров этого транспорта (`Tcp` — соединения, `Udp` — датаграммы/DNS).
-    pub fn from<T: Transport>(self, _transport: T) -> Watching<T> {
+    pub fn from<T: Transport>(self, _transport: T) -> Watching<C, T> {
         Watching {
-            queue: self.queue,
-            layout: self.layout,
+            carrier: self.carrier,
             transport: PhantomData,
         }
     }
 }
 
 /// Транспорт выбран — ждёт ключа разговора.
-pub struct Watching<T> {
-    queue: u16,
-    layout: Layout,
+pub struct Watching<C, T> {
+    carrier: C,
     transport: PhantomData<fn() -> T>,
 }
 
-impl<T: Transport> Watching<T> {
+impl<C: IntoCarrier, T: Transport> Watching<C, T> {
     /// Чем ключуется цель.
-    pub fn extract(self, _key: Sni) -> Keyed<T> {
+    pub fn extract(self, _key: Sni) -> Keyed<C, T> {
         Keyed {
-            layout: self.layout,
-            queue: self.queue,
+            carrier: self.carrier,
             transport: PhantomData,
         }
     }
 }
 
 /// Ключ выбран — ждёт хотя бы одного детектора.
-pub struct Keyed<T> {
-    queue: u16,
-    layout: Layout,
+pub struct Keyed<C, T> {
+    carrier: C,
     transport: PhantomData<fn() -> T>,
 }
 
-impl<T: Transport> Keyed<T> {
-    /// Установить первый детектор. Прибор обязан читать словарь этого транспорта (`IntoProbe<Wire>`)
-    /// — иначе не соберётся.
-    pub fn detect(self, detector: impl IntoProbe<Wide<T::Wire>>) -> Detecting<T> {
+impl<C: Bordered, T: Transport> Keyed<C, T> {
+    /// Установить первый детектор. Прибор обязан читать словарь этого транспорта над краем этого
+    /// носителя (`IntoProbe<Wide<T::Wire, C::Edge>>`) — иначе не соберётся.
+    ///
+    /// Раскладку марки спрашивают у НОСИТЕЛЯ, а не хранят копией в стадии: копия была бы вторым
+    /// источником одной величины, и разошлась бы с первым молча.
+    pub fn detect(self, detector: impl IntoProbe<Wide<T::Wire, C::Edge>>) -> Detecting<C, T> {
         let mut park = Park::new();
         let longest = detector.window();
-        park.add(detector.place(self.layout));
+        park.add(detector.place(self.carrier.layout()));
         Detecting {
-            queue: self.queue,
+            carrier: self.carrier,
             park,
-            layout: self.layout,
             longest,
             about: None,
             transport: PhantomData,
@@ -777,20 +716,19 @@ impl<W> Park<W> {
 }
 
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
-pub struct Detecting<T: Transport> {
-    queue: u16,
-    park: Park<Wide<T::Wire>>,
-    layout: Layout,
+pub struct Detecting<C: Bordered, T: Transport> {
+    carrier: C,
+    park: Park<Wide<T::Wire, C::Edge>>,
     longest: Duration,
     about: Option<(Fold, TargetVoice)>,
     transport: PhantomData<fn() -> T>,
 }
 
-impl<T: Transport> Detecting<T> {
+impl<C: Bordered, T: Transport> Detecting<C, T> {
     /// Ещё прибор поверх — они гоняются ВМЕСТЕ над одним проводом.
-    pub fn detect(mut self, detector: impl IntoProbe<Wide<T::Wire>>) -> Detecting<T> {
+    pub fn detect(mut self, detector: impl IntoProbe<Wide<T::Wire, C::Edge>>) -> Detecting<C, T> {
         self.longest = self.longest.max(detector.window());
-        let placed = detector.place(self.layout);
+        let placed = detector.place(self.carrier.layout());
         self.park.add(placed);
         self
     }
@@ -808,7 +746,7 @@ impl<T: Transport> Detecting<T> {
     pub fn about(
         self,
         fold: impl Fn(&[&Distress]) -> Option<Distress> + Send + 'static,
-    ) -> Folding<T> {
+    ) -> Folding<C, T> {
         Folding {
             detecting: self,
             fold: Box::new(fold),
@@ -817,31 +755,25 @@ impl<T: Transport> Detecting<T> {
 
     /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
     /// случилось. Пакет идёт как шёл.
-    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
+    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<C, T, F> {
         Running {
-            queue: self.queue,
-            layout: self.layout,
-            park: self.park,
-            longest: self.longest,
-            about: self.about,
+            detecting: self,
             react,
             certify: false,
-            transport: PhantomData,
         }
     }
 
-    /// ДЕЙСТВОВАТЬ: реакция возвращает [`Act`], движок его исполняет. `Act::Sever` инжектит RST тому,
-    /// кто прислал ПАКЕТ-улику, — так тихий дроп обрывается за ~300мс (по повтору) вместо вечной
-    /// крутилки. Действует на сигналы, ПРИШЕДШИЕ С ПАКЕТОМ (повтор, сброс, стук): у тика носителя нет
-    /// — рвать нечем, и тишина обрывается следующим повтором, а не тиком.
-    pub fn act<F: FnMut(&str, Distress) -> Act<QueueSocket>>(self, react: F) -> Acting<T, F> {
+    /// ДЕЙСТВОВАТЬ: реакция возвращает [`Act`], движок его исполняет. `Act::sever()` инжектит RST
+    /// тому, кто прислал ПАКЕТ-улику, — так тихий дроп обрывается за ~300мс вместо вечной крутилки.
+    /// Действует на сигналы, ПРИШЕДШИЕ С ПАКЕТОМ: у узла сетки носителя нет — рвать нечем, и обрыв
+    /// случается на следующем повторе, а не на тике.
+    pub fn act<F: FnMut(&str, Distress) -> Act<C::Carrier>>(self, react: F) -> Acting<C, T, F>
+    where
+        C::Carrier: CanHold,
+    {
         Acting {
-            queue: self.queue,
-            layout: self.layout,
-            park: self.park,
-            longest: self.longest,
+            detecting: self,
             react,
-            transport: PhantomData,
         }
     }
 }
@@ -862,12 +794,11 @@ impl<T: Transport> Detecting<T> {
 /// импликации:
 ///
 /// ```compile_fail,E0599
-/// use reflex::Act;
-/// use reflex_linux::queue::QueueSocket;
+/// use reflex::{Act, NfqueueCarrier};
 /// // Очередь ядра — терминал, она держит, рвёт и помнит, но СПРОСИТЬ не умеет: дверь у неё одна,
 /// // вердикт удержанному пакету, и наружу к постороннему собеседнику она не говорит. `CanAsk` не
 /// // заявлен, и конструктора `ask` у её акта просто нет.
-/// let _ = Act::<QueueSocket>::ask(1);
+/// let _ = Act::<NfqueueCarrier>::ask(1);
 /// ```
 pub fn emit<T>(act: Act<T>, seen: &[u8]) -> (T::Answer, SmallVec<[Effect; 2]>)
 where
@@ -916,16 +847,16 @@ fn voiced(
 ///
 /// Так пара «свести → сказать о цели» держится ТИПОМ. Без неё потребитель построил бы слой,
 /// свёртку и копредел — и выбросил бы результат, не заметив: свёл и уронил.
-pub struct Folding<T: Transport> {
-    detecting: Detecting<T>,
+pub struct Folding<C: Bordered, T: Transport> {
+    detecting: Detecting<C, T>,
     fold: Fold,
 }
 
-impl<T: Transport> Folding<T> {
+impl<C: Bordered, T: Transport> Folding<C, T> {
     /// Что делать со словом о ЦЕЛИ. Дверь отдельная от [`Detecting::on`], потому что область другая:
     /// беда разговора и беда цели — слова разных слоёв, и §5 не складывает их законом пары. Спустить
     /// слово о цели к разговору тоже нельзя — это отменило бы только что сделанную агрегацию.
-    pub fn on_target<G: FnMut(&str, Voiced) + Send + 'static>(self, react: G) -> Speaking<T> {
+    pub fn on_target<G: FnMut(&str, Voiced) + Send + 'static>(self, react: G) -> Speaking<C, T> {
         Speaking {
             detecting: Detecting {
                 about: Some((self.fold, Box::new(react) as TargetVoice)),
@@ -938,23 +869,22 @@ impl<T: Transport> Folding<T> {
 /// Пара «свести → сказать о цели» замкнута: цепочка снова копит приборы и ждёт терминала.
 ///
 /// Терминал здесь только НАБЛЮДАТЬ. `.act` у копредела нет, и это не забывчивость: слово о цели
-/// рождается тиком, а тик носителя не имеет — рвать по нему нечем (см. [`Acting::run`]). Пусти
-/// копредел в `.act` — свёртка «молчат все» не сказала бы ни слова, потому что слова тишины до слоя
-/// в том цикле не доходят. Отказ компилятора честнее молчащей цепочки.
-pub struct Speaking<T: Transport> {
-    detecting: Detecting<T>,
+/// рождается на границе узла сетки, а узел носителя не имеет — рвать по нему нечем. Отказ
+/// компилятора честнее цепочки, собравшейся и молчащей.
+pub struct Speaking<C: Bordered, T: Transport> {
+    detecting: Detecting<C, T>,
 }
 
-impl<T: Transport> Speaking<T> {
+impl<C: Bordered, T: Transport> Speaking<C, T> {
     /// Ещё прибор поверх — как в [`Detecting::detect`]: копредел не закрывает набор приборов.
-    pub fn detect(self, detector: impl IntoProbe<Wide<T::Wire>>) -> Speaking<T> {
+    pub fn detect(self, detector: impl IntoProbe<Wide<T::Wire, C::Edge>>) -> Speaking<C, T> {
         Speaking {
             detecting: self.detecting.detect(detector),
         }
     }
 
     /// НАБЛЮДАТЬ слова о РАЗГОВОРАХ — вторая дверь пары. Слова о цели уже адресованы `.on_target`.
-    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
+    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<C, T, F> {
         self.detecting.on(react)
     }
 }
@@ -1026,20 +956,122 @@ impl<T: CanHold + CanAsk> Act<T> {
     }
 }
 
+// ─── Голос цепочки: чем терминалы отличаются друг от друга ────────────────────────────────────
+
+/// ГОЛОС ЦЕПОЧКИ — что она делает со словом беды. Два терминала (`.on` — смотреть, `.act` —
+/// действовать) отличаются ТОЛЬКО этим, и оттого ведущий цикл у них ОДИН. Прежде их было два, по
+/// сотне строк каждый, и всякая правка обязана была случиться дважды; второй раз о ней забывали —
+/// цикл `.act` не знал ни слова о цели, ни ленты §10, ни дыры, и молчал об этом зелёной сборкой.
+///
+/// Слово и ЭФФЕКТ разведены двумя методами не для порядка: услышать беду цикл обязан ВНУТРИ
+/// решения (носитель заимствован, пакет в руках), а тронуть мир — снаружи, когда носитель
+/// свободен. Тронь мир из `hears` — второго `&mut` не нашлось бы (`E0499`), и обрыв поехал бы мимо
+/// носителя своим сокетом, как ездил до §9.4.
+trait Voice<K> {
+    /// Беда услышана — чем цепочка обещает тронуть мир. Пусто у наблюдателя.
+    fn hears(&mut self, target: &str, distress: Distress, seen: &[u8]) -> SmallVec<[Effect; 2]>;
+    /// Исполнить обещанное носителем. У наблюдателя обещаний не бывает — тело пусто по построению.
+    fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>);
+}
+
+/// СМОТРЕТЬ: реакция потребителя, мира не касающаяся.
+struct Watch<F>(F);
+
+impl<K, F: FnMut(&str, Distress)> Voice<K> for Watch<F> {
+    fn hears(&mut self, target: &str, distress: Distress, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        (self.0)(target, distress);
+        SmallVec::new()
+    }
+
+    fn does(&mut self, _carrier: &mut K, _effects: SmallVec<[Effect; 2]>) {}
+}
+
+/// ДЕЙСТВОВАТЬ: реакция возвращает акт, [`emit`] переводит его в слово носителю и команды миру,
+/// исполняет их цикл — и в переигровке не исполняет, тем лента и остаётся переигрываемой (§10).
+struct Do<F>(F);
+
+impl<K, F> Voice<K> for Do<F>
+where
+    K: CanHold + CanInject,
+    K::Error: std::fmt::Debug,
+    F: FnMut(&str, Distress) -> Act<K>,
+{
+    fn hears(&mut self, target: &str, distress: Distress, seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        let (_word, effects) = emit::<K>((self.0)(target, distress), seen);
+        effects
+    }
+
+    fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>) {
+        for effect in effects {
+            let Effect::Inject(packet) = effect;
+            if let Err(why) = carrier.emit(K::inject(packet)) {
+                report!("инъекция не ушла: {why:?}");
+            }
+        }
+    }
+}
+
 /// Цепочка собрана — готова к запуску.
-pub struct Running<T: Transport, F> {
-    queue: u16,
-    /// Донесена до `run` ради [`Nfqueue::open`]: рецепт восстанавливается из `queue`+`layout`
-    /// целиком, а не додумывается заново — у `Nfqueue` больше полей нет, потому потерь при
-    /// пересборке не бывает.
-    layout: Layout,
-    park: Park<Wide<T::Wire>>,
-    longest: Duration,
-    about: Option<(Fold, TargetVoice)>,
+pub struct Running<C: Bordered, T: Transport, F> {
+    detecting: Detecting<C, T>,
     react: F,
     /// Предъявлять ли восьмой закон на живой ленте — [`Running::certifying`].
     certify: bool,
-    transport: PhantomData<fn() -> T>,
+}
+
+impl<C, T, F> Running<C, T, F>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    F: FnMut(&str, Distress),
+{
+    /// НАБЛЮДАТЬ. Ведущий цикл один на оба терминала — см. [`drive`]; отсюда в него едет голос
+    /// [`Watch`], мира не касающийся.
+    pub fn run(self) -> Report {
+        let Running {
+            detecting,
+            react,
+            certify,
+        } = self;
+        drive::<C, T, _>(detecting, certify, &mut Watch(react))
+    }
+
+    /// Предъявлять восьмой закон (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
+    /// пере-подаёт свежей семье машин дважды — сверяя не ленту, а сказанное.
+    ///
+    /// Дверь отдельная и по умолчанию закрытая: запись стоит клона слова провода на каждый пакет, и
+    /// платить её тем, кто закона не просит, незачем. Кто просит — получает свидетельство на СВОЁМ
+    /// трафике, а не на выдуманном стенде: это и отличает предъявимость от обещания.
+    pub fn certifying(mut self) -> Running<C, T, F> {
+        self.certify = true;
+        self
+    }
+}
+
+/// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
+pub struct Acting<C: Bordered, T: Transport, F> {
+    detecting: Detecting<C, T>,
+    react: F,
+}
+
+impl<C, T, F> Acting<C, T, F>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember + CanInject,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    <C::Carrier as Sink>::Error: std::fmt::Debug,
+    T: Transport,
+    F: FnMut(&str, Distress) -> Act<C::Carrier>,
+{
+    /// ДЕЙСТВОВАТЬ. Тот же ведущий цикл, что и у `.on` ([`drive`]), — отличается только голосом
+    /// [`Do`]: он переводит акт в команды и отдаёт их носителю. Лента, дыра, слово о цели и памятка
+    /// работают здесь ровно так же, и это не совпадение, а следствие одного цикла.
+    pub fn run(self) -> Report {
+        let Acting { detecting, react } = self;
+        drive::<C, T, _>(detecting, false, &mut Do(react))
+    }
 }
 
 /// Чьё наблюдение — так сказал РАЗБОР, когда буква рождалась. Два ключа, потому что областей две
@@ -1064,9 +1096,9 @@ pub enum Said {
 }
 
 /// Лента этого движка: буквы провода с адресом разбора. Отклик пока не рождается — акт вопроса в
-/// потребительскую цепочку не вписан (по-актовый гейт способностей ещё не построен), потому
-/// содержимое отклика здесь пусто.
-type Recorded<T> = Tape<Wide<<T as Transport>::Wire>, Whose, ()>;
+/// потребительскую цепочку не вписан, потому содержимое отклика здесь пусто.
+type Recorded<C, T> =
+    Tape<Wide<<T as Transport>::Wire, <C as Bordered>::Edge>, Whose, ()>;
 
 /// Сколько букв копит окно ленты, прежде чем закон предъявляется. Окно, а не весь прогон: движок
 /// живёт, пока жив процесс, и бесконечная лента была бы утечкой.
@@ -1079,26 +1111,27 @@ const TAPE_WINDOW: usize = 64;
 
 /// Пере-подать записанное окно СВЕЖЕЙ семье машин и собрать сказанное.
 ///
-/// Зеркало живой петли, и в этом весь смысл: те же вызовы (`process` на пакет, `tick` на узел
-/// сетки, свёртка на нём же), но вход берётся из ЛЕНТЫ, а не из очереди и часов. Что расходится —
-/// то и есть скрытый вход машины (§10).
+/// Зеркало живой петли, и в этом весь смысл: те же двери ([`FlowTable::process`] на пакет,
+/// [`FlowTable::each`] на букву без адреса, свёртка на границе узла), но вход берётся из ЛЕНТЫ, а
+/// не из носителя и часов. Что расходится — то и есть скрытый вход машины (§10).
 ///
-/// Реакции потребителя здесь не зовутся вовсе: они печатают, то есть трогают мир, а переигровка
-/// его не трогает (§9.4). Наружу идут ИСХОДЫ — их и сверяет закон.
-fn replay<T: Transport>(
-    seeds: &[Box<dyn Probe<Wide<T::Wire>>>],
+/// Реакции потребителя здесь не зовутся вовсе: они трогают мир, а переигровка его не трогает
+/// (§9.4). Наружу идут ИСХОДЫ — их и сверяет закон.
+///
+/// Параметр — ШИРОКОЕ СЛОВО целиком, не транспорт: транспорт тут не при чём, лента уже разобрана.
+fn replay<W: Clone + 'static>(
+    seeds: &[Box<dyn Probe<W>>],
     fold: Option<&Fold>,
     idle: Duration,
     mode: Mode,
-    letters: &[TapeLetter<Wide<T::Wire>, Whose, ()>],
+    letters: &[TapeLetter<W, Whose, ()>],
 ) -> Vec<Said> {
     // Живой режим сюда не приходит: пере-подача — всегда переигровка. Придёт — упадём в отладке,
     // а не соврём тихо вердиктом, добытым касанием мира.
     debug_assert_eq!(mode, Mode::Replay, "переигровка идёт только в Replay");
 
-    let templates: Vec<Box<dyn Probe<Wide<T::Wire>>>> =
-        seeds.iter().map(|probe| probe.clone_box()).collect();
-    let mut table = FlowTable::<Probes<Wide<T::Wire>>, Flow>::new(idle, move |_flow| {
+    let templates: Vec<Box<dyn Probe<W>>> = seeds.iter().map(|probe| probe.clone_box()).collect();
+    let mut table = FlowTable::<Probes<W>, Flow>::new(idle, move |_flow| {
         Probes(templates.iter().map(|probe| probe.clone_box()).collect())
     });
     let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
@@ -1110,8 +1143,13 @@ fn replay<T: Transport>(
             // Отклик: до прибора он не доходит §4-сужением, а вопросов эта цепочка не задаёт.
             continue;
         };
-        match (to, event) {
-            (To::One(whose), DetectorEvent::Packet { input, at }) => {
+        match to {
+            To::One(whose) => {
+                let DetectorEvent::Packet { input, at } = event else {
+                    // Адресованной может быть только буква с ключом: прочие сочетания лента не
+                    // рождает — их пишет тот же код, что читает.
+                    continue;
+                };
                 let (signals, ()) = table.process(whose.flow, input, *at);
                 for signal in &signals {
                     said.push(Said::OfConversation(label(&whose.target), signal.clone()));
@@ -1119,395 +1157,374 @@ fn replay<T: Transport>(
                 }
                 targets.insert(whose.flow, whose.target.clone());
             }
-            (To::Each, DetectorEvent::Tick { at, .. }) => {
-                for (flow, (signals, ())) in table.tick(*at) {
+            To::Each => {
+                let at = event.at();
+                for (flow, (signals, ())) in table.each(event.clone()) {
                     if let Some(key) = targets.get(&flow) {
                         for signal in &signals {
                             said.push(Said::OfConversation(label(key), signal.clone()));
-                            layer.saw(key.clone(), flow, signal.clone(), *at);
+                            layer.saw(key.clone(), flow, signal.clone(), at);
                         }
                     }
                 }
-                if let Some(fold) = fold {
-                    for (target, voice) in voiced(&mut layer, fold, idle, *at) {
-                        said.push(Said::OfTarget(target, voice));
+                // Слово о цели рождается на границе УЗЛА — там же, где в живом прогоне.
+                if matches!(event, DetectorEvent::Tick { .. }) {
+                    if let Some(fold) = fold {
+                        for (target, voice) in voiced(&mut layer, fold, idle, at) {
+                            said.push(Said::OfTarget(target, voice));
+                        }
                     }
                 }
             }
-            // Непонятое до машин не доходит (у него нет ключа), а прочие сочетания адреса и буквы
-            // лента не рождает: их пишет один и тот же код, что читает.
-            _ => {}
+            To::Nobody => {}
         }
     }
     said
 }
 
-/// Как часто движок будит приборы в тишине. Меньше окна детектора; выбрано, не замерено.
+/// Шаг СЕТКИ — как часто закрывается окно, по которому судят приборы. Не «как часто будим»: сроком
+/// сна распоряжается носитель ([`Serves::serve`]), а сетка — предмет наблюдения, и её шаг не
+/// зависит от того, чем и сколько носитель спит.
 const TICK: Duration = Duration::from_millis(200);
-
-/// Сколько ждать на пустой очереди, прежде чем вернуться к тику. Ожидание ведёт цикл, не бэкенд.
-const POLL_MS: i32 = 100;
 
 /// Нижний предел срока эвикта ключа: даже беспороговым приборам нужно пережить типичный разговор.
 const MIN_IDLE: Duration = Duration::from_secs(10);
 
-impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
-    /// Ведущий цикл. Возвращается только исходом настройки (`Report`) — работает, пока жив процесс.
-    ///
-    /// Внутри: разбор провода (`parse`) → наблюдение транспорта (`T::observe`) → приборы на ключ
-    /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на [`Distress`].
-    /// Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
-    pub fn run(mut self) -> Report {
-        // Носитель открывает СЕБЯ: предпосылка (база таймаутов conntrack) и сокет инъекции —
-        // дело `Nfqueue::open`, не ведущего цикла (§ дверь отдаёт носителя, не число очереди).
-        // Рецепт восстанавливается из `queue`+`layout` — у `Nfqueue` больше полей нет, вторым
-        // источником этих величин пересборка не становится.
-        let recipe = Nfqueue {
-            queue: self.queue,
-            layout: self.layout,
-        };
-        let NfqueueCarrier { socket, .. } = match recipe.open() {
-            Ok(carrier) => carrier,
-            Err(Cause(why)) => return Report::not_started(self.queue, why),
-        };
-        // Уже СНЯТОЕ значение, не повторное чтение sysctl: `Nfqueue::open` — единственный, кто
-        // зовёт `TimeoutBase::read()` (см. докблок `QueueSocket::base`).
-        let base = socket.base();
+/// ВЕДУЩИЙ ЦИКЛ — один на оба терминала. Возвращается исходом настройки либо концом источника;
+/// живой носитель конца не обещает, и на боевой очереди цикл работает, пока жив процесс.
+///
+/// Устройство: носитель обслуживает шов ([`Serves::serve`]) до СЛЕДУЮЩЕГО УЗЛА сетки, а всё, что
+/// он сказал, шов ([`Interleave`]) переводит в буквы и отдаёт [`Alive::walk`]. Прежде цикл гонял
+/// ПАЧКУ пакетов, а тик смотрел после неё — и пакет, перешагнувший узел, доходил до прибора раньше
+/// самого узла: детектор видел его раньше закрытия окна, в которое пакет не попал, и относил его
+/// байты не к тому окну (§8, дословно).
+///
+/// МОМЕНТ БЕЗОТВЕТНОГО ИСХОДА — СРОК, о котором просили, а не показание часов. Носитель обязался не
+/// возвращаться раньше него; значит срок наступил, и узел, назначенный на него, наступил ровно на
+/// сетке. Взятый заново `Instant::now()` был бы моментом, когда нам СЛУЧИЛОСЬ вернуться — он
+/// позже узла на величину планировщика и о наблюдении не говорит ничего. Оттого же носитель вправе
+/// держать поддельные часы (§8: время есть буква входа, подделать её законно) — и бумажный носитель
+/// в `tests/driver.rs` ими и держится, не гоня реальную секунду.
+///
+/// Цена названа: носитель, обязательство нарушивший, гонит сетку впереди СВОИХ часов — узлов
+/// выходит больше, чем у него прошло времени. Это цена нарушителя, не цикла, и на боевой очереди её
+/// не бывает: там закон срока исполняется единственным сном внутри `serve`.
+///
+/// ДЫРА приходит С РАБОТОЙ, то есть раньше срока, и её момент — показание часов: момент
+/// ОБНАРУЖЕНИЯ, а не потери. Момента потери не существует нигде — ядро выбросило сообщения раньше,
+/// чем мы позвали приём, и `ENOBUFS` не несёт ни числа потерянных, ни времени.
+///
+/// ОТКАЗ ТЕРМИНАЛА (`Answered(Err)`) цикл печатает и идёт дальше. Цена у этого ДВОЙНАЯ, и обе
+/// половины дорогие:
+/// * ядро всё ещё ДЕРЖИТ пакет — мы не ответили удержанному, и разговор стоит, пока очередь не
+///   выкинет его по своему сроку;
+/// * памятка не уехала, и это не задержка, а ПОВТОР ПОКАЗАНИЯ: фаза кодирует не только положение
+///   в вычислении, но и факт «уже сказали» (гейт молчания `Confirmed`/`Released` в
+///   `instrument/edge_detect.rs`), а из счётчиков края этот факт не выводится ничем. Следующий
+///   пакет прочтёт старую фазу при прежних условиях и выдаст показание второй раз — для `.detect`
+///   это дубль в отчёте, для `.act(sever)` второй RST по уже оборванному разговору.
+///
+/// Повтора вердикта здесь нет НАРОЧНО: сколько раз, с какой паузой и что при исчерпании — решение,
+/// которое принимают с замером частоты отказов, а замера нет.
+fn drive<C, T, V>(chain: Detecting<C, T>, certify: bool, voice: &mut V) -> Report
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    V: Voice<C::Carrier>,
+{
+    let Detecting {
+        carrier: recipe,
+        park,
+        longest,
+        mut about,
+        ..
+    } = chain;
+    let name = recipe.name();
+    // Носитель открывает СЕБЯ: свои предпосылки, свои сокеты. Цикл о них не знает и знать не может
+    // — предпосылка носителя есть дело носителя (у WinDivert она другая).
+    let mut carrier = match recipe.open() {
+        Ok(carrier) => carrier,
+        Err(Cause(why)) => return Report::not_started(name, why),
+    };
 
-        let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
-        // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она
-        // обязана начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
-        let seeds: Vec<Box<dyn Probe<Wide<T::Wire>>>> = self
-            .park
-            .per_flow
-            .iter()
-            .map(|probe| probe.clone_box())
-            .collect();
-        let templates = self.park.per_flow;
+    let idle = longest.saturating_mul(2).max(MIN_IDLE);
+    // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она обязана
+    // начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
+    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>>>> =
+        park.per_flow.iter().map(|probe| probe.clone_box()).collect();
+    let templates = park.per_flow;
+    let mut alive: Alive<C, T> = Alive {
+        table: FlowTable::new(idle, move |_flow| {
+            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
+        }),
         // Приборы КРАЯ живут одним экземпляром на весь движок: их состояние не здесь, а в марке
-        // ядра, и копия на ключ была бы копией пустоты.
-        let mut at_edge = self.park.at_edge;
-        let mut table = FlowTable::<Probes<Wide<T::Wire>>, Flow>::new(idle, move |_flow| {
-            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
-        });
-        let mut state = T::State::default();
-        // Окно ленты: пишется всегда, когда закон предъявляется, и не пишется иначе — лента даром
-        // стоила бы клона слова провода на каждый пакет.
-        let mut tape: Recorded<T> = Tape::new();
-        // Ключ цели на разговор — для сигналов, рождённых тиком (у тика пакета с личностью нет).
-        // Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
-        let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
-        // Слова разговоров, разложенные по цели: из них рождается слово О ЦЕЛИ, когда потребитель
-        // принёс свёртку (`.about(…)`). Ключ цели здесь — её имя, каким его назвал `extract`: фасад
-        // уже свёл `Named`/`Unnamed` в одну строку (имя либо адрес), и различение живёт выше, в
-        // `TargetKey`, а не тут.
-        let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
-        let mut last_tick = Instant::now();
+        // носителя, и копия на ключ была бы копией пустоты.
+        at_edge: park.at_edge,
+        layer: Layer::new(),
+        targets: HashMap::new(),
+        tape: Tape::new(),
+        certify,
+    };
+    let mut state = T::State::default();
+    let mut seam = Interleave::started(Instant::now(), TICK);
 
-        loop {
-            let now = Instant::now();
+    loop {
+        // Шаг сетки — ненулевая константа, потому `None` («сетки нет») сюда не приходит; ответ на
+        // невозможное всё же дан значением, а не паникой: следующий узел через шаг.
+        let until = seam
+            .next_node()
+            .unwrap_or_else(|| Instant::now() + TICK);
+        let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
+        let mut crossed: Option<Instant> = None;
 
-            // Приём зовётся ТОЛЬКО на готовом сокете: он блокирующий, и на пустой очереди
-            // повис бы до следующего пакета — вместе с ним встали бы тики, то есть часы
-            // проводных приборов. Их предмет как раз молчание: замри они, и тишина стала бы
-            // ненаблюдаемой ровно тогда, когда наступила.
-            let batch = match socket.wait(POLL_MS) {
-                Waited::Ready => match socket.recv() {
-                    Ok(batch) => batch,
-                    // Переполнение — ВЕЛИЧИНА, а не молчание: ядро сказало, что пакеты потеряны,
-                    // и прибор вправе знать, что разрыв объявлен. Глотать его значило бы
-                    // сравнивать наблюдения через необъявленную дыру.
-                    Err(why) => {
-                        report!("очередь {}: {why:?}", self.queue);
-                        Vec::new()
-                    }
-                },
-                // Пусто либо ждать не на чем — сразу к тику.
-                Waited::Idle | Waited::Blind => Vec::new(),
+        let outcome = carrier.serve(until, |held| {
+            let at = held.at();
+            let (seen, edge) = C::shown(held);
+            // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
+            // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
+            let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
+            let (moved, letters, whose) = match T::observe(&mut state, parse::read(seen, T::PORT)) {
+                Some(observed) => {
+                    let (moved, letters) = seam.saw((observed.wire, edge), at);
+                    (moved, letters, Some((observed.flow, observed.key)))
+                }
+                // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
+                // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
+                None => {
+                    let (moved, letters) = seam.idle(at);
+                    (moved, letters, None)
+                }
             };
+            seam = moved;
+            let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
+            crossed = node;
+            // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
+            // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
+            // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
+            match memo {
+                Some(memo) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
+                None => <C::Carrier as CanHold>::release(),
+            }
+        });
 
-            for incoming in batch {
-                let Incoming::Packet(packet) = incoming else {
-                    continue;
-                };
-                // Вид края — то, что ядро ведёт о ЭТОМ разговоре. `None` — поток ещё не в conntrack
-                // (первый `SYN` вне таблицы): «не считали», не «не ответила» (§7).
-                let ct_mark = packet.ct.map(|view| view.mark).unwrap_or(0);
-                let edge = packet.ct.map(|view| CtEdge::seen(view, base));
+        // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
+        // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
+        let sown = match outcome {
+            Served::Answered(Ok(_)) => None,
+            Served::Answered(Err(refused)) => {
+                report!("вердикт не ушёл: {:?}", refused.why);
+                None
+            }
+            Served::Torn => Some(seam.torn(Instant::now())),
+            // Тишина от носителя, у которого работы больше НЕ БУДЕТ, — не наблюдение, а конец:
+            // выдавать узлы за неё некому. Живая очередь сюда не приходит никогда (`exhausted` у
+            // неё ложь по построению: ядро конца не обещает).
+            Served::Idle | Served::Blind if carrier.exhausted() => return Report::finished(name),
+            Served::Idle | Served::Blind => Some(seam.idle(until)),
+        };
+        if let Some((moved, letters)) = sown {
+            seam = moved;
+            let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
+            crossed = node;
+        }
 
-                let mut memo: Option<Memo> = None;
-                if let Some(observed) =
-                    T::observe(&mut state, parse::read(&packet.payload, T::PORT))
-                {
-                    let wide: Wide<T::Wire> = (observed.wire, edge);
-                    // Буква пишется ЗДЕСЬ, где рождается, и с адресом, который знает только разбор:
-                    // позже его взять неоткуда — словарь провода потока не несёт.
-                    if self.certify {
-                        tape.record([TapeLetter::Event {
-                            to: To::One(Whose {
-                                flow: observed.flow,
-                                target: observed.key.clone(),
+        voice.does(&mut carrier, effects);
+
+        // Слово О ЦЕЛИ — на границе УЗЛА, а не на каждом обороте: копредел говорит о том, что
+        // видно в закрытом окне, и зови его на каждый пакет — цель говорила бы столько раз, сколько
+        // пришло пакетов.
+        if let Some(at) = crossed {
+            if let Some((fold, say)) = &mut about {
+                for (target, said) in voiced(&mut alive.layer, fold, idle, at) {
+                    say(&target, said);
+                }
+            }
+            alive.forget_evicted();
+            alive.certified(&seeds, about.as_ref().map(|(fold, _say)| fold), idle);
+        }
+    }
+}
+
+/// ЖИВОЕ СОСТОЯНИЕ ПРОГОНА — всё, чего касается буква. Отдельной вещью, а не россыпью локальных
+/// переменных: букву гоняет ОДНА функция ([`Alive::walk`]), и её девять доводов были бы девятью
+/// местами, где их можно передать не в том порядке.
+struct Alive<C: Bordered, T: Transport> {
+    /// ПРОВОДНЫЕ приборы: копия семьи на ключ, состояние в юзерспейсе.
+    table: FlowTable<Probes<Wide<T::Wire, C::Edge>>, Flow>,
+    /// КРАЕВЫЕ: один экземпляр на движок, состояние в марке носителя.
+    at_edge: Vec<Box<dyn EdgeProbe<Wide<T::Wire, C::Edge>>>>,
+    /// Слова разговоров, разложенные по цели: из них рождается слово О ЦЕЛИ.
+    layer: Layer<Conversation, Target, Distress>,
+    /// Ключ цели на разговор — для сигналов, рождённых узлом сетки (у узла пакета с личностью нет).
+    /// Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
+    targets: HashMap<Flow, TargetKey<Box<str>>>,
+    /// Окно ленты: пишется, только когда закон предъявляется — даром лента стоила бы клона слова
+    /// провода на каждый пакет.
+    tape: Recorded<C, T>,
+    certify: bool,
+}
+
+impl<C: Bordered, T: Transport> Alive<C, T> {
+    /// ПРОГНАТЬ БУКВЫ ЧЕРЕЗ ПРИБОРЫ. Отдельной функцией, а не телом ветки: буквы приходят из
+    /// ЧЕТЫРЁХ мест (пакет, узел сетки, дыра, простой), и четыре копии этого разошлись бы молча —
+    /// ровно так `.act` и остался без ленты, дыры и слова о цели.
+    ///
+    /// АДРЕС выводится из `whose`, а не из ветки цикла: пакет идёт машине СВОЕГО разговора, всё
+    /// прочее — каждой живой. У дыры адреса нет по существу (докблок [`FlowTable`] называет
+    /// причину), у узла сетки — потому что у времени собеседника не бывает.
+    ///
+    /// Краевые приборы получают только ПАКЕТ: их предмет — состояние разговора в марке, а марка
+    /// приезжает с пакетом; и слово, сказанное ими на узле, некому было бы адресовать.
+    ///
+    /// Наружу — памятка (её кладёт домой носитель тем же словом, что и вердикт) и момент
+    /// ПОСЛЕДНЕГО закрытого узла, если он тут был: по нему цикл судит, пора ли говорить о цели.
+    fn walk<V: Voice<C::Carrier>>(
+        &mut self,
+        letters: Vec<DetectorEvent<Wide<T::Wire, C::Edge>>>,
+        whose: Option<(Flow, TargetKey<Box<str>>)>,
+        seen: &[u8],
+        voice: &mut V,
+        effects: &mut SmallVec<[Effect; 2]>,
+    ) -> (Option<Memo>, Option<Instant>) {
+        let mut memo: Option<Memo> = None;
+        let mut crossed: Option<Instant> = None;
+        for letter in letters {
+            let at = letter.at();
+            if matches!(letter, DetectorEvent::Tick { .. }) {
+                crossed = Some(at);
+            }
+            let said: Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)> =
+                match (&letter, &whose) {
+                    (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
+                        self.recorded(
+                            To::One(Whose {
+                                flow: *flow,
+                                target: key.clone(),
                             }),
-                            event: DetectorEvent::Packet {
-                                input: wide.clone(),
-                                at: now,
-                            },
-                        }]);
-                    }
-
-                    let named = label(&observed.key);
-                    // ПРОВОДНЫЕ: копия на ключ, состояние в юзерспейсе.
-                    let (signals, ()) = table.process(observed.flow, &wide, now);
-                    // КРАЕВЫЕ: один экземпляр, состояние уедет в марку тем же словом, что и вердикт.
-                    let letter = DetectorEvent::Packet {
-                        input: wide,
-                        at: now,
-                    };
-                    let mut said = signals;
-                    for probe in at_edge.iter_mut() {
-                        let (remembered, spoken) = probe.observe(&letter);
-                        // Памятка одна на пакет: марка одна, и второй писатель затёр бы первого.
-                        // Цепочка с двумя краевыми приборами не собирается (см. `Park::add`), потому
-                        // здесь выбора нет — есть перезапись невозможного.
-                        memo = remembered.or(memo);
-                        said.extend(spoken);
-                    }
-
-                    for signal in &said {
-                        (self.react)(&named, signal.clone());
-                        layer.saw(observed.key.clone(), observed.flow, signal.clone(), now);
-                    }
-                    targets.insert(observed.flow, observed.key);
-                }
-
-                // Слово носителю: пакет идёт как шёл, а память — тем же словом (§5: «отпустить и
-                // запомнить» неделимо). Нет памятки — марку не трогаем вовсе: чужие биты не наши.
-                let answer = match memo {
-                    Some(memo) => {
-                        <QueueSocket as CanRemember>::remember(memo.apply_to(ct_mark), true)
-                    }
-                    None => <QueueSocket as CanHold>::release(),
-                };
-                let (accept, state) = match answer {
-                    Kept::Remembered { accept, state } => (accept, Some(state)),
-                    Kept::Pass => (true, None),
-                    Kept::Stop => (false, None),
-                };
-                if let Err(why) = socket.verdict(packet.id, accept, state) {
-                    report!("вердикт не ушёл: {why:?}");
-                }
-            }
-
-            if now.duration_since(last_tick) >= TICK {
-                last_tick = now;
-                // Узел сетки — буква КАЖДОЙ живой машины; в ленту он ложится раз, а фанаут делает
-                // тот, кто её читает: перегенерируй тик на переигровке — и она позвала бы часы,
-                // то есть впустила бы в машину скрытый вход, который сама же и проверяет (§8).
-                if self.certify {
-                    tape.record([TapeLetter::Event {
-                        to: To::Each,
-                        event: DetectorEvent::Tick { node: 0, at: now },
-                    }]);
-                }
-                for (flow, (signals, ())) in table.tick(now) {
-                    if let Some(key) = targets.get(&flow) {
-                        let named = label(key);
-                        for signal in &signals {
-                            (self.react)(&named, signal.clone());
-                            layer.saw(key.clone(), flow, signal.clone(), now);
-                        }
-                    }
-                }
-                // Слово О ЦЕЛИ рождается здесь: слова её разговоров сводятся свёрткой потребителя.
-                // Затихшие разговоры уходят прежде сведения — иначе цель говорила бы голосом
-                // разговоров, которых уже нет.
-                if let Some((fold, voice)) = &mut self.about {
-                    for (target, said) in voiced(&mut layer, fold, idle, now) {
-                        voice(&target, said);
-                    }
-                }
-                // Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
-                targets.retain(|flow, _| table.get(flow).is_some());
-
-                // ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его
-                // свежей семье дважды и сверяем сказанное. Свидетель тут же и предъявляется: молча
-                // держать закон значит не держать его вовсе.
-                if self.certify && tape.len() >= TAPE_WINDOW {
-                    let fold = self.about.as_ref().map(|(fold, _voice)| fold);
-                    let verdict = replays(&tape, |mode, letters| {
-                        replay::<T>(&seeds, fold, idle, mode, letters)
-                    });
-                    match verdict {
-                        Replayed::Reproduced => {
-                            report!("§10: окно из {} букв воспроизведено", tape.len())
-                        }
-                        Replayed::Unstable { at } => report!(
-                            "§10 НАРУШЕН: прогоны разошлись на исходе {at} — у машины есть вход \
-                             вне её алфавита"
-                        ),
-                        Replayed::NoTape => report!("§10: судить не о чем — лента пуста"),
-                        // Окно из одних узлов сетки без живых машин: согласие двух молчаний
-                        // свидетельством не считается — под ним прошла бы любая порча.
-                        Replayed::Silent => report!(
-                            "§10: окно из {} букв прошло молча — машине нечего было сказать, \
-                             свидетельства нет",
-                            tape.len()
-                        ),
-                    }
-                    // Окно закрыто: следующее пишется с чистого места, иначе лента росла бы вечно.
-                    tape = Tape::new();
-                }
-            }
-        }
-    }
-
-    /// Предъявлять восьмой закон (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
-    /// пере-подаёт свежей семье машин дважды — сверяя не ленту, а сказанное.
-    ///
-    /// Дверь отдельная и по умолчанию закрытая: запись стоит клона слова провода на каждый пакет, и
-    /// платить её тем, кто закона не просит, незачем. Кто просит — получает свидетельство на СВОЁМ
-    /// трафике, а не на выдуманном стенде: это и отличает предъявимость от обещания.
-    pub fn certifying(mut self) -> Running<T, F> {
-        self.certify = true;
-        self
-    }
-}
-
-/// Метка на инъекциях движка: ядро ставит её (SO_MARK) на впрыснутый RST, чтобы он не вернулся в
-/// свою же очередь. Правило очереди обязано пропускать помеченное (`meta mark != INJECT_MARK`).
-pub const INJECT_MARK: u32 = 0xBB;
-
-/// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
-pub struct Acting<T: Transport, F> {
-    queue: u16,
-    /// См. `Running::layout` — тот же довод: рецепт для `Nfqueue::open` восстанавливается отсюда.
-    layout: Layout,
-    park: Park<Wide<T::Wire>>,
-    longest: Duration,
-    react: F,
-    transport: PhantomData<fn() -> T>,
-}
-
-impl<T: Transport, F: FnMut(&str, Distress) -> Act<QueueSocket>> Acting<T, F> {
-    /// Ведущий цикл с эффектом. Как [`Running::run`], но реакция возвращает [`Act`]: на `sever()`
-    /// движок строит RST отправителю улики (`CanSever::notice`) и шлёт своим сокетом (`RawSender`).
-    /// Обрыв делает ИНЪЕКЦИЯ, пакет всё равно пропускается. Рвать можно лишь сигнал, пришедший с
-    /// пакетом (у тика носителя нет) — потому тик здесь только двигает эвикт.
-    ///
-    /// Краевые приборы работают и тут: их слова так же идут в реакцию, а памятка так же уезжает в
-    /// марку тем же словом, что и вердикт.
-    pub fn run(mut self) -> Report {
-        // Носитель открывает СЕБЯ целиком — сокет очереди И сокет инъекции (см. докблок
-        // `NfqueueCarrier`): ведущий цикл больше не поднимает `RawSender` сам.
-        let recipe = Nfqueue {
-            queue: self.queue,
-            layout: self.layout,
-        };
-        let NfqueueCarrier { socket, sender } = match recipe.open() {
-            Ok(carrier) => carrier,
-            Err(Cause(why)) => return Report::not_started(self.queue, why),
-        };
-        // Уже СНЯТОЕ значение, не повторное чтение sysctl — см. докблок `QueueSocket::base`.
-        let base = socket.base();
-
-        let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
-        let templates = self.park.per_flow;
-        let mut at_edge = self.park.at_edge;
-        let mut table = FlowTable::<Probes<Wide<T::Wire>>, Flow>::new(idle, move |_flow| {
-            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
-        });
-        let mut state = T::State::default();
-        let mut last_tick = Instant::now();
-
-        loop {
-            let now = Instant::now();
-
-            // Приём — только на готовом сокете: блокирующий вызов на пустой очереди остановил бы
-            // и тик, чистящий ключи.
-            let batch = match socket.wait(POLL_MS) {
-                Waited::Ready => match socket.recv() {
-                    Ok(batch) => batch,
-                    Err(why) => {
-                        report!("очередь {}: {why:?}", self.queue);
-                        Vec::new()
-                    }
-                },
-                Waited::Idle | Waited::Blind => Vec::new(),
-            };
-
-            for incoming in batch {
-                let Incoming::Packet(packet) = incoming else {
-                    continue;
-                };
-                let ct_mark = packet.ct.map(|view| view.mark).unwrap_or(0);
-                let edge = packet.ct.map(|view| CtEdge::seen(view, base));
-
-                let mut memo: Option<Memo> = None;
-                if let Some(observed) =
-                    T::observe(&mut state, parse::read(&packet.payload, T::PORT))
-                {
-                    let wide: Wide<T::Wire> = (observed.wire, edge);
-                    let named = label(&observed.key);
-                    let (signals, ()) = table.process(observed.flow, &wide, now);
-                    let letter = DetectorEvent::Packet {
-                        input: wide,
-                        at: now,
-                    };
-                    let mut said = signals;
-                    for probe in at_edge.iter_mut() {
-                        let (remembered, spoken) = probe.observe(&letter);
-                        memo = remembered.or(memo);
-                        said.extend(spoken);
-                    }
-
-                    for signal in &said {
-                        // Один функтор: акт даёт слово носителю и список команд миру. Петля команды
-                        // ИСПОЛНЯЕТ — в живом прогоне; переигровка их глушит, и потому перевод акта
-                        // остаётся чистым (§9.4, §10).
-                        let (_word, effects) = emit::<QueueSocket>(
-                            (self.react)(&named, signal.clone()),
-                            &packet.payload,
+                            &letter,
                         );
-                        for effect in &effects {
-                            let Effect::Inject(injectable) = effect;
-                            if let Err(why) = sender.send(&injectable.clone().serialize_ip()) {
-                                report!("инъекция не ушла: {why}");
-                            }
+                        let (mut signals, ()) = self.table.process(*flow, input, at);
+                        for probe in self.at_edge.iter_mut() {
+                            let (remembered, spoken) = probe.observe(&letter);
+                            // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
+                            // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
+                            // их просто копит) — тогда побеждает сказавший последним. Цена
+                            // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
+                            // не ставит, а гейт на это — отдельное решение, не попутное.
+                            memo = remembered.or(memo);
+                            signals.extend(spoken);
                         }
+                        self.targets.insert(*flow, key.clone());
+                        vec![(key.clone(), *flow, signals)]
                     }
-                }
-
-                // Пакет идёт как шёл: обрыв делает инъекция, не дроп. Память — тем же словом.
-                let (accept, state) = match memo {
-                    Some(memo) => (true, Some(memo.apply_to(ct_mark))),
-                    None => (true, None),
+                    // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
+                    // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
+                    // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
+                    _ => {
+                        self.recorded(To::Each, &letter);
+                        self.table
+                            .each(letter.clone())
+                            .into_iter()
+                            .filter_map(|(flow, (signals, ()))| {
+                                self.targets
+                                    .get(&flow)
+                                    .map(|key| (key.clone(), flow, signals))
+                            })
+                            .collect()
+                    }
                 };
-                if let Err(why) = socket.verdict(packet.id, accept, state) {
-                    report!("вердикт не ушёл: {why:?}");
+            for (key, flow, signals) in said {
+                let named = label(&key);
+                for signal in signals {
+                    effects.extend(voice.hears(&named, signal.clone(), seen));
+                    self.layer.saw(key.clone(), flow, signal, at);
                 }
-            }
-
-            if now.duration_since(last_tick) >= TICK {
-                last_tick = now;
-                // Тик двигает эвикт (беспороговым приборам он не нужен, но ключи чистит).
-                let _ = table.tick(now);
             }
         }
+        (memo, crossed)
+    }
+
+    /// Записать букву в ленту — с адресом, который знает только тот, кто её родил: позже его взять
+    /// неоткуда, словарь провода потока не несёт. Одной дверью на все четыре буквы: два места
+    /// записи разошлись бы, и первым разошедшимся оказалась бы дыра, которую и записывать-то стали
+    /// только сегодня.
+    fn recorded(&mut self, to: To<Whose>, letter: &DetectorEvent<Wide<T::Wire, C::Edge>>) {
+        if self.certify {
+            self.tape.record([TapeLetter::Event {
+                to,
+                event: letter.clone(),
+            }]);
+        }
+    }
+
+    /// Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
+    fn forget_evicted(&mut self) {
+        let Alive { targets, table, .. } = self;
+        targets.retain(|flow, _| table.get(flow).is_some());
+    }
+
+    /// ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его свежей семье
+    /// дважды и сверяем сказанное. Свидетель предъявляется тут же: молча держать закон значит не
+    /// держать его вовсе.
+    fn certified(
+        &mut self,
+        seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>>>],
+        fold: Option<&Fold>,
+        idle: Duration,
+    ) {
+        if !self.certify || self.tape.len() < TAPE_WINDOW {
+            return;
+        }
+        let verdict = replays(&self.tape, |mode, letters| {
+            replay::<Wide<T::Wire, C::Edge>>(seeds, fold, idle, mode, letters)
+        });
+        match verdict {
+            Replayed::Reproduced => {
+                report!("§10: окно из {} букв воспроизведено", self.tape.len())
+            }
+            Replayed::Unstable { at } => report!(
+                "§10 НАРУШЕН: прогоны разошлись на исходе {at} — у машины есть вход вне её алфавита"
+            ),
+            Replayed::NoTape => report!("§10: судить не о чем — лента пуста"),
+            // Окно из одних узлов сетки без живых машин: согласие двух молчаний свидетельством не
+            // считается — под ним прошла бы любая порча.
+            Replayed::Silent => report!(
+                "§10: окно из {} букв прошло молча — машине нечего было сказать, свидетельства нет",
+                self.tape.len()
+            ),
+        }
+        // Окно закрыто: следующее пишется с чистого места, иначе лента росла бы вечно.
+        self.tape = Tape::new();
     }
 }
 
-/// Исход настройки движка. Работающий цикл его не возвращает — только несостоявшийся запуск.
+/// Исход движка. Два и только два: настройка не состоялась либо источник кончился. Работающий цикл
+/// его не возвращает — на боевой очереди он не кончается вовсе.
 pub struct Report {
-    queue: u16,
+    name: String,
     why: Option<String>,
 }
 
 impl Report {
-    fn not_started(queue: u16, why: String) -> Report {
+    fn not_started(name: String, why: String) -> Report {
         Report {
-            queue,
+            name,
             why: Some(why),
         }
+    }
+
+    /// Носитель сказал, что работы больше не будет никогда, и цикл вышел. Отдельно от «не
+    /// открылся» (§7: «не смотрели» ≠ «смотрели и кончилось»).
+    fn finished(name: String) -> Report {
+        Report { name, why: None }
+    }
+
+    /// Почему запуск не состоялся; `None` — состоялся. Значение, а не печать: тот же закон, по
+    /// которому `Refused` вытеснил `let _ =` — отказ мира есть знание.
+    pub fn why(&self) -> Option<&str> {
+        self.why.as_deref()
     }
 }
 
@@ -1516,7 +1533,7 @@ impl std::process::Termination for Report {
         match self.why {
             None => std::process::ExitCode::SUCCESS,
             Some(why) => {
-                eprintln!("[reflex] очередь {} не открылась: {why}", self.queue);
+                eprintln!("[reflex] {} не открылся: {why}", self.name);
                 std::process::ExitCode::FAILURE
             }
         }
@@ -1526,6 +1543,39 @@ impl std::process::Termination for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Край, ничего не ведущий: стенды ниже проверяют ПЕРЕИГРОВКУ, а не край, и настоящий занял бы
+    /// в них место предмета. Свой, а не носителя: тест фасада, знающий тип конкретного носителя,
+    /// проверял бы заодно и его — а фасад ровно тем и ценен, что носителя не знает.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Blank;
+
+    impl reflex_core::edge::EdgeView for Blank {
+        fn down_packets(&self) -> Option<u64> {
+            None
+        }
+        fn up_packets(&self) -> Option<u64> {
+            None
+        }
+        fn down_bytes(&self) -> Option<u64> {
+            None
+        }
+        fn up_bytes(&self) -> Option<u64> {
+            None
+        }
+        fn idle(&self) -> Option<Duration> {
+            None
+        }
+        fn age(&self) -> Option<Duration> {
+            None
+        }
+        fn mark(&self) -> u32 {
+            0
+        }
+    }
+
+    /// Широкое слово стендов: провод соединения над пустым краем.
+    type Word = Wide<Reading, Blank>;
 
     /// `extract(Sni)` не теряет безымянную цель: нет имени — по адресу. Телеграм, чистый IP, ECH.
     #[test]
@@ -1669,15 +1719,15 @@ mod tests {
     #[derive(Clone)]
     struct Steady;
 
-    impl Probe<Wide<Reading>> for Steady {
-        fn observe(&mut self, event: &DetectorEvent<Wide<Reading>>) -> SmallVec<[Distress; 2]> {
+    impl Probe<Word> for Steady {
+        fn observe(&mut self, event: &DetectorEvent<Word>) -> SmallVec<[Distress; 2]> {
             match event {
                 DetectorEvent::Packet { .. } => smallvec![Distress::NoBytes],
                 _ => smallvec![],
             }
         }
 
-        fn clone_box(&self) -> Box<dyn Probe<Wide<Reading>>> {
+        fn clone_box(&self) -> Box<dyn Probe<Word>> {
             Box::new(self.clone())
         }
     }
@@ -1689,8 +1739,8 @@ mod tests {
 
     static PEEKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-    impl Probe<Wide<Reading>> for Peeking {
-        fn observe(&mut self, event: &DetectorEvent<Wide<Reading>>) -> SmallVec<[Distress; 2]> {
+    impl Probe<Word> for Peeking {
+        fn observe(&mut self, event: &DetectorEvent<Word>) -> SmallVec<[Distress; 2]> {
             match event {
                 DetectorEvent::Packet { .. } => {
                     let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1700,15 +1750,15 @@ mod tests {
             }
         }
 
-        fn clone_box(&self) -> Box<dyn Probe<Wide<Reading>>> {
+        fn clone_box(&self) -> Box<dyn Probe<Word>> {
             Box::new(self.clone())
         }
     }
 
     /// Окно ленты из двух разговоров одной цели и узла сетки между ними.
-    fn window(start: Instant) -> Tape<Wide<Reading>, Whose, ()> {
+    fn window(start: Instant) -> Tape<Word, Whose, ()> {
         let target = TargetKey::Named("rutracker.org".into());
-        let mut tape: Tape<Wide<Reading>, Whose, ()> = Tape::new();
+        let mut tape: Tape<Word, Whose, ()> = Tape::new();
         for (n, offset) in [(1u32, 0u64), (2, 10)] {
             tape.record([TapeLetter::Event {
                 to: To::One(Whose {
@@ -1738,10 +1788,10 @@ mod tests {
     fn окно_ленты_воспроизводится() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Wide<Reading>>>> = vec![Box::new(Steady)];
+        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Steady)];
 
         let verdict = replays(&tape, |mode, letters| {
-            replay::<Tcp>(&seeds, None, Duration::from_secs(10), mode, letters)
+            replay::<Word>(&seeds, None, Duration::from_secs(10), mode, letters)
         });
         assert_eq!(verdict, Replayed::Reproduced);
     }
@@ -1753,10 +1803,10 @@ mod tests {
     fn скрытый_вход_разводит_прогоны() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Wide<Reading>>>> = vec![Box::new(Peeking)];
+        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Peeking)];
 
         let verdict = replays(&tape, |mode, letters| {
-            replay::<Tcp>(&seeds, None, Duration::from_secs(10), mode, letters)
+            replay::<Word>(&seeds, None, Duration::from_secs(10), mode, letters)
         });
         assert_eq!(
             verdict,
@@ -1771,7 +1821,7 @@ mod tests {
     fn слово_о_цели_входит_в_сказанное() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Wide<Reading>>>> = vec![Box::new(Steady)];
+        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Steady)];
         let fold: Fold = Box::new(|words: &[&Distress]| {
             words
                 .iter()
@@ -1779,7 +1829,7 @@ mod tests {
                 .then_some(Distress::NoBytes)
         });
 
-        let said = replay::<Tcp>(
+        let said = replay::<Word>(
             &seeds,
             Some(&fold),
             Duration::from_secs(10),
@@ -1792,7 +1842,7 @@ mod tests {
             "слово о цели в сказанном: {said:?}"
         );
         assert_eq!(
-            replays(&tape, |mode, letters| replay::<Tcp>(
+            replays(&tape, |mode, letters| replay::<Word>(
                 &seeds,
                 Some(&fold),
                 Duration::from_secs(10),

@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use reflex_core::capability::CanRemember;
-use reflex_core::held::{Answered, Delivered, Edging, Refused, Terminal};
+use reflex_core::held::{Answered, Delivered, Edging, Observed, Refused, Terminal};
 use reflex_core::serves::Served;
 use reflex_core::Serves;
 
@@ -29,6 +29,18 @@ pub struct Held {
 impl Held {
     pub fn new(packet: Packet, base: TimeoutBase) -> Self {
         Self { packet, base }
+    }
+}
+
+/// Что наблюдено — байты кадра, как их отдало ядро. Заимствование, не выдача: байты принадлежат
+/// сообщению, пока оно живо, и разбирающий смотрит на них, а не получает копию (§9: `Held` показывает
+/// улику, а не владеет ею вторично).
+///
+/// Спрашивают у СООБЩЕНИЯ, а не у сокета, по той же причине, что и край: внутри `serve` бэкенд
+/// заимствован на всё время решения, и второго `&mut` не будет.
+impl Observed for Held {
+    fn payload(&self) -> &[u8] {
+        &self.packet.payload
     }
 }
 

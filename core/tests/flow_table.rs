@@ -144,7 +144,10 @@ fn tick_visits_all_flows() {
 
     // ТИК ОБХОДИТ ВСЕ ПОТОКИ, и с каждого выходит пара — даже когда сказать было нечего: `tick`
     // отдаёт то, что дал шаг, а не только непустое.
-    let spoken = table.tick(Instant::now());
+    let spoken = table.each(DetectorEvent::Tick {
+        node: 1,
+        at: Instant::now(),
+    });
     assert_eq!(spoken.len(), 2, "тик обязан дойти до обоих потоков");
     assert!(
         spoken.iter().all(|(_, (said, _notes))| said.is_empty()),
