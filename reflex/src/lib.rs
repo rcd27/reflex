@@ -112,6 +112,9 @@ pub use smallvec::{smallvec, SmallVec};
 #[cfg(unix)]
 mod nfqueue;
 pub mod pcap;
+// СОЧИНЁННЫЙ ПРОВОД — третий носитель: сценарий вместо мира. В умолчании, см. манифест.
+#[cfg(feature = "scenario")]
+pub mod scenario;
 // ЗАМЫКАНИЕ КОНТУРА — черновая дверь за фичей, каноном не объявленная. Цена в манифесте.
 #[cfg(feature = "telling")]
 pub mod telling;
