@@ -48,7 +48,7 @@
 //!
 //! [`run`]: Running::run
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
@@ -76,7 +76,14 @@ use reflex_core::{CanSever, Toward};
 use reflex_engine::parse::{self, Read};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::talk::Talks;
-use reflex_engine::{Addr, Flow};
+use reflex_engine::Addr;
+/// АДРЕС РАЗГОВОРА — публичен, потому что стоит публичным полем в [`Whom`] и [`Note`].
+///
+/// Реэкспорт, а не `use`: без него потребитель, взявшийся различать разговоры одной цели, обязан
+/// назвать тип, которого фасад ему не дал, — то есть взять вторую зависимость (`reflex-engine`)
+/// ради имени поля, уже лежащего у него в руках. Это ломало бы закон фасада «потребитель зависит
+/// от ОДНОГО крейта» тише всего: цепочка собирается, а `let _: ??? = whom.flow` написать нечем.
+pub use reflex_engine::Flow;
 use reflex_instrument::edge::{Layout, Memo};
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
@@ -1383,6 +1390,152 @@ where
     }
 }
 
+/// ПОКАЗАНИЕ, ВЫШЕДШЕЕ НАРУЖУ ЗНАЧЕНИЕМ. То же, что получает реакция `.on_addressed`, но не в
+/// замыкании, а вещью, которой потребитель распоряжается сам.
+///
+/// Адрес здесь ВЛАДЕЮЩИЙ, в отличие от [`Whom`]: заимствованное имя жило ровно один вызов реакции,
+/// а показание-значение переживает свой оборот по определению — иначе его нельзя было бы сложить,
+/// отправить или сравнить, то есть незачем было бы отдавать. Цена — одна короткая аллокация на
+/// показание, и она не на пакет: показания редки, на то они и показания.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note<S = Distress> {
+    /// Имя цели — то же, что приходит первым доводом в `.on`.
+    pub target: Box<str>,
+    /// Ключ разговора: пятёрка, которой он опознан.
+    pub flow: Flow,
+    /// Что сказала машина.
+    pub word: S,
+}
+
+/// ГОЛОС, КЛАДУЩИЙ ПОКАЗАНИЯ В ОЧЕРЕДЬ, — тот же [`Voice`], которым говорят `.on` и `.act`.
+///
+/// Обещаний миру не даёт (`does` пуст по построению, как у наблюдателя): показание-значение есть
+/// НАБЛЮДЕНИЕ, и дать ему трогать носителя значило бы завести действие в обход гейта §9.1.
+struct Collecting<'q, S>(&'q mut VecDeque<Note<S>>);
+
+impl<K, S> Voice<K, S> for Collecting<'_, S> {
+    fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        self.0.push_back(Note {
+            target: whom.target.into(),
+            flow: whom.flow,
+            word,
+        });
+        SmallVec::new()
+    }
+
+    fn does(&mut self, _carrier: &mut K, _effects: SmallVec<[Effect; 2]>) {}
+}
+
+/// ПРОГОН КАК ЗНАЧЕНИЕ: показания идут вбок, наружу, по одному.
+///
+/// ```no_run
+/// use reflex::*;
+///
+/// fn main() -> Result<(), Report> {
+///     let notes = engine(Nfqueue::queue(200))
+///         .from(Tcp)
+///         .extract(Sni)
+///         .detect(Silence::after(secs(5)))
+///         .heard()?;
+///
+///     for note in notes {
+///         report!("{}: {:?}", note.target, note.word);
+///     }
+///     Ok(())
+/// }
+/// ```
+///
+/// `no_run`, а не `ignore`: собрать образец компилятор обязан (иначе докблок обещал бы синтаксис,
+/// которого нет), а запускать его негде — живой очереди в доктесте не бывает.
+///
+/// # Почему `Iterator`, а не `Stream`
+///
+/// Потому что рантайма у потребителя НЕТ и не требуется, и это замер, а не выбор вкуса: оба
+/// прежних терминала — `fn run(self) -> Report`, синхронные, и `.await` в этом крейте ровно ноль.
+/// Отдать `Stream` значило бы обязать всякого, кому нужны показания, взять асинхронный рантайм
+/// ради цикла, который и так крутится в его собственном потоке. `Stream` над `Iterator` строится
+/// одной строкой тем, у кого рантайм уже есть; обратно — не строится ничем.
+///
+/// Математически это одно и то же: развёртка коалгебры (§1). Шаг `S × In → S × Out` обрывист сам
+/// по себе, и непрерывным его делало не устройство закона, а то, что состояние прогона лежало в
+/// кадре стека ([`Turning`]).
+///
+/// # Конец
+///
+/// `None` значит, что носитель сказал: работы больше не будет НИКОГДА. Отдельного `Report` к этому
+/// не прилагается нарочно — [`Report::finished`] не несёт ничего, кроме имени носителя, а его
+/// потребитель написал своей рукой строкой выше. Несостоявшийся ЗАПУСК — другое дело, и он приходит
+/// значением: `heard()` отдаёт `Err(Report)`, не пустой итератор (§7: «не смотрели» ≠ «смотрели и
+/// кончилось»). На живой очереди `None` не приходит никогда: ядро конца не обещает.
+///
+/// # Чего эта дверь НЕ умеет — по факту, а не по обещанию
+///
+/// * ДЕЙСТВОВАТЬ. Показание-значение наблюдает; кому нужен `Act`, тому `.act`, и это не сужение
+///   удобства, а гейт §9.1: акт требует способности носителя В ТОЧКЕ СОЗДАНИЯ, а у показания,
+///   уехавшего к потребителю, носителя уже нет.
+/// * СЛОВО О ЦЕЛИ. Копредел по слою живёт за `.about(…).on_target(…)`, и сюда не доходит: у
+///   `Heard` нет свёртки. Открыть — отдельный разговор, не попутная правка.
+/// * ПРЕДЪЯВЛЯТЬ §10 (`certifying`). Лента пишется у наблюдателя с реакцией; здесь дверь к ней не
+///   открыта.
+pub struct Heard<C: Bordered, T: Transport, S = Distress> {
+    turning: Turning<C, T, S>,
+    /// Один оборот рождает НЕСКОЛЬКО показаний (буквы узла адресованы каждой живой машине), а
+    /// итератор отдаёт по одному: очередь и есть эта разница.
+    said: VecDeque<Note<S>>,
+}
+
+impl<C, T, S> Iterator for Heard<C, T, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    type Item = Note<S>;
+
+    fn next(&mut self) -> Option<Note<S>> {
+        loop {
+            if let Some(note) = self.said.pop_front() {
+                return Some(note);
+            }
+            // Оборот мог не сказать ничего (тишина, чужой кадр, узел без слова) — тогда крутим
+            // дальше. Цикл здесь не «ожидание»: срок выдерживает НОСИТЕЛЬ внутри `serve`, а не мы
+            // опросом. Тот же закон срока, что и у `.on`, — один оборот, один сон.
+            if !self.turning.pump(&mut Collecting(&mut self.said)) {
+                return None;
+            }
+        }
+    }
+}
+
+impl<C, T, H: MarkHome, S> Detecting<C, T, H, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    /// ПОКАЗАНИЯ ЗНАЧЕНИЕМ — терминал без замыкания: выражение и есть поток показаний.
+    ///
+    /// Третья дверь наблюдения рядом с `.on` и `.on_addressed`, а не вместо них. Предмет у всех
+    /// трёх один — «что сказала машина», — и различаются они лишь тем, КОМУ принадлежит цикл: у
+    /// первых двух фреймворку (он зовёт реакцию), у этой потребителю (он тянет показания). Кому
+    /// довольно реакции, тот не платит ничем: `.on` не изменился ни строкой.
+    ///
+    /// `Err(Report)` — носитель не открылся; см. [`Heard`] о том, почему конец прогона `Report`а не
+    /// несёт.
+    pub fn heard(self) -> Result<Heard<C, T, S>, Report> {
+        Ok(Heard {
+            turning: Turning::begun(self, false)?,
+            said: VecDeque::new(),
+        })
+    }
+}
+
 /// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
 pub struct Acting<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = Distress> {
     detecting: Detecting<C, T, H, S>,
@@ -1587,154 +1740,226 @@ where
     // `Bordered::Edge` И край, что отдаёт `carrier.serve(...)`, — ОДИН тип по определению
     // блáнкетного `impl Bordered` (`type Edge = <C::Carrier as Serves>::Edge`), но связаны два
     // ассоциированных пути, и без явного тождества здесь компилятор их не отождествит — только
-    // внутри самого `impl`, где равенство и записано, а не в постороннем `drive`.
+    // внутри самого `impl`, где равенство и записано, а не в постороннем месте.
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
     V: Voice<C::Carrier, S>,
     S: Word + Clone + PartialEq + 'static,
 {
-    let Detecting {
-        carrier: recipe,
-        park,
-        longest,
-        about,
-        ..
-    } = chain;
-    let name = recipe.name();
-    // Носитель открывает СЕБЯ: свои предпосылки, свои сокеты. Цикл о них не знает и знать не может
-    // — предпосылка носителя есть дело носителя (у WinDivert она другая).
-    let mut carrier = match recipe.open() {
-        Ok(carrier) => carrier,
-        Err(Cause(why)) => return Report::not_started(name, why),
+    let mut turning = match Turning::begun(chain, certify) {
+        Ok(turning) => turning,
+        Err(report) => return report,
     };
+    while turning.pump(voice) {}
+    Report::finished(turning.name)
+}
 
-    let idle = longest.saturating_mul(2).max(MIN_IDLE);
-    // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она обязана
-    // начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
-    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>> = park
-        .per_flow
-        .iter()
-        .map(|probe| probe.clone_box())
-        .collect();
-    let templates = park.per_flow;
-    let mut alive: Alive<C, T, S> = Alive {
-        table: FlowTable::new(idle, move |_flow| {
-            Probes(templates.iter().map(|probe| probe.clone_box()).collect())
-        }),
-        // Приборы КРАЯ живут одним экземпляром на весь движок: их состояние не здесь, а в марке
-        // носителя, и копия на ключ была бы копией пустоты.
-        at_edge: park.at_edge,
-        layer: Layer::new(),
-        targets: HashMap::new(),
-        tape: Tape::new(),
-        certify,
-        about,
-        idle,
-    };
-    let mut state = T::State::default();
-    // Сетка отмеряется от ПЕРВОГО НАБЛЮДЁННОГО момента, а не от часов цикла. Часы цикла и часы
-    // носителя — разные эпохи (записанный провод, стенд, чужая ОС), и сетка, начатая нашими, на
-    // первом же пакете носителя из другой эпохи выдала бы миллионы узлов разом: прошлое зажимает
-    // шов (`at.max(last)`), будущее не зажимает ничто. До первого наблюдения мерить нечего — и
-    // адресовать узлы тоже некому: живых машин ещё нет.
-    let mut seam: Option<Interleave> = None;
+/// ПРОГОН, ОСТАНОВЛЕННЫЙ МЕЖДУ ОБОРОТАМИ.
+///
+/// Прежде это были локальные переменные внутри `loop` — и потому прогон существовал только пока
+/// цикл крутится. Ведущих цикла от этого не стало два: он ОДИН, здесь, и `drive` лишь повторяет его
+/// оборот, пока носитель не скажет, что работы больше не будет. Зато оборот стал ПРЕДЪЯВИМЫМ
+/// снаружи, и на нём стоит [`Heard`] — дверь, отдающая показания значением.
+///
+/// Ровно ту же вещь говорит §1: шаг машины есть `S × In → S × Out`, и он ВСЕГДА был обрывист.
+/// Непрерывным его делал не закон, а то, что состояние лежало в кадре стека.
+struct Turning<C: Bordered, T: Transport, S> {
+    /// Носитель отдельным полем от всего прочего НЕ по вкусу, а по необходимости: `serve` берёт
+    /// его `&mut` и в замыкании держит `&mut` на соседей. Разъятые поля компилятор различает,
+    /// разъятые через `self` методы — нет.
+    carrier: C::Carrier,
+    alive: Alive<C, T, S>,
+    state: T::State,
+    seam: Option<Interleave>,
+    seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>>,
+    /// Имя носителя — для [`Report`]. Живёт здесь, потому что открывший носителя рецепт съеден.
+    name: String,
+}
 
-    loop {
-        // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
-        // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
-        // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
-        // узлами: спроси о конце ПОСЛЕ неё — и последний узел пропал бы ровно тогда, когда срок
-        // тишины совпал с концом сценария. Живая очередь сюда не приходит никогда: `exhausted` у
-        // неё ложь по построению — ядро конца не обещает.
-        if carrier.exhausted() {
-            return Report::finished(name);
+impl<C, T, S> Turning<C, T, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    // `Bordered::Edge` И край, что отдаёт `carrier.serve(...)`, — ОДИН тип по определению
+    // блáнкетного `impl Bordered` (`type Edge = <C::Carrier as Serves>::Edge`), но связаны два
+    // ассоциированных пути, и без явного тождества здесь компилятор их не отождествит — только
+    // внутри самого `impl`, где равенство и записано, а не в постороннем месте.
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    /// ОТКРЫТЬ НОСИТЕЛЯ И ПОСЕЯТЬ СЕМЬЮ. Отказ открытия — значение (§7), не паника: `Err` несёт
+    /// готовый [`Report`], потому что несостоявшийся запуск есть знание, а не отсутствие его.
+    fn begun<H: MarkHome>(chain: Detecting<C, T, H, S>, certify: bool) -> Result<Self, Report> {
+        let Detecting {
+            carrier: recipe,
+            park,
+            longest,
+            about,
+            ..
+        } = chain;
+        let name = recipe.name();
+        // Носитель открывает СЕБЯ: свои предпосылки, свои сокеты. Цикл о них не знает и знать не может
+        // — предпосылка носителя есть дело носителя (у WinDivert она другая).
+        let carrier = match recipe.open() {
+            Ok(carrier) => carrier,
+            Err(Cause(why)) => return Err(Report::not_started(name, why)),
+        };
+
+        let idle = longest.saturating_mul(2).max(MIN_IDLE);
+        // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она обязана
+        // начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
+        let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>> = park
+            .per_flow
+            .iter()
+            .map(|probe| probe.clone_box())
+            .collect();
+        let templates = park.per_flow;
+        let alive: Alive<C, T, S> = Alive {
+            table: FlowTable::new(idle, move |_flow| {
+                Probes(templates.iter().map(|probe| probe.clone_box()).collect())
+            }),
+            // Приборы КРАЯ живут одним экземпляром на весь движок: их состояние не здесь, а в марке
+            // носителя, и копия на ключ была бы копией пустоты.
+            at_edge: park.at_edge,
+            layer: Layer::new(),
+            targets: HashMap::new(),
+            tape: Tape::new(),
+            certify,
+            about,
+            idle,
+        };
+        let state = T::State::default();
+        // Сетка отмеряется от ПЕРВОГО НАБЛЮДЁННОГО момента, а не от часов цикла. Часы цикла и часы
+        // носителя — разные эпохи (записанный провод, стенд, чужая ОС), и сетка, начатая нашими, на
+        // первом же пакете носителя из другой эпохи выдала бы миллионы узлов разом: прошлое зажимает
+        // шов (`at.max(last)`), будущее не зажимает ничто. До первого наблюдения мерить нечего — и
+        // адресовать узлы тоже некому: живых машин ещё нет.
+        let seam: Option<Interleave> = None;
+
+        Ok(Turning {
+            carrier,
+            alive,
+            state,
+            seam,
+            seeds,
+            name,
+        })
+    }
+
+    /// ОДИН ОБОРОТ ВЕДУЩЕГО ЦИКЛА. `false` — носитель сказал, что работы больше не будет никогда.
+    ///
+    /// Всё, что было телом `loop`, — здесь дословно, и это важнее удобства: два тела разошлись бы
+    /// молча, как уже разошлись однажды ведущие циклы наблюдения и действия (см. докблок
+    /// [`Acting::run`]).
+    fn pump<V: Voice<C::Carrier, S>>(&mut self, voice: &mut V) -> bool {
+        // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ — довод ниже, в теле.
+        if self.carrier.exhausted() {
+            return false;
         }
+        let Turning {
+            carrier,
+            alive,
+            state,
+            seam,
+            seeds,
+            ..
+        } = self;
+    // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
+    // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
+    // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
+    // узлами: спроси о конце ПОСЛЕ неё — и последний узел пропал бы ровно тогда, когда срок
+    // тишины совпал с концом сценария. Живая очередь сюда не приходит никогда: `exhausted` у
+    // неё ложь по построению — ядро конца не обещает.
         // Срок — не узел, а ПРОСЬБА к носителю: столько ждать, если работы нет. Оттого до первой
-        // буквы он берётся у часов цикла, и это законно: часы цикла знают, сколько ждать, и не
-        // знают, что наблюдено.
-        let until = match &seam {
-            Some(seam) => seam.next_node().unwrap_or_else(|| Instant::now() + TICK),
-            None => Instant::now() + TICK,
-        };
-        let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
-        let mut crossed: Option<Instant> = None;
+    // буквы он берётся у часов цикла, и это законно: часы цикла знают, сколько ждать, и не
+    // знают, что наблюдено.
+    let until = match &*seam {
+        Some(seam) => seam.next_node().unwrap_or_else(|| Instant::now() + TICK),
+        None => Instant::now() + TICK,
+    };
+    let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
+    let mut crossed: Option<Instant> = None;
 
-        let outcome = carrier.serve(until, |held, edge| {
-            let at = held.at();
-            let seen = C::shown(held);
-            // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
-            // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
-            let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
-            let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
-            let (moved, letters, whose) = match T::observe(&mut state, parse::read(seen, T::PORT)) {
-                Observation::Seen(observed) => {
-                    let (moved, letters) = grid.saw((observed.wire, edge), at);
-                    (moved, letters, Some((observed.flow, observed.key)))
-                }
-                // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
-                // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
-                // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
-                // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
-                // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
-                Observation::Unread(why) => {
-                    let (moved, letters) = grid.unread(why, at);
-                    (moved, letters, None)
-                }
-                // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
-                // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
-                Observation::Foreign => {
-                    let (moved, letters) = grid.idle(at);
-                    (moved, letters, None)
-                }
-            };
-            *grid = moved;
-            let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
-            crossed = node;
-            // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
-            // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
-            // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
-            match memo {
-                Some(memo) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
-                None => <C::Carrier as CanHold>::release(),
+    let outcome = carrier.serve(until, |held, edge| {
+        let at = held.at();
+        let seen = C::shown(held);
+        // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
+        // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
+        let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
+        let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
+        let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::PORT)) {
+            Observation::Seen(observed) => {
+                let (moved, letters) = grid.saw((observed.wire, edge), at);
+                (moved, letters, Some((observed.flow, observed.key)))
             }
-        });
-
-        // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
-        // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
-        //
-        // МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ: ответ несёт его в `Held::at`, дыра — в самом исходе
-        // (`Served::Torn`), тишина — сроком, о котором мы просили и который носитель обязался
-        // выждать. Второго владельца часов у цикла нет.
-        let sown = match outcome {
-            Served::Answered(Ok(_)) => None,
-            Served::Answered(Err(refused)) => {
-                report!("вердикт не ушёл: {:?}", refused.why);
-                None
+            // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
+            // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
+            // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
+            // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
+            // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
+            Observation::Unread(why) => {
+                let (moved, letters) = grid.unread(why, at);
+                (moved, letters, None)
             }
-            Served::Torn(at) => Some(
-                seam.get_or_insert_with(|| Interleave::started(at, TICK))
-                    .torn(at),
-            ),
-            // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
-            // некому — живых машин ещё нет.
-            Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
+            // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
+            // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
+            Observation::Foreign => {
+                let (moved, letters) = grid.idle(at);
+                (moved, letters, None)
+            }
         };
-        if let Some((moved, letters)) = sown {
-            seam = Some(moved);
-            let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
-            crossed = node;
+        *grid = moved;
+        let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
+        crossed = node;
+        // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
+        // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
+        // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
+        match memo {
+            Some(memo) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
+            None => <C::Carrier as CanHold>::release(),
         }
+    });
 
-        voice.does(&mut carrier, effects);
-
-        // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
-        if crossed.is_some() {
-            alive.forget_evicted();
-            alive.certified(&seeds);
+    // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
+    // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
+    //
+    // МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ: ответ несёт его в `Held::at`, дыра — в самом исходе
+    // (`Served::Torn`), тишина — сроком, о котором мы просили и который носитель обязался
+    // выждать. Второго владельца часов у цикла нет.
+    let sown = match outcome {
+        Served::Answered(Ok(_)) => None,
+        Served::Answered(Err(refused)) => {
+            report!("вердикт не ушёл: {:?}", refused.why);
+            None
         }
+        Served::Torn(at) => Some(
+            seam.get_or_insert_with(|| Interleave::started(at, TICK))
+                .torn(at),
+        ),
+        // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
+        // некому — живых машин ещё нет.
+        Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
+    };
+    if let Some((moved, letters)) = sown {
+        *seam = Some(moved);
+        let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
+        crossed = node;
+    }
+
+    voice.does(carrier, effects);
+
+    // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
+    if crossed.is_some() {
+        alive.forget_evicted();
+        alive.certified(seeds);
+    }
+        true
     }
 }
+
 
 /// ЖИВОЕ СОСТОЯНИЕ ПРОГОНА — всё, чего касается буква. Отдельной вещью, а не россыпью локальных
 /// переменных: букву гоняет ОДНА функция ([`Alive::walk`]), и её девять доводов были бы девятью
@@ -1932,6 +2157,11 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
 
 /// Исход движка. Два и только два: настройка не состоялась либо источник кончился. Работающий цикл
 /// его не возвращает — на боевой очереди он не кончается вовсе.
+///
+/// `Debug` не для печати в лог, а потому что исход стал ЛЕВОЙ ЧАСТЬЮ `Result` (`Detecting::heard`):
+/// значение, которое нельзя предъявить, наполовину не значение — `?` его пропустит, а `.expect` в
+/// тесте не соберётся.
+#[derive(Debug)]
 pub struct Report {
     name: String,
     why: Option<String>,
