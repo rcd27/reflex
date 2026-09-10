@@ -12,6 +12,8 @@ use reflex_core::capability::Toward;
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Answered, Delivered, Observed, Refused, Terminal};
 
+use crate::conntrack::CtEdge;
+
 use super::backend::NfqueueBackend;
 
 /// Сообщение очереди как носитель права ответить. Ньютайп, а не `impl` на `nfq::Message`: правило
@@ -148,8 +150,12 @@ impl reflex_core::CanMark for NfqueueBackend {
 /// закон нужен `queue::terminal` (второй бэкенд на своём `poll`); второе определение развело бы
 /// один предмет на два закона молча.
 pub(crate) fn millis_until(until: std::time::Instant) -> i32 {
-    i32::try_from(until.saturating_duration_since(std::time::Instant::now()).as_millis())
-        .unwrap_or(i32::MAX)
+    i32::try_from(
+        until
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis(),
+    )
+    .unwrap_or(i32::MAX)
 }
 
 /// Очередь вошла в категорию — не как `Source`, а как [`Serves`](reflex_core::serves::Serves)
@@ -158,13 +164,20 @@ pub(crate) fn millis_until(until: std::time::Instant) -> i32 {
 /// разводит), у очереди netlink-сокет один; `Source` описывает НАБЛЮДЕНИЕ (копий сколько угодно),
 /// очередь отдаёт ВЛАДЕНИЕ. `serve` берёт и отвечает неделимо — «взял и забыл ответить» непредставимо.
 impl reflex_core::Serves for NfqueueBackend {
+    /// `nfq` (старый путь) `NFQA_CT` не спрашивает и не разбирает — крайних величин у него нет ни
+    /// одной, `serve` всегда отдаёт `None`. Тип всё равно назван РЕАЛЬНЫМ законом (`CtEdge` —
+    /// тот же, что у `QueueSocket`: тот же носитель, netfilter/conntrack, и будь этот путь
+    /// дописан до чтения `NFQA_CT`, он строил бы РОВНО его), а не пустышкой-однодневкой ради
+    /// подписи: `Option<CtEdge>` уже обитаемая клетка «не считаем» (§7), заводить вторую нечем.
+    type Edge = CtEdge;
+
     fn serve<F>(
         &mut self,
         until: std::time::Instant,
         decide: F,
     ) -> reflex_core::serves::Served<Delivered<Answer>, Refused<Answer, NotTaken>>
     where
-        F: FnOnce(&reflex_core::held::Held<Queued>) -> Answer,
+        F: FnOnce(&reflex_core::held::Held<Queued>, Option<CtEdge>) -> Answer,
     {
         use reflex_core::serves::Served;
         // `poll` ждёт до `until` (§9.3) — это латентность, не гарантия: `millis_until` округляет
@@ -182,7 +195,7 @@ impl reflex_core::Serves for NfqueueBackend {
                 Ok(message) => {
                     let held =
                         reflex_core::held::Held::new(Queued(message), std::time::Instant::now());
-                    let answer = decide(&held);
+                    let answer = decide(&held, None);
                     return Served::Answered(self.apply(held.answered(answer)));
                 }
             },

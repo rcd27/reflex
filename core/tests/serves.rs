@@ -5,6 +5,7 @@
 //! заимствование одно, и внутри него укладываются оба действия.
 
 use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
+use reflex_core::local::LocalEdge;
 use reflex_core::serves::Served;
 use reflex_core::Serves;
 use std::cell::RefCell;
@@ -80,16 +81,21 @@ impl Memo {
 }
 
 impl Serves for Memo {
+    // `LocalEdge` — не потому, что `Memo` считает: она никогда не строит значения, всегда `None`.
+    // Взят готовый тип закона (`core::local::LocalEdge`), а не заведён новый ради подписи — этому
+    // тесту важен шов, не край.
+    type Edge = LocalEdge;
+
     fn serve<F>(&mut self, until: Instant, decide: F) -> Served<Delivered<u8>, Refused<u8, ()>>
     where
-        F: FnOnce(&Held<Envelope>) -> u8,
+        F: FnOnce(&Held<Envelope>, Option<LocalEdge>) -> u8,
     {
         let outcome = match (self.broken, self.waiting.is_empty()) {
             (true, _) => Served::Idle,
             (false, true) => Served::Idle,
             (false, false) => {
                 let held = Held::new(Envelope(self.waiting.remove(0)), Instant::now());
-                let answer = decide(&held);
+                let answer = decide(&held, None);
                 return Served::Answered(self.apply(held.answered(answer)));
             }
         };
@@ -113,7 +119,7 @@ fn a_decision_made_from_the_observation_reaches_the_world() {
         broken: false,
     };
 
-    let outcome = queue.serve(Instant::now(), |held| held.seen().len() as u8);
+    let outcome = queue.serve(Instant::now(), |held, _edge| held.seen().len() as u8);
 
     assert!(
         matches!(outcome, Served::Answered(Ok(_))),
@@ -134,7 +140,7 @@ fn nothing_to_serve_is_not_a_failure() {
         broken: false,
     };
 
-    assert_eq!(queue.serve(Instant::now(), |_held| 0), Served::Idle);
+    assert_eq!(queue.serve(Instant::now(), |_held, _edge| 0), Served::Idle);
 }
 
 /// КАЖДЫЙ ВЗЯТЫЙ ПОЛУЧАЕТ РОВНО ОДИН ОТВЕТ.
@@ -147,12 +153,12 @@ fn every_taken_packet_gets_exactly_one_answer() {
         broken: false,
     };
 
-    let served = std::iter::from_fn(
-        || match queue.serve(Instant::now(), |held| held.seen().len() as u8) {
+    let served = std::iter::from_fn(|| {
+        match queue.serve(Instant::now(), |held, _edge| held.seen().len() as u8) {
             Served::Answered(done) => Some(done),
             Served::Idle | Served::Blind | Served::Torn(_) => None,
-        },
-    )
+        }
+    })
     .count();
 
     assert_eq!(served, 3);
@@ -166,7 +172,7 @@ fn пустой_носитель_держит_срок() {
     let mut carrier = Memo::empty();
     let until = Instant::now() + Duration::from_millis(50);
 
-    let outcome = carrier.serve(until, |_held| unreachable!("работы не было"));
+    let outcome = carrier.serve(until, |_held, _edge| unreachable!("работы не было"));
 
     assert!(matches!(outcome, Served::Idle));
     assert!(Instant::now() >= until, "вернулся раньше срока");
@@ -178,7 +184,7 @@ fn работа_возвращается_сразу() {
     let mut carrier = Memo::with_one_packet();
     let until = Instant::now() + Duration::from_secs(60);
 
-    let outcome = carrier.serve(until, |_held| 1);
+    let outcome = carrier.serve(until, |_held, _edge| 1);
 
     assert!(matches!(outcome, Served::Answered(Ok(_))));
     assert!(Instant::now() < until, "ждал срока, имея работу");
@@ -193,7 +199,7 @@ fn ошибка_приёма_тоже_держит_срок() {
     let mut carrier = Memo::with_broken_receive();
     let until = Instant::now() + Duration::from_millis(50);
 
-    let outcome = carrier.serve(until, |_held| unreachable!("работы не было"));
+    let outcome = carrier.serve(until, |_held, _edge| unreachable!("работы не было"));
 
     assert!(matches!(outcome, Served::Idle));
     assert!(Instant::now() >= until, "вернулся раньше срока");

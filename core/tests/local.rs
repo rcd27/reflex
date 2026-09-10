@@ -14,7 +14,7 @@ use std::time::Instant;
 use reflex_core::capability::{CanHold, CanRefuse, CanRemember};
 use reflex_core::edge::EdgeView;
 use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
-use reflex_core::local::{Answer, Local};
+use reflex_core::local::{Answer, Local, LocalEdge};
 use reflex_core::serves::Served;
 use reflex_core::types::{Flow, Protocol};
 use reflex_core::Serves;
@@ -93,18 +93,25 @@ impl CanRefuse for Paper {
 }
 
 impl Serves for Paper {
+    // `LocalEdge` — не потому, что `Paper` считает: она НЕ ведёт края вовсе (ровно то, чем
+    // является ядерная очередь без conntrack) и всегда отдаёт `None`. Тип взят готовый
+    // (`core::local::LocalEdge`), а не заведён новый ради подписи — тем же типом, что и
+    // `Local::Edge`, это заодно делает мутацию «подать чужой край вместо своего» ПРЕДСТАВИМОЙ:
+    // оба варианта одного типа, компилятор их не различит, различит только тест.
+    type Edge = LocalEdge;
+
     fn serve<F>(
         &mut self,
         until: Instant,
         decide: F,
     ) -> Served<Delivered<PaperAnswer>, Refused<PaperAnswer, ()>>
     where
-        F: FnOnce(&Held<Envelope>) -> PaperAnswer,
+        F: FnOnce(&Held<Envelope>, Option<LocalEdge>) -> PaperAnswer,
     {
         match self.queue.pop_front() {
             Some(bytes) => {
                 let held = Held::new(Envelope(bytes), Instant::now());
-                let answer = decide(&held);
+                let answer = decide(&held, None);
                 Served::Answered(self.apply(held.answered(answer)))
             }
             None => {
@@ -218,7 +225,9 @@ fn возраст_потока_с_увиденным_syn_известен() {
 fn serve_считает_кадр_и_кладёт_память_в_дом() {
     let mut local = Local::new(Paper::with_packet(a_syn()));
 
-    let outcome = local.serve(Instant::now(), |_held| Local::<Paper>::remember(7, true));
+    let outcome = local.serve(Instant::now(), |_held, _edge| {
+        Local::<Paper>::remember(7, true)
+    });
 
     assert!(
         matches!(outcome, Served::Answered(Ok(_))),
@@ -239,7 +248,36 @@ fn serve_переводит_отказ_в_c_слово_отказа() {
     let applied = paper.applied();
     let mut local = Local::new(paper);
 
-    let _ = local.serve(Instant::now(), |_held| Answer::Stop);
+    let _ = local.serve(Instant::now(), |_held, _edge| Answer::Stop);
 
     assert_eq!(*applied.borrow(), vec![PaperAnswer::Stop]);
+}
+
+/// ГЛАВНЫЙ ТЕСТ ПОДМЕНЫ (задача 10½): `Local::serve` обязан подать решению СВОЙ край, а не тот,
+/// что вернул бы обёрнутый носитель. `Paper` края не ведёт вовсе — её `Serves::serve` всегда
+/// отдаёт `None` (см. `impl Serves for Paper`). Если бы `Local` пересылал ЭТОТ `None` решению
+/// вместо построения своего — весь смысл декоратора (докблок `core::local`: «Local — форма...
+/// которая наконец подставляет свой Edging») был бы фикцией, недоказанной ни одним тестом.
+///
+/// Мутация: заменить `own_edge` на `_their_edge` в `Local::Serves::serve` (типы совпадают —
+/// `Paper::Edge = LocalEdge`, мутация ПРОЙДЁТ компилятор) — `seen` станет `None`, и `expect` ниже
+/// покраснеет.
+#[test]
+fn serve_подаёт_свой_край_а_не_обёрнутого() {
+    let mut local = Local::new(Paper::with_packet(a_syn()));
+    let mut seen: Option<LocalEdge> = None;
+
+    let _ = local.serve(Instant::now(), |_held, edge| {
+        seen = edge;
+        Answer::Pass
+    });
+
+    let edge = seen.expect(
+        "Local обязан подать decide СВОЙ край; обёрнутая Paper края не ведёт и вернула бы None",
+    );
+    assert_eq!(
+        edge.down_packets(),
+        Some(1),
+        "свой счёт увидел этот же кадр"
+    );
 }

@@ -91,13 +91,16 @@ impl Terminal for NfqueueCarrier {
 /// `Serves`ит тем же швом, что и голый сокет. `exhausted` не переопределяется: ядро конца не
 /// обещает, и умолчание трейта — это и есть ответ очереди.
 impl Serves for NfqueueCarrier {
+    /// Тот же край, что и у голого сокета — тем же словом ОДИН на предмет (см. докблок `impl`).
+    type Edge = <QueueSocket as Serves>::Edge;
+
     fn serve<F>(
         &mut self,
         until: std::time::Instant,
         decide: F,
     ) -> Served<Delivered<Self::Answer>, Refused<Self::Answer, Self::Refusal>>
     where
-        F: FnOnce(&reflex_core::held::Held<Self::Carrier>) -> Self::Answer,
+        F: FnOnce(&reflex_core::held::Held<Self::Carrier>, Option<Self::Edge>) -> Self::Answer,
     {
         self.socket.serve(until, decide)
     }
@@ -163,7 +166,8 @@ impl IntoCarrier for Nfqueue {
                     .to_string(),
             )
         })?;
-        let socket = QueueSocket::open(self.queue, base).map_err(|why| Cause(format!("{why:?}")))?;
+        let socket =
+            QueueSocket::open(self.queue, base).map_err(|why| Cause(format!("{why:?}")))?;
         let sender =
             RawSender::open(INJECT_MARK).map_err(|why| Cause(format!("сокет инъекции: {why}")))?;
         Ok(NfqueueCarrier { socket, sender })

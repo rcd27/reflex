@@ -22,7 +22,7 @@ use reflex_core::backend::Sink;
 use reflex_core::capability::{CanHold, CanInject, CanRefuse, CanRemember};
 use reflex_core::command::InjectablePacket;
 use reflex_core::edge::EdgeView;
-use reflex_core::held::{Answered, Delivered, Edging, Held, Observed, Refused, Terminal};
+use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
 use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::{CanSever, DetectorEvent, Serves, Toward};
@@ -105,19 +105,11 @@ pub enum PaperAnswer {
 /// Носитель права ответить — сообщение со своими байтами и своим краем.
 pub struct Message {
     bytes: Vec<u8>,
-    edge: Option<PaperEdge>,
 }
 
 impl Observed for Message {
     fn payload(&self) -> &[u8] {
         &self.bytes
-    }
-}
-
-impl Edging for Message {
-    type Edge = PaperEdge;
-    fn edge(&self) -> Option<PaperEdge> {
-        self.edge
     }
 }
 
@@ -323,6 +315,11 @@ impl Terminal for Paper {
 }
 
 impl Serves for Paper {
+    /// Край ПО СЦЕНАРИЮ (`.edging(...)`), не по сообщению: `Message` его больше не носит (задача
+    /// 10½ — край переехал на `Serves`). Отсюда же и то, что раньше проверить было нечем:
+    /// подмена края декоратором теперь наблюдаема ЗДЕСЬ, в бумажном носителе, а не только в цели.
+    type Edge = PaperEdge;
+
     /// Закон срока исполняется движением СВОИХ часов, а не сном: носитель обязан не возвращаться
     /// раньше `until`, и он возвращается ровно в срок — просто срок наступает у него мгновенно.
     fn serve<F>(
@@ -331,7 +328,7 @@ impl Serves for Paper {
         decide: F,
     ) -> Served<Delivered<PaperAnswer>, Refused<PaperAnswer, &'static str>>
     where
-        F: FnOnce(&Held<Message>) -> PaperAnswer,
+        F: FnOnce(&Held<Message>, Option<PaperEdge>) -> PaperAnswer,
     {
         self.turns.fetch_add(1, Ordering::SeqCst);
         let mut decide = Some(decide);
@@ -391,14 +388,10 @@ impl Serves for Paper {
                     let at = at + after;
                     self.at = Some(at);
                     self.settle();
-                    let held = Held::new(
-                        Message {
-                            bytes,
-                            edge: self.edge,
-                        },
-                        at,
+                    let held = Held::new(Message { bytes }, at);
+                    let answer = decide.take().expect("решение спрашивают один раз")(
+                        &held, self.edge,
                     );
-                    let answer = decide.take().expect("решение спрашивают один раз")(&held);
                     return Served::Answered(self.apply(held.answered(answer)));
                 }
             }

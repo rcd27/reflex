@@ -192,7 +192,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
 
         // `Instant::now()` — поведение сохраняется, прежний `wait(0)` внутри шва: этот шаг уже
         // ждал на дескрипторе выше (`POLL_MILLIS`), второе ожидание внутри `serve` здесь не нужно.
-        let outcome = nfq.serve(std::time::Instant::now(), |held| {
+        let outcome = nfq.serve(std::time::Instant::now(), |held, _edge| {
             counts
                 .received
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

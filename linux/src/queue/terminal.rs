@@ -159,20 +159,26 @@ pub(crate) fn after_recv(result: Result<Vec<Incoming>, QueueError>) -> AfterRecv
 /// возвращает ровно один код ниже. Три копии сна — три копии закона, и четвёртая безответная ветка,
 /// дописанная завтра, забыла бы о нём молча; один код обойти нельзя, не пройдя мимо `break`.
 impl Serves for QueueSocket {
+    /// Свой край — ровно тот, что уже строил `Edging` (`impl Edging for Held` выше): перенос края
+    /// на `Serves` (задача 10½) не тронул ГДЕ он вычисляется — только КТО его теперь отдаёт наружу.
+    /// `held.carrier().edge()` вызывается здесь же, где раньше вызывался фасадом.
+    type Edge = CtEdge;
+
     fn serve<F>(
         &mut self,
         until: Instant,
         decide: F,
     ) -> Served<Delivered<Answer>, Refused<Answer, QueueError>>
     where
-        F: FnOnce(&reflex_core::held::Held<Held>) -> Answer,
+        F: FnOnce(&reflex_core::held::Held<Held>, Option<CtEdge>) -> Answer,
     {
         let outcome = loop {
             if let Some((incoming, at)) = self.pending.pop_front() {
                 match taken(incoming) {
                     Taken::Packet(packet) => {
                         let held = reflex_core::held::Held::new(Held::new(packet, self.base), at);
-                        let answer = decide(&held);
+                        let edge = held.carrier().edge();
+                        let answer = decide(&held, edge);
                         return Served::Answered(self.apply(held.answered(answer)));
                     }
                     // Конец пачки либо протокольный отказ на нашу команду — не потеря: снова к
@@ -248,7 +254,10 @@ mod tests {
     fn протокольный_отказ_и_конец_пачки_читаются_пустотой() {
         assert!(matches!(taken(Incoming::Failed(105)), Taken::Nothing));
         assert!(matches!(taken(Incoming::Done), Taken::Nothing));
-        assert!(matches!(taken(Incoming::Packet(a_packet())), Taken::Packet(_)));
+        assert!(matches!(
+            taken(Incoming::Packet(a_packet())),
+            Taken::Packet(_)
+        ));
     }
 
     /// Переполнение — ДЫРА (буква `Torn`, не тишина): ядро сказало, что пакеты потеряны между
@@ -257,7 +266,10 @@ mod tests {
     /// дыра: смешивать причины было бы недоверенным сравнением через необъявленный разрыв.
     #[test]
     fn переполнение_recv_читается_дырой_а_прочий_отказ_пустотой() {
-        assert!(matches!(after_recv(Err(QueueError::Overrun)), AfterRecv::Torn));
+        assert!(matches!(
+            after_recv(Err(QueueError::Overrun)),
+            AfterRecv::Torn
+        ));
         assert!(matches!(
             after_recv(Err(QueueError::Recv(libc::EAGAIN))),
             AfterRecv::Idle

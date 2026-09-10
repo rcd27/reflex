@@ -55,16 +55,16 @@ use reflex_core::dns::DnsMessage;
 use reflex_core::edge::EdgeView;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
-use reflex_core::held::{Edging, Held, Terminal};
+use reflex_core::held::{Held, Terminal};
 use reflex_core::interleave::Interleave;
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use reflex_core::tls;
 use reflex_core::word::{Conversation, Target};
+pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::Serves;
-pub use reflex_core::DetectorEvent;
 use reflex_core::{CanSever, Toward};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::{Addr, Flow};
@@ -109,14 +109,14 @@ pub struct Cause(pub String);
 /// именно рецепт — открытие случается в `run`, чтобы несостоявшийся запуск был ЗНАЧЕНИЕМ, а не
 /// паникой на старте `engine(…)`.
 ///
-/// `Self::Carrier: Serves`, а НЕ `Serves + Edging`. [`reflex_core::held::Edging`] — свойство
-/// СООБЩЕНИЯ: спрашивают носителя ПАКЕТА (`Terminal::Carrier`), внутри `serve`, где бэкенд занят
-/// декодированием ровно одного наблюдения. У носителя ОЧЕРЕДИ целиком «текущего» пакета вне
-/// `serve` нет — спросить у неё край было бы спросить край НИЧЕГО. `Edging` уже приходит
-/// транзитивно через `Self::Carrier::Carrier` (для [`Nfqueue`] это `queue::terminal::Held`, уже
-/// реализующий его) — второй раз требовать его здесь значило бы завести второй закон об одном и
-/// том же предмете, причём неудовлетворимый. Имя этому транзитивному свойству даёт [`Bordered`],
-/// и цепочка спрашивает его, а не проекцию.
+/// `Self::Carrier: Serves` — и этого ДОСТАТОЧНО для края: [`Serves::Edge`] несёт его сам (задача
+/// 10½). Прежде край читался проекцией через тип СООБЩЕНИЯ (`Self::Carrier::Carrier: Edging`) —
+/// довод был «край есть величина разговора, бэкенд видит разговор только через пакет», верный, но
+/// не о том вопросе: декоратор (`Local`), вставший МЕЖДУ вызывающим и носителем, обязан ПОДМЕНИТЬ
+/// край, а подменить чужой `impl Edging` ему нечем (правило сирот, да и `Edging` даёт ровно один
+/// `Edge` на тип сообщения). `Serves` уже стоит в точке, где декоратор решает — перенос края туда
+/// снял вопрос, не переложил его. `Edging` не исчез — он остался внутренним помощником у
+/// носителей, которые и правда берут край из сообщения (`QueueSocket::serve`).
 pub trait IntoCarrier {
     /// Открытый носитель — то, чем движок будет [`Serves::serve`]ить в ведущем цикле.
     type Carrier: Serves;
@@ -130,41 +130,38 @@ pub trait IntoCarrier {
     fn name(&self) -> String;
 }
 
-/// НОСИТЕЛЬ, ЧЬИ СООБЩЕНИЯ НЕСУТ КРАЙ, — одним именем вместо проекции в три звена
-/// (`<<C::Carrier as Terminal>::Carrier as Edging>::Edge`). Не украшение: проекция стоит в границах
-/// восьми стадий цепочки, и записанная восемь раз она была бы восемью местами, где её можно
-/// записать по-разному.
+/// НОСИТЕЛЬ, ЧЕЙ `Serves` ВЕДЁТ КРАЙ, — одним именем вместо проекции в два звена
+/// (`<C::Carrier as Serves>::Edge`). Не украшение: проекция стоит в границах восьми стадий
+/// цепочки, и записанная восемь раз она была бы восемью местами, где её можно записать по-разному.
 ///
-/// Реализуется САМА, всяким рецептом, чей носитель сообщения умеет [`Edging`]: заявлять её руками
-/// нечего, иначе носитель мог бы объявить одним краем то, что показывает другим.
+/// Реализуется САМА, всяким рецептом с `Self::Carrier: Serves` — заявлять её руками нечего, иначе
+/// носитель мог бы объявить одним краем то, что показывает другим.
 pub trait Bordered: IntoCarrier {
     /// Чей край едет в широком слове цепочки. `Clone` и `'static` — требование не закона, а хранения:
     /// край едет копией в каждой букве и живёт в ленте дольше пакета.
     type Edge: EdgeView + Clone + 'static;
 
-    /// Что удержанное сообщение ПОКАЗЫВАЕТ: провод (байты кадра) и вид края о разговоре, которому
-    /// кадр принадлежит. Одной дверью, а не двумя границами (`Observed` + `Edging`) на каждой
-    /// стадии цепочки: спрашивают их всегда вместе и всегда в одном месте — внутри решения, где
-    /// носитель заимствован и второго `&mut` не будет.
-    ///
-    /// `None` у края — обитаемая клетка (§7): край о разговоре ещё ничего не ведёт.
-    fn shown(held: &Held<Carried<Self>>) -> (&[u8], Option<Self::Edge>);
+    /// Что удержанное сообщение показывает НА ПРОВОДЕ — байты кадра. Край сюда больше не заходит:
+    /// его отдаёт [`Serves::serve`] ВТОРЫМ доводом решения (`decide(held, edge)`), не сообщение —
+    /// декоратор (`Local`) волен подменить его до того, как `decide` вообще позван.
+    fn shown(held: &Held<Carried<Self>>) -> &[u8];
 }
 
-/// Носитель СООБЩЕНИЯ — тот, у кого спрашивают край (внутри `serve`, где бэкенд занят одним
+/// Носитель СООБЩЕНИЯ — тот, у кого спрашивают байты (внутри `serve`, где бэкенд занят одним
 /// наблюдением).
 type Carried<C> = <<C as IntoCarrier>::Carrier as Terminal>::Carrier;
 
 impl<C> Bordered for C
 where
     C: IntoCarrier,
-    Carried<C>: Edging + reflex_core::held::Observed,
-    <Carried<C> as Edging>::Edge: Clone + 'static,
+    C::Carrier: Serves,
+    Carried<C>: reflex_core::held::Observed,
+    <C::Carrier as Serves>::Edge: Clone + 'static,
 {
-    type Edge = <Carried<C> as Edging>::Edge;
+    type Edge = <C::Carrier as Serves>::Edge;
 
-    fn shown(held: &Held<Carried<C>>) -> (&[u8], Option<Self::Edge>) {
-        (held.seen(), held.carrier().edge())
+    fn shown(held: &Held<Carried<C>>) -> &[u8] {
+        held.seen()
     }
 }
 
@@ -542,7 +539,9 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
 impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Retransmit {
     type Home = MarkSilent;
     fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>> {
-        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _>(RetransmitInstrument::new()))
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _>(
+            RetransmitInstrument::new(),
+        ))
     }
 }
 
@@ -826,7 +825,6 @@ impl<C: Bordered, T: Transport> Detecting<C, T, MarkWriter> {
 }
 
 impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
-
     /// Слово о ЦЕЛИ поверх слов о её разговорах — копредел по слою (§4: `Target ≅ ∐ Conversation`).
     /// Свёртка приходит значением: фреймворк собирает последние слова разговоров цели и отдаёт их
     /// ей, не зная, что она из них сделает.
@@ -1138,6 +1136,9 @@ impl<C, T, F, H: MarkHome> Running<C, T, F, H>
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember,
+    // См. докблок `drive`: тождество ассоциированных путей края нужно явным, иначе `drive::<C,…>`
+    // ниже не соберётся — компилятор не отождествляет их через сторонний `impl Bordered`.
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
     F: FnMut(&str, Distress),
@@ -1175,6 +1176,9 @@ impl<C, T, F, H: MarkHome> Acting<C, T, F, H>
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember + CanInject,
+    // См. докблок `drive`: тождество ассоциированных путей края нужно явным, иначе `drive::<C,…>`
+    // ниже не соберётся — компилятор не отождествляет их через сторонний `impl Bordered`.
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     <C::Carrier as Sink>::Error: std::fmt::Debug,
     T: Transport,
@@ -1223,8 +1227,7 @@ pub enum Said {
 
 /// Лента этого движка: буквы провода с адресом разбора. Отклик пока не рождается — акт вопроса в
 /// потребительскую цепочку не вписан, потому содержимое отклика здесь пусто.
-type Recorded<C, T> =
-    Tape<Wide<<T as Transport>::Wire, <C as Bordered>::Edge>, Whose, ()>;
+type Recorded<C, T> = Tape<Wide<<T as Transport>::Wire, <C as Bordered>::Edge>, Whose, ()>;
 
 /// Сколько букв копит окно ленты, прежде чем закон предъявляется. Окно, а не весь прогон: движок
 /// живёт, пока жив процесс, и бесконечная лента была бы утечкой.
@@ -1356,6 +1359,11 @@ fn drive<C, T, V, H: MarkHome>(chain: Detecting<C, T, H>, certify: bool, voice: 
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember,
+    // `Bordered::Edge` И край, что отдаёт `carrier.serve(...)`, — ОДИН тип по определению
+    // блáнкетного `impl Bordered` (`type Edge = <C::Carrier as Serves>::Edge`), но связаны два
+    // ассоциированных пути, и без явного тождества здесь компилятор их не отождествит — только
+    // внутри самого `impl`, где равенство и записано, а не в постороннем `drive`.
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
     V: Voice<C::Carrier>,
@@ -1378,8 +1386,11 @@ where
     let idle = longest.saturating_mul(2).max(MIN_IDLE);
     // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она обязана
     // начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
-    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>>>> =
-        park.per_flow.iter().map(|probe| probe.clone_box()).collect();
+    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>>>> = park
+        .per_flow
+        .iter()
+        .map(|probe| probe.clone_box())
+        .collect();
     let templates = park.per_flow;
     let mut alive: Alive<C, T> = Alive {
         table: FlowTable::new(idle, move |_flow| {
@@ -1423,9 +1434,9 @@ where
         let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
         let mut crossed: Option<Instant> = None;
 
-        let outcome = carrier.serve(until, |held| {
+        let outcome = carrier.serve(until, |held, edge| {
             let at = held.at();
-            let (seen, edge) = C::shown(held);
+            let seen = C::shown(held);
             // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
             // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
             let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
@@ -1466,9 +1477,10 @@ where
                 report!("вердикт не ушёл: {:?}", refused.why);
                 None
             }
-            Served::Torn(at) => {
-                Some(seam.get_or_insert_with(|| Interleave::started(at, TICK)).torn(at))
-            }
+            Served::Torn(at) => Some(
+                seam.get_or_insert_with(|| Interleave::started(at, TICK))
+                    .torn(at),
+            ),
             // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
             // некому — живых машин ещё нет.
             Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
@@ -1544,48 +1556,50 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
             // рождённый словом ЧУЖОГО разговора, оборвал бы разговор, привёзший пакет. Тот не
             // бедствовал вовсе, а слово необратимо (§1). Прежде закон держался тем, что штатные
             // приборы на узле молчат, — то есть совпадением; `own(…)` его нарушал.
-            let (said, evidence): (Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)>, &[u8]) =
-                match (&letter, &whose) {
-                    (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
-                        self.recorded(
-                            To::One(Whose {
-                                flow: *flow,
-                                target: key.clone(),
-                            }),
-                            &letter,
-                        );
-                        let (mut signals, ()) = self.table.process(*flow, input, at);
-                        for probe in self.at_edge.iter_mut() {
-                            let (remembered, spoken) = probe.observe(&letter);
-                            // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
-                            // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
-                            // их просто копит) — тогда побеждает сказавший последним. Цена
-                            // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
-                            // не ставит, а гейт на это — отдельное решение, не попутное.
-                            memo = remembered.or(memo);
-                            signals.extend(spoken);
-                        }
-                        self.targets.insert(*flow, key.clone());
-                        (vec![(key.clone(), *flow, signals)], seen)
+            let (said, evidence): (
+                Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)>,
+                &[u8],
+            ) = match (&letter, &whose) {
+                (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
+                    self.recorded(
+                        To::One(Whose {
+                            flow: *flow,
+                            target: key.clone(),
+                        }),
+                        &letter,
+                    );
+                    let (mut signals, ()) = self.table.process(*flow, input, at);
+                    for probe in self.at_edge.iter_mut() {
+                        let (remembered, spoken) = probe.observe(&letter);
+                        // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
+                        // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
+                        // их просто копит) — тогда побеждает сказавший последним. Цена
+                        // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
+                        // не ставит, а гейт на это — отдельное решение, не попутное.
+                        memo = remembered.or(memo);
+                        signals.extend(spoken);
                     }
-                    // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
-                    // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
-                    // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
-                    _ => {
-                        self.recorded(To::Each, &letter);
-                        let heard = self
-                            .table
-                            .each(letter.clone())
-                            .into_iter()
-                            .filter_map(|(flow, (signals, ()))| {
-                                self.targets
-                                    .get(&flow)
-                                    .map(|key| (key.clone(), flow, signals))
-                            })
-                            .collect();
-                        (heard, &[][..])
-                    }
-                };
+                    self.targets.insert(*flow, key.clone());
+                    (vec![(key.clone(), *flow, signals)], seen)
+                }
+                // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
+                // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
+                // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
+                _ => {
+                    self.recorded(To::Each, &letter);
+                    let heard = self
+                        .table
+                        .each(letter.clone())
+                        .into_iter()
+                        .filter_map(|(flow, (signals, ()))| {
+                            self.targets
+                                .get(&flow)
+                                .map(|key| (key.clone(), flow, signals))
+                        })
+                        .collect();
+                    (heard, &[][..])
+                }
+            };
             for (key, flow, signals) in said {
                 let named = label(&key);
                 for signal in signals {

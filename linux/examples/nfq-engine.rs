@@ -263,7 +263,9 @@ fn run(mut queue: NfqueueBackend, sender: RawSender, table: Table) {
     loop {
         // `Instant::now()` сохраняет прежнее поведение (`wait(0)` внутри шва): цикл ждёт сам,
         // ниже, через `queue.wait(POLL_MS)` на исходе `Served::Idle`.
-        match queue.serve(std::time::Instant::now(), |held| handle(held, &table, &sender)) {
+        match queue.serve(std::time::Instant::now(), |held, _edge| {
+            handle(held, &table, &sender)
+        }) {
             // ЯДРО ПРИНЯЛО. Молчим о безразличии и говорим о вмешательстве: прибор, печатающий
             // каждый пропущенный пакет, приучает себя не читать.
             Served::Answered(Ok(delivered)) => match delivered.answer {
