@@ -53,7 +53,10 @@ use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
+use reflex_core::held::{Answered, Delivered, Refused, Terminal};
 pub use reflex_core::mealy::Mealy;
+use reflex_core::serves::Served;
+use reflex_core::Serves;
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use reflex_core::tls;
 use reflex_core::word::{Conversation, Target};
@@ -125,6 +128,105 @@ impl Nfqueue {
     /// release).
     pub fn marking(self, mask: u32, tag: u8) -> Option<Nfqueue> {
         Layout::new(mask, tag).map(|layout| Nfqueue { layout, ..self })
+    }
+}
+
+/// Причина, по которой носитель не открылся, — ЗНАЧЕНИЕ, а не печать. Тот же закон, по которому
+/// `Refused` (`core/src/held.rs`) вытеснил `let _ =`: отказ мира есть знание, и его показывает
+/// [`Report`], а не журнал.
+#[derive(Debug)]
+pub struct Cause(pub String);
+
+/// Рецепт носителя: что открыть и под какой раскладкой писать состояние. Дверь `engine(…)` берёт
+/// именно рецепт — открытие случается в `run`, чтобы несостоявшийся запуск был ЗНАЧЕНИЕМ, а не
+/// паникой на старте `engine(…)`.
+///
+/// `Self::Carrier: Serves`, а НЕ `Serves + Edging`. [`reflex_core::held::Edging`] — свойство
+/// СООБЩЕНИЯ: спрашивают носителя ПАКЕТА (`Terminal::Carrier`), внутри `serve`, где бэкенд занят
+/// декодированием ровно одного наблюдения. У носителя ОЧЕРЕДИ целиком «текущего» пакета вне
+/// `serve` нет — спросить у неё край было бы спросить край НИЧЕГО. `Edging` уже приходит
+/// транзитивно через `Self::Carrier::Carrier` (для [`Nfqueue`] это `queue::terminal::Held`, уже
+/// реализующий его) — второй раз требовать его здесь значило бы завести второй закон об одном и
+/// том же предмете, причём неудовлетворимый.
+pub trait IntoCarrier {
+    /// Открытый носитель — то, чем движок будет [`Serves::serve`]ить в ведущем цикле.
+    type Carrier: Serves;
+    /// Открыть носитель. Здесь и только здесь читаются его предпосылки (для очереди — база
+    /// таймаутов conntrack).
+    fn open(self) -> Result<Self::Carrier, Cause>;
+    /// Раскладка марки, под которой пишут состояние краевые приборы.
+    fn layout(&self) -> Layout;
+    /// Имя носителя — то, чем [`Report`] назовёт несостоявшийся запуск. Число очереди больше не
+    /// единственная форма имени: у WinDivert его нет вовсе.
+    fn name(&self) -> String;
+}
+
+/// Открытый носитель очереди: сокет очереди И сокет инъекции — оба поднимает [`Nfqueue::open`]
+/// (через [`IntoCarrier`]), а не ведущий цикл. Сырой сокет живёт здесь ВСЕГДА, даже у цепочки,
+/// которая инжектить не станет (`.on`, не `.act`): ленивое открытие на первом `emit` меняло бы
+/// быстрый отказ на старте (`Report::not_started`) на отказ посреди боя — лишний сокет дешевле
+/// потерянного отказа.
+pub struct NfqueueCarrier {
+    socket: QueueSocket,
+    sender: RawSender,
+}
+
+/// Носитель `Serves`ит тем же швом, что и голый `QueueSocket` (задача 6) — делегирование, не
+/// вторая реализация: второй закон об одном и том же приёме разошёлся бы с первым молча.
+impl Terminal for NfqueueCarrier {
+    type Carrier = <QueueSocket as Terminal>::Carrier;
+    type Answer = <QueueSocket as Terminal>::Answer;
+    type Refusal = <QueueSocket as Terminal>::Refusal;
+
+    fn apply(
+        &mut self,
+        answered: Answered<Self::Carrier, Self::Answer>,
+    ) -> Result<Delivered<Self::Answer>, Refused<Self::Answer, Self::Refusal>> {
+        self.socket.apply(answered)
+    }
+}
+
+impl Serves for NfqueueCarrier {
+    fn serve<F>(
+        &mut self,
+        until: Instant,
+        decide: F,
+    ) -> Served<Delivered<Self::Answer>, Refused<Self::Answer, Self::Refusal>>
+    where
+        F: FnOnce(&reflex_core::held::Held<Self::Carrier>) -> Self::Answer,
+    {
+        self.socket.serve(until, decide)
+    }
+}
+
+impl IntoCarrier for Nfqueue {
+    type Carrier = NfqueueCarrier;
+
+    /// База таймаутов conntrack — предпосылка КРАЯ, и её читает РОВНО одно место продуктовой
+    /// цепочки: здесь. Обобщённый цикл (задача 8) знать о ней не может — предпосылка носителя есть
+    /// дело носителя, а в обобщённом цикле она была бы абсурдна (WinDivert про conntrack не
+    /// слышал). Сырой сокет инъекции поднимается следом, тоже здесь и тоже безусловно (см. докблок
+    /// [`NfqueueCarrier`]).
+    fn open(self) -> Result<NfqueueCarrier, Cause> {
+        let base = TimeoutBase::read().ok_or_else(|| {
+            Cause(
+                "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
+                    .to_string(),
+            )
+        })?;
+        let socket =
+            QueueSocket::open(self.queue, base).map_err(|why| Cause(format!("{why:?}")))?;
+        let sender = RawSender::open(INJECT_MARK)
+            .map_err(|why| Cause(format!("сокет инъекции: {why}")))?;
+        Ok(NfqueueCarrier { socket, sender })
+    }
+
+    fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    fn name(&self) -> String {
+        format!("очередь {}", self.queue)
     }
 }
 
@@ -718,6 +820,7 @@ impl<T: Transport> Detecting<T> {
     pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<T, F> {
         Running {
             queue: self.queue,
+            layout: self.layout,
             park: self.park,
             longest: self.longest,
             about: self.about,
@@ -734,6 +837,7 @@ impl<T: Transport> Detecting<T> {
     pub fn act<F: FnMut(&str, Distress) -> Act<QueueSocket>>(self, react: F) -> Acting<T, F> {
         Acting {
             queue: self.queue,
+            layout: self.layout,
             park: self.park,
             longest: self.longest,
             react,
@@ -925,6 +1029,10 @@ impl<T: CanHold + CanAsk> Act<T> {
 /// Цепочка собрана — готова к запуску.
 pub struct Running<T: Transport, F> {
     queue: u16,
+    /// Донесена до `run` ради [`Nfqueue::open`]: рецепт восстанавливается из `queue`+`layout`
+    /// целиком, а не додумывается заново — у `Nfqueue` больше полей нет, потому потерь при
+    /// пересборке не бывает.
+    layout: Layout,
     park: Park<Wide<T::Wire>>,
     longest: Duration,
     about: Option<(Fold, TargetVoice)>,
@@ -1050,22 +1158,21 @@ impl<T: Transport, F: FnMut(&str, Distress)> Running<T, F> {
     /// ([`FlowTable`] над [`Probes`]) с фанаутом тиков и эвиктом по простою → реакция на [`Distress`].
     /// Пакет пропускается как есть (`Answer::Pass`): use-case наблюдает.
     pub fn run(mut self) -> Report {
-        // База таймаутов conntrack — предпосылка КРАЯ: без неё возраст потока не пересчитать, а
-        // возраст есть единственные честные часы «сколько цель молчит с открытия». Спрашиваем один
-        // раз при старте (величина ядра меняется не чаще, чем sysctl'ом) и несём в `QueueSocket`
-        // аргументом: вторым чтением здесь стал бы второй закон об одной величине в одном прогоне.
-        let base = match TimeoutBase::read() {
-            Some(base) => base,
-            None => return Report::not_started(
-                self.queue,
-                "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
-                    .to_string(),
-            ),
+        // Носитель открывает СЕБЯ: предпосылка (база таймаутов conntrack) и сокет инъекции —
+        // дело `Nfqueue::open`, не ведущего цикла (§ дверь отдаёт носителя, не число очереди).
+        // Рецепт восстанавливается из `queue`+`layout` — у `Nfqueue` больше полей нет, вторым
+        // источником этих величин пересборка не становится.
+        let recipe = Nfqueue {
+            queue: self.queue,
+            layout: self.layout,
         };
-        let socket = match QueueSocket::open(self.queue, base) {
-            Ok(socket) => socket,
-            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
+        let NfqueueCarrier { socket, .. } = match recipe.open() {
+            Ok(carrier) => carrier,
+            Err(Cause(why)) => return Report::not_started(self.queue, why),
         };
+        // Уже СНЯТОЕ значение, не повторное чтение sysctl: `Nfqueue::open` — единственный, кто
+        // зовёт `TimeoutBase::read()` (см. докблок `QueueSocket::base`).
+        let base = socket.base();
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
         // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она
@@ -1273,6 +1380,8 @@ pub const INJECT_MARK: u32 = 0xBB;
 /// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
 pub struct Acting<T: Transport, F> {
     queue: u16,
+    /// См. `Running::layout` — тот же довод: рецепт для `Nfqueue::open` восстанавливается отсюда.
+    layout: Layout,
     park: Park<Wide<T::Wire>>,
     longest: Duration,
     react: F,
@@ -1288,23 +1397,18 @@ impl<T: Transport, F: FnMut(&str, Distress) -> Act<QueueSocket>> Acting<T, F> {
     /// Краевые приборы работают и тут: их слова так же идут в реакцию, а памятка так же уезжает в
     /// марку тем же словом, что и вердикт.
     pub fn run(mut self) -> Report {
-        let base = match TimeoutBase::read() {
-            Some(base) => base,
-            None => return Report::not_started(
-                self.queue,
-                "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
-                    .to_string(),
-            ),
+        // Носитель открывает СЕБЯ целиком — сокет очереди И сокет инъекции (см. докблок
+        // `NfqueueCarrier`): ведущий цикл больше не поднимает `RawSender` сам.
+        let recipe = Nfqueue {
+            queue: self.queue,
+            layout: self.layout,
         };
-        let socket = match QueueSocket::open(self.queue, base) {
-            Ok(socket) => socket,
-            Err(why) => return Report::not_started(self.queue, format!("{why:?}")),
+        let NfqueueCarrier { socket, sender } = match recipe.open() {
+            Ok(carrier) => carrier,
+            Err(Cause(why)) => return Report::not_started(self.queue, why),
         };
-        // Свой сокет инъекции: RST уходит мимо очереди, помеченный, чтобы не вернуться в неё.
-        let sender = match RawSender::open(INJECT_MARK) {
-            Ok(sender) => sender,
-            Err(why) => return Report::not_started(self.queue, format!("сокет инъекции: {why}")),
-        };
+        // Уже СНЯТОЕ значение, не повторное чтение sysctl — см. докблок `QueueSocket::base`.
+        let base = socket.base();
 
         let idle = self.longest.saturating_mul(2).max(MIN_IDLE);
         let templates = self.park.per_flow;

@@ -81,6 +81,14 @@ impl QueueSocket {
         Ok(sock)
     }
 
+    /// База таймаутов, с которой сокет открыт. Читающий ведущий цикл строит по ней `CtEdge` на
+    /// каждом пакете (`CtEdge::seen(view, base)`) — и это ЧТЕНИЕ уже взятого значения, а не второй
+    /// вызов `TimeoutBase::read()`: тот остаётся единственным читателем sysctl в цепочке
+    /// (`Nfqueue::open`), эта дверь лишь отдаёт то, что он уже снял.
+    pub fn base(&self) -> TimeoutBase {
+        self.base
+    }
+
     fn send(&self, message: &[u8]) -> Result<(), QueueError> {
         match unsafe { send(self.fd, message.as_ptr() as *const c_void, message.len(), 0) } {
             below if below < 0 => Err(QueueError::Send(errno())),
