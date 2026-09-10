@@ -17,7 +17,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # предсуществующих предупреждений в тестовых целях `certify_replays`, `edge_word`, `flow_table`,
 # `flow_identity` (2 шт.) и нестандартное имя функции в `reflex/tests/own_word.rs` — файле соседней
 # сессии, который эта уборка не трогает.
-EXPECTED=6
+EXPECTED=2
 
 OUT="$(cargo build --workspace --all-targets 2>&1)"
 

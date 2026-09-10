@@ -5,7 +5,7 @@ use reflex_core::word::{Descends, Word};
 use reflex_core::Reads;
 use reflex_instrument::distress::Distress;
 use reflex_instrument::edge::{Layout, Memo, Phase};
-use reflex_instrument::edge_word::{Edged, Told};
+use reflex_instrument::edge_word::Edged;
 use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 
 fn layout() -> Layout {

@@ -5,7 +5,6 @@
 //! в алфавите нет.
 
 use reflex_core::certify::{replays, Replayed};
-use reflex_core::detector::DetectorEvent;
 use reflex_core::interleave::Interleave;
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use std::time::{Duration, Instant};

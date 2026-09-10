@@ -27,7 +27,6 @@ impl Word for Count {
 #[derive(Debug, Clone)]
 struct RstCounter {
     count: u32,
-    flow: Flow,
 }
 
 impl Mealy for RstCounter {
@@ -72,10 +71,7 @@ const IDLE: Duration = Duration::from_secs(3600);
 /// Единственная дверь к конструктору: правка сигнатуры трогает одно место, а не рассыпанные по
 /// файлу вызовы.
 fn new_table() -> FlowTable<RstCounter, Flow> {
-    FlowTable::new(IDLE, |key: &Flow| RstCounter {
-        count: 0,
-        flow: key.clone(),
-    })
+    FlowTable::new(IDLE, |_key: &Flow| RstCounter { count: 0 })
 }
 
 #[test]
