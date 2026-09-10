@@ -86,7 +86,10 @@
 //! `basil00/WinDivert@master`); имя библиотеки для линковки (`dll/windivert.def`); коды ошибок
 //! `ERROR_INSUFFICIENT_BUFFER`/`ERROR_NO_DATA` и текст про отсутствие сигнала переполнения очереди
 //! драйвера (`doc/windivert.html`); `OVERLAPPED`/`CreateEventW`/`WaitForSingleObject`/коды
-//! ожидания/`ERROR_IO_PENDING` (learn.microsoft.com).
+//! ожидания/`ERROR_IO_PENDING` (learn.microsoft.com); гарантия `CancelIoEx` («не освобождать
+//! `OVERLAPPED` до реального завершения, ждать его `GetOverlappedResult`») — цитатой из
+//! `learn.microsoft.com/.../ioapiset/nf-ioapiset-cancelioex`, докблок ветки `WAIT_TIMEOUT` в
+//! `carrier.rs::attempt_recv`.
 //!
 //! ДОГАДАНО (форма, не выверенная прогоном или прямой цитатой источника — оба места отмечены и в
 //! коде): (1) МСВ-упаковка битового поля `WINDIVERT_ADDRESS` (какой бит — какое имя внутри `flags`,

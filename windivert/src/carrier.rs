@@ -126,10 +126,13 @@ impl WinDivertHandle {
     /// синтаксиса фильтра придёт тем же путём, что и прочий отказ открытия (`GetLastError`).
     pub fn open(filter: &str) -> Result<WinDivertHandle, WinError> {
         let c_filter = CString::new(filter)
-            // NUL внутри фильтра — не код WinDivert; отдаём код Windows «параметр неверен»
-            // (`ERROR_INVALID_PARAMETER` = 87, `doc/windivert.html` §5.4), чтобы не заводить
-            // второй тип ошибки ради одного случая, которого фильтр как строка Rust и так не
-            // допускает нигде, кроме этого места.
+            // NUL внутри фильтра — не код WinDivert и не код из документации WinDivert: 87
+            // (`ERROR_INVALID_PARAMETER`) — СТАНДАРТНЫЙ код Windows (`WinError.h`,
+            // `learn.microsoft.com/.../debug/system-error-codes--0-499-`), общий для всего Win32,
+            // не специфичный для этого драйвера. Использован здесь потому, что `WinError` несёт
+            // РОВНО тот же словарь чисел, что и `GetLastError()`, и заводить для одного случая
+            // (NUL внутри строки Rust — сама Rust-строка это уже почти исключает) второй тип
+            // ошибки незачем.
             .map_err(|_| WinError(87))?;
         let handle = unsafe {
             ffi::WinDivertOpen(
@@ -221,13 +224,40 @@ impl WinDivertHandle {
                     recv_len = transferred;
                     done == ffi::TRUE
                 }
-                // И `WAIT_TIMEOUT` (честный срок вышел), и всякий иной код (отказ самого ожидания)
-                // — запрос всё ещё может висеть в драйвере, отменяем СВОЙ (докблок функции про
-                // `CancelIoEx`). Различать их дальше некому: обеим достаётся одна и та же буква
-                // ниже (`RecvOutcome::Idle`) — работы не было, а не «случилась беда».
+                // И `WAIT_TIMEOUT` (честный срок вышел), и всякий иной код (отказ самого
+                // ожидания) — запрос всё ещё может висеть в драйвере, отменяем СВОЙ (докблок
+                // функции про `CancelIoEx`).
+                //
+                // `CancelIoEx` МОЖЕТ ВЕРНУТЬСЯ РАНЬШЕ, чем драйвер прекратит писать в `buffer`/
+                // `addr`/`overlapped` — выверено цитатой (`learn.microsoft.com`,
+                // `ioapiset/nf-ioapiset-cancelioex`, раздел Return value): «The application must
+                // not free or reuse the OVERLAPPED structure associated with the canceled I/O
+                // operations until they have completed. The thread can use the
+                // GetOverlappedResult function to determine when the I/O operations themselves
+                // have been completed» — и там же (Remarks): отменяемая операция завершается
+                // ОДНИМ из трёх исходов (обычное завершение, если отмена не успела; отмена,
+                // `ERROR_OPERATION_ABORTED`; иная ошибка), и все три равно требуют дождаться этого
+                // события явно. А сразу после этой ветки та же память освобождается (`CloseHandle`
+                // события, `buffer`/`overlapped` роняются вызывающим `serve`) — без ожидания
+                // РЕАЛЬНОГО завершения это было бы use-after-free с точки зрения драйвера, ещё
+                // пишущего в уже отпущенную память. Дожидаемся его ЯВНО: `GetOverlappedResult` с
+                // `bWait = TRUE` блокирует ровно до этого события, чем бы оно ни кончилось. Если
+                // это оказался ПЕРВЫЙ исход (пакет успел раньше отмены — редкая гонка), `done ==
+                // TRUE` и `transferred` несёт РЕАЛЬНУЮ длину — тогда это не потеря, а честно
+                // пришедший пакет, и он не выбрасывается напрасно.
                 ffi::WAIT_TIMEOUT | _ => {
                     unsafe { ffi::CancelIoEx(self.handle, &mut overlapped) };
-                    false
+                    let mut transferred = 0u32;
+                    let done = unsafe {
+                        ffi::GetOverlappedResult(
+                            self.handle,
+                            &mut overlapped,
+                            &mut transferred,
+                            ffi::TRUE,
+                        )
+                    };
+                    recv_len = transferred;
+                    done == ffi::TRUE
                 }
             }
         };
@@ -314,15 +344,19 @@ impl CanRefuse for WinDivertHandle {
 /// достать — та же `E0499`, из-за которой `QueueSocket` (`linux/src/queue/terminal.rs`) выбрала
 /// `Serves`, а не `Source`.
 ///
-/// ЗАКОН СРОКА: `serve` не возвращается раньше `until`, кроме как с работой. `Served::Answered`
-/// возвращается СРАЗУ (работа не ждёт остатка срока); обе безответные буквы (`Idle`/`Blind` из
-/// [`RecvOutcome`]) проходят через ОДИН И ТОТ ЖЕ вызов `sleep` — не две копии одного и того же
-/// кода досыпания, а одна ветвь `match`, повторённая по букве результата. `WaitForSingleObject`
-/// внутри `attempt_recv` уже прождал ровно до `until` (или до готовности) на пути `Idle` — второй
-/// копии этого ожидания заводить незачем, хвостовой `sleep` лишь досыпает остаток, который округление
-/// миллисекунд вниз могло не долежать (симметрично хвостовому `sleep` у `QueueSocket`,
-/// `queue/terminal.rs`); на пути `Blind` (`CreateEventW` отказал ДО всякого ожидания) этот же `sleep`
-/// — единственное, что вообще выдерживает срок, ждать оказалось не на чем ни на миг.
+/// ЗАКОН СРОКА: `serve` не возвращается раньше `until`, кроме как с работой. Держится ОДНИМ
+/// ВЫХОДОМ буквально, по образцу `QueueSocket::serve` (`linux/src/queue/terminal.rs`): `match`
+/// внутри `serve` ниже даёт `Served::Answered` РАННИМ `return` (работа не ждёт остатка срока —
+/// закон её не касается) и `Served::Idle`/`Served::Blind` ЗНАЧЕНИЕМ; оба безответных исхода после
+/// `match` проходят через ОДИН вызов `sleep` — НЕ по копии на ветку (та же ошибка, от которой
+/// предостерегает докблок `queue/terminal.rs`: «три копии сна — три копии закона, и четвёртая
+/// безответная ветка, дописанная завтра, забыла бы о нём молча»; здесь ветка ТРЕТЬЕЙ не станет
+/// незамеченной — она пройдёт через тот же `match`, что и первые две, и автоматически попадёт под
+/// тот же `sleep`, не написав своего). `WaitForSingleObject` внутри `attempt_recv` уже прождал
+/// ровно до `until` (или до готовности) на пути `Idle` — хвостовой `sleep` лишь досыпает остаток,
+/// который округление миллисекунд вниз могло не долежать (симметрично хвостовому `sleep` у
+/// `QueueSocket`); на пути `Blind` (`CreateEventW` отказал ДО всякого ожидания) этот же `sleep` —
+/// единственное, что вообще выдерживает срок, ждать оказалось не на чем ни на миг.
 ///
 /// `Served::Torn` ЭТОТ НОСИТЕЛЬ НЕ ВОЗВРАЩАЕТ НИКОГДА — предел носителя, названный прямо, а не
 /// скрытый отсутствием ветки. У netfilter-очереди дыра — БУКВА: `ENOBUFS` от `recv()` (докблок
@@ -346,21 +380,21 @@ impl Serves for WinDivertHandle {
     where
         F: FnOnce(&Held<Recved>, Option<NoEdge>) -> Answer,
     {
-        match self.attempt_recv(until) {
+        let outcome = match self.attempt_recv(until) {
+            // Работа — возврат НЕМЕДЛЕННЫЙ, мимо хвостового сна: закон срока касается только
+            // безответных исходов (докблок `impl Serves` выше).
             RecvOutcome::Got(packet, addr, at) => {
                 let held = Held::new(Recved { packet, addr }, at);
                 let answer = decide(&held, None);
-                Served::Answered(self.apply(held.answered(answer)))
+                return Served::Answered(self.apply(held.answered(answer)));
             }
-            RecvOutcome::Idle => {
-                std::thread::sleep(until.saturating_duration_since(Instant::now()));
-                Served::Idle
-            }
-            RecvOutcome::Blind => {
-                std::thread::sleep(until.saturating_duration_since(Instant::now()));
-                Served::Blind
-            }
-        }
+            RecvOutcome::Idle => Served::Idle,
+            RecvOutcome::Blind => Served::Blind,
+        };
+        // ЕДИНСТВЕННЫЙ сон на оба безответных исхода — ОДНА строка, не по копии на ветку (закон
+        // срока держится именно этим: `queue/terminal.rs` называет копии сна копиями закона).
+        std::thread::sleep(until.saturating_duration_since(Instant::now()));
+        outcome
     }
 }
 
