@@ -768,8 +768,12 @@ impl<C: Bordered, T: Transport> Detecting<C, T> {
 
     /// ДЕЙСТВОВАТЬ: реакция возвращает [`Act`], движок его исполняет. `Act::sever()` инжектит RST
     /// тому, кто прислал ПАКЕТ-улику, — так тихий дроп обрывается за ~300мс вместо вечной крутилки.
-    /// Действует на сигналы, ПРИШЕДШИЕ С ПАКЕТОМ: у узла сетки носителя нет — рвать нечем, и обрыв
-    /// случается на следующем повторе, а не на тике.
+    ///
+    /// Действует на сигналы, ПРИШЕДШИЕ С ПАКЕТОМ, и это держит КОНСТРУКЦИЯ, а не привычка приборов
+    /// молчать на узле: улика едет вместе с адресом (`Alive::walk`), а у узла сетки и дыры адреса
+    /// нет — им достаётся пустой срез, и строить из него нечего. Иначе слово ЧУЖОГО разговора
+    /// рвало бы разговор, привёзший пакет. Тишина потому и обрывается следующим повтором клиента, а
+    /// не узлом.
     pub fn act<F: FnMut(&str, Distress) -> Act<C::Carrier>>(self, react: F) -> Acting<C, T, F>
     where
         C::Carrier: CanHold,
@@ -1069,8 +1073,19 @@ where
     F: FnMut(&str, Distress) -> Act<C::Carrier>,
 {
     /// ДЕЙСТВОВАТЬ. Тот же ведущий цикл, что и у `.on` ([`drive`]), — отличается только голосом
-    /// [`Do`]: он переводит акт в команды и отдаёт их носителю. Лента, дыра, слово о цели и памятка
-    /// работают здесь ровно так же, и это не совпадение, а следствие одного цикла.
+    /// [`Do`]: он переводит акт в команды и отдаёт их СТОКУ НОСИТЕЛЯ. Узлы сетки, дыра и памятка
+    /// работают здесь ровно так же, как у наблюдателя, и это не совпадение, а следствие одного
+    /// цикла: прежде у действия был свой, и он молча разошёлся — слова узлов выбрасывал (`let _ =
+    /// table.tick(now)`), дыры не знал вовсе.
+    ///
+    /// Чего здесь НЕ БЫВАЕТ, и почему — по факту, а не по обещанию:
+    /// * ЛЕНТА §10 не пишется никогда: [`Running::certifying`] живёт только у наблюдателя. Цикл
+    ///   её умеет, дверь к ней у действия не открыта;
+    /// * СЛОВО О ЦЕЛИ не рождается никогда: `.act` недостижим из [`Speaking`], то есть цепочка со
+    ///   свёрткой до этого терминала не доходит.
+    ///
+    /// Обе двери закрыты решением о ПРОДУКТЕ, а не свойством цикла, и открыть их — отдельный
+    /// разговор, не попутная правка.
     pub fn run(self) -> Report {
         let Acting { detecting, react } = self;
         drive::<C, T, _>(detecting, false, &mut Do(react))
@@ -1241,7 +1256,7 @@ where
         carrier: recipe,
         park,
         longest,
-        mut about,
+        about,
         ..
     } = chain;
     let name = recipe.name();
@@ -1269,16 +1284,34 @@ where
         targets: HashMap::new(),
         tape: Tape::new(),
         certify,
+        about,
+        idle,
     };
     let mut state = T::State::default();
-    let mut seam = Interleave::started(Instant::now(), TICK);
+    // Сетка отмеряется от ПЕРВОГО НАБЛЮДЁННОГО момента, а не от часов цикла. Часы цикла и часы
+    // носителя — разные эпохи (записанный провод, стенд, чужая ОС), и сетка, начатая нашими, на
+    // первом же пакете носителя из другой эпохи выдала бы миллионы узлов разом: прошлое зажимает
+    // шов (`at.max(last)`), будущее не зажимает ничто. До первого наблюдения мерить нечего — и
+    // адресовать узлы тоже некому: живых машин ещё нет.
+    let mut seam: Option<Interleave> = None;
 
     loop {
-        // Шаг сетки — ненулевая константа, потому `None` («сетки нет») сюда не приходит; ответ на
-        // невозможное всё же дан значением, а не паникой: следующий узел через шаг.
-        let until = seam
-            .next_node()
-            .unwrap_or_else(|| Instant::now() + TICK);
+        // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
+        // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
+        // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
+        // узлами: спроси о конце ПОСЛЕ неё — и последний узел пропал бы ровно тогда, когда срок
+        // тишины совпал с концом сценария. Живая очередь сюда не приходит никогда: `exhausted` у
+        // неё ложь по построению — ядро конца не обещает.
+        if carrier.exhausted() {
+            return Report::finished(name);
+        }
+        // Срок — не узел, а ПРОСЬБА к носителю: столько ждать, если работы нет. Оттого до первой
+        // буквы он берётся у часов цикла, и это законно: часы цикла знают, сколько ждать, и не
+        // знают, что наблюдено.
+        let until = match &seam {
+            Some(seam) => seam.next_node().unwrap_or_else(|| Instant::now() + TICK),
+            None => Instant::now() + TICK,
+        };
         let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
         let mut crossed: Option<Instant> = None;
 
@@ -1288,19 +1321,20 @@ where
             // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
             // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
             let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
+            let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
             let (moved, letters, whose) = match T::observe(&mut state, parse::read(seen, T::PORT)) {
                 Some(observed) => {
-                    let (moved, letters) = seam.saw((observed.wire, edge), at);
+                    let (moved, letters) = grid.saw((observed.wire, edge), at);
                     (moved, letters, Some((observed.flow, observed.key)))
                 }
                 // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
                 // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
                 None => {
-                    let (moved, letters) = seam.idle(at);
+                    let (moved, letters) = grid.idle(at);
                     (moved, letters, None)
                 }
             };
-            seam = moved;
+            *grid = moved;
             let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
             crossed = node;
             // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
@@ -1314,38 +1348,35 @@ where
 
         // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
         // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
+        //
+        // МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ: ответ несёт его в `Held::at`, дыра — в самом исходе
+        // (`Served::Torn`), тишина — сроком, о котором мы просили и который носитель обязался
+        // выждать. Второго владельца часов у цикла нет.
         let sown = match outcome {
             Served::Answered(Ok(_)) => None,
             Served::Answered(Err(refused)) => {
                 report!("вердикт не ушёл: {:?}", refused.why);
                 None
             }
-            Served::Torn => Some(seam.torn(Instant::now())),
-            // Тишина от носителя, у которого работы больше НЕ БУДЕТ, — не наблюдение, а конец:
-            // выдавать узлы за неё некому. Живая очередь сюда не приходит никогда (`exhausted` у
-            // неё ложь по построению: ядро конца не обещает).
-            Served::Idle | Served::Blind if carrier.exhausted() => return Report::finished(name),
-            Served::Idle | Served::Blind => Some(seam.idle(until)),
+            Served::Torn(at) => {
+                Some(seam.get_or_insert_with(|| Interleave::started(at, TICK)).torn(at))
+            }
+            // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
+            // некому — живых машин ещё нет.
+            Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
         };
         if let Some((moved, letters)) = sown {
-            seam = moved;
+            seam = Some(moved);
             let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
             crossed = node;
         }
 
         voice.does(&mut carrier, effects);
 
-        // Слово О ЦЕЛИ — на границе УЗЛА, а не на каждом обороте: копредел говорит о том, что
-        // видно в закрытом окне, и зови его на каждый пакет — цель говорила бы столько раз, сколько
-        // пришло пакетов.
-        if let Some(at) = crossed {
-            if let Some((fold, say)) = &mut about {
-                for (target, said) in voiced(&mut alive.layer, fold, idle, at) {
-                    say(&target, said);
-                }
-            }
+        // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
+        if crossed.is_some() {
             alive.forget_evicted();
-            alive.certified(&seeds, about.as_ref().map(|(fold, _say)| fold), idle);
+            alive.certified(&seeds);
         }
     }
 }
@@ -1367,6 +1398,11 @@ struct Alive<C: Bordered, T: Transport> {
     /// провода на каждый пакет.
     tape: Recorded<C, T>,
     certify: bool,
+    /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
+    /// что зовётся на закрытии узла — среди букв, а не после них.
+    about: Option<(Fold, TargetVoice)>,
+    /// Срок, после которого затихший разговор снимается: им же судит и слой.
+    idle: Duration,
 }
 
 impl<C: Bordered, T: Transport> Alive<C, T> {
@@ -1395,10 +1431,12 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
         let mut crossed: Option<Instant> = None;
         for letter in letters {
             let at = letter.at();
-            if matches!(letter, DetectorEvent::Tick { .. }) {
-                crossed = Some(at);
-            }
-            let said: Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)> =
+            // УЛИКА ЕДЕТ ВМЕСТЕ С АДРЕСОМ. Байты — только у буквы, у которой есть чей: узел сетки и
+            // дыра адресованы КАЖДОЙ живой машине, и дай им байты пакета этого оборота — акт,
+            // рождённый словом ЧУЖОГО разговора, оборвал бы разговор, привёзший пакет. Тот не
+            // бедствовал вовсе, а слово необратимо (§1). Прежде закон держался тем, что штатные
+            // приборы на узле молчат, — то есть совпадением; `own(…)` его нарушал.
+            let (said, evidence): (Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)>, &[u8]) =
                 match (&letter, &whose) {
                     (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
                         self.recorded(
@@ -1420,14 +1458,15 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
                             signals.extend(spoken);
                         }
                         self.targets.insert(*flow, key.clone());
-                        vec![(key.clone(), *flow, signals)]
+                        (vec![(key.clone(), *flow, signals)], seen)
                     }
                     // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
                     // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
                     // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
                     _ => {
                         self.recorded(To::Each, &letter);
-                        self.table
+                        let heard = self
+                            .table
                             .each(letter.clone())
                             .into_iter()
                             .filter_map(|(flow, (signals, ()))| {
@@ -1435,18 +1474,45 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
                                     .get(&flow)
                                     .map(|key| (key.clone(), flow, signals))
                             })
-                            .collect()
+                            .collect();
+                        (heard, &[][..])
                     }
                 };
             for (key, flow, signals) in said {
                 let named = label(&key);
                 for signal in signals {
-                    effects.extend(voice.hears(&named, signal.clone(), seen));
-                    self.layer.saw(key.clone(), flow, signal, at);
+                    effects.extend(voice.hears(&named, signal.clone(), evidence));
+                    // Слой копится РАДИ копредела и больше ни для чего: нет свёртки — некому его
+                    // читать, и наполнять его значило бы платить за слово, которое не родится.
+                    if self.about.is_some() {
+                        self.layer.saw(key.clone(), flow, signal, at);
+                    }
                 }
+            }
+            // Слово О ЦЕЛИ — на КАЖДОМ закрытом узле, здесь же, где буквы. Не в конце оборота:
+            // пакет штатно перешагивает несколько узлов, и слово, сказанное раз за оборот, зависело
+            // бы от того, как носитель сбил работу в пачки, — то есть от входа вне алфавита машины,
+            // ровно того, что ловит §10. Зеркало переигровки (`replay`) зовёт свёртку так же.
+            if matches!(letter, DetectorEvent::Tick { .. }) {
+                crossed = Some(at);
+                self.spoke_of_targets(at);
             }
         }
         (memo, crossed)
+    }
+
+    /// Свести слова разговоров в слово о ЦЕЛИ и сказать его. Нет свёртки — нет и слова: копредел
+    /// объявляет потребитель (`.about`), а не движок.
+    fn spoke_of_targets(&mut self, at: Instant) {
+        let Alive {
+            layer, about, idle, ..
+        } = self;
+        let Some((fold, say)) = about else {
+            return;
+        };
+        for (target, said) in voiced(layer, fold, *idle, at) {
+            say(&target, said);
+        }
     }
 
     /// Записать букву в ленту — с адресом, который знает только тот, кто её родил: позже его взять
@@ -1471,15 +1537,12 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
     /// ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его свежей семье
     /// дважды и сверяем сказанное. Свидетель предъявляется тут же: молча держать закон значит не
     /// держать его вовсе.
-    fn certified(
-        &mut self,
-        seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>>>],
-        fold: Option<&Fold>,
-        idle: Duration,
-    ) {
+    fn certified(&mut self, seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>>>]) {
         if !self.certify || self.tape.len() < TAPE_WINDOW {
             return;
         }
+        let fold = self.about.as_ref().map(|(fold, _say)| fold);
+        let idle = self.idle;
         let verdict = replays(&self.tape, |mode, letters| {
             replay::<Wide<T::Wire, C::Edge>>(seeds, fold, idle, mode, letters)
         });
@@ -1778,7 +1841,10 @@ mod tests {
         tape.record([TapeLetter::Event {
             to: To::Each,
             event: DetectorEvent::Tick {
-                node: 0,
+                // Номер УЗЛА, а не ноль: первый узел двухсотмиллисекундной сетки от `start`.
+                // Подделать его нулём значило бы записать в ленту сетку, которой нет, — тот же
+                // довод, что снял ноль из `FlowTable`.
+                node: 1,
                 at: start + Duration::from_millis(200),
             },
         }]);

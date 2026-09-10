@@ -189,7 +189,8 @@ impl Serves for QueueSocket {
                 Waited::Idle => break Served::Idle,
                 Waited::Ready => match after_recv(self.recv()) {
                     // Переполнение — ДЫРА, не тишина: см. докблок `after_recv`.
-                    AfterRecv::Torn => break Served::Torn,
+                    // Момент — там, где `Overrun` УВИДЕН: раньше него о потере не знал никто.
+                    AfterRecv::Torn => break Served::Torn(Instant::now()),
                     // Прочий отказ при готовом дескрипторе — работы не было, ждать есть на чём.
                     AfterRecv::Idle => break Served::Idle,
                     AfterRecv::Filled(batch) => {

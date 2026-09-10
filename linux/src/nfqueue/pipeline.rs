@@ -265,7 +265,7 @@ impl<H: NfqHandler> NfqPipeline<H> {
             // `NfqueueBackend::serve` эту клетку не производит (см. докблок `NfqShared::torn`);
             // арм заведён, чтобы матч оставался тотальным на всём алфавите `Served`, а не потому,
             // что этот носитель её видел.
-            reflex_core::serves::Served::Torn => {
+            reflex_core::serves::Served::Torn(_at) => {
                 self.counts
                     .torn
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

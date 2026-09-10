@@ -127,8 +127,8 @@ enum Step {
     Silence(Duration),
     /// Пакет пришёл — через столько после предыдущей буквы.
     Packet(Duration, Vec<u8>),
-    /// Носитель объявил потерю.
-    Tear,
+    /// Носитель объявил потерю — через столько после предыдущей буквы.
+    Tear(Duration),
     /// Сценарий кончился; часы при этом могли уйти вперёд (см. `then_stop_after`).
     Stop(Duration),
 }
@@ -147,6 +147,8 @@ pub struct Paper {
     refusing: bool,
     /// Почему носитель не откроется вовсе.
     shut: Option<String>,
+    /// Насколько эпоха его часов ПОЗАДИ наших.
+    behind: Duration,
     applied: Log<PaperAnswer>,
     injected: Log<Vec<u8>>,
     turns: &'static AtomicU32,
@@ -162,6 +164,7 @@ impl Paper {
             blind: false,
             refusing: false,
             shut: None,
+            behind: Duration::ZERO,
             applied: log(),
             injected: log(),
             turns: Box::leak(Box::new(AtomicU32::new(0))),
@@ -188,9 +191,16 @@ impl Paper {
         self
     }
 
-    /// Носитель объявил потерю — `Served::Torn`.
-    pub fn then_tear(mut self) -> Paper {
-        self.steps.push_back(Step::Tear);
+    /// Носитель объявил потерю — `Served::Torn` в тот же момент, что и предыдущая буква.
+    pub fn then_tear(self) -> Paper {
+        self.then_tear_after(Duration::ZERO)
+    }
+
+    /// Потеря обнаружена ЧЕРЕЗ `how_long`. Момент дыры несёт сам исход (`Served::Torn`), и потому
+    /// носитель волен объявить её в СВОЕЙ эпохе — без этого узлы, перешагнутые дырой, проверить
+    /// было нечем: цикл штамповал её своими часами, и зажим шва прятал любую поданную величину.
+    pub fn then_tear_after(mut self, how_long: Duration) -> Paper {
+        self.steps.push_back(Step::Tear(how_long));
         self
     }
 
@@ -203,6 +213,16 @@ impl Paper {
     /// цикл НЕ выдаёт — выдавать их некому, машина больше не получит ни одного пакета.
     pub fn then_stop_after(mut self, how_long: Duration) -> Paper {
         self.steps.push_back(Step::Stop(how_long));
+        self
+    }
+
+    /// ЭПОХА часов носителя ПОЗАДИ наших. Так живёт записанный провод: его моменты старше нашего
+    /// запуска. Сетка, отмеренная от часов ЦИКЛА, зажимает такие моменты (`at.max(last)`) — и
+    /// перестаёт двигаться вовсе, то есть тишина перестаёт наблюдаться. Обратная эпоха (носитель
+    /// впереди) даёт другую беду — залп узлов на первом наблюдении; он до машин не доходит (машин
+    /// ещё нет) и потому стоит только работы и мусора в ленте.
+    pub fn clock_behind(mut self, how_far: Duration) -> Paper {
+        self.behind = how_far;
         self
     }
 
@@ -253,9 +273,14 @@ impl Paper {
         self.turns
     }
 
-    /// Часы: заводятся при первом обращении.
+    /// Часы: заводятся при первом обращении, в СВОЕЙ эпохе.
     fn clock(&mut self) -> Instant {
-        *self.at.get_or_insert_with(Instant::now)
+        let behind = self.behind;
+        *self.at.get_or_insert_with(|| {
+            Instant::now()
+                .checked_sub(behind)
+                .expect("машина работает дольше сдвига эпохи")
+        })
     }
 
     /// Конец сценария вправе двигать часы (E1) — двигает их тогда, когда становится очередным.
@@ -350,10 +375,14 @@ impl Serves for Paper {
                     self.steps.pop_front();
                     self.settle();
                 }
-                Some(Step::Tear) => {
-                    self.steps.pop_front();
+                Some(Step::Tear(_)) => {
+                    let Some(Step::Tear(after)) = self.steps.pop_front() else {
+                        unreachable!("шаг только что был дырой");
+                    };
+                    let at = at + after;
+                    self.at = Some(at);
                     self.settle();
-                    return Served::Torn;
+                    return Served::Torn(at);
                 }
                 Some(Step::Packet(..)) => {
                     let Some(Step::Packet(after, bytes)) = self.steps.pop_front() else {
@@ -510,6 +539,31 @@ impl Mealy for Crier {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
+            _ => (self, SmallVec::new(), ()),
+        }
+    }
+}
+
+/// Прибор, кричащий на УЗЛЕ СЕТКИ и только на нём. Нужен там, где проверяется адресность улики:
+/// слово, рождённое узлом, носителя не имеет, и рвать ему нечем. Собирается публичной дверью
+/// `own(…)` — то есть ровно так, как это доступно потребителю, а не тестовым чёрным ходом.
+#[derive(Clone, Copy)]
+pub struct Ticker;
+
+impl Ticker {
+    pub fn always() -> Own<Ticker, Edged<Option<Seen>, Option<PaperEdge>>> {
+        own(Ticker)
+    }
+}
+
+impl Mealy for Ticker {
+    type In = DetectorEvent<Edged<Option<Seen>, Option<PaperEdge>>>;
+    type Out = SmallVec<[Distress; 2]>;
+    type Log = ();
+
+    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        match event {
+            DetectorEvent::Tick { .. } => (self, smallvec![Distress::NoBytes], ()),
             _ => (self, SmallVec::new(), ()),
         }
     }

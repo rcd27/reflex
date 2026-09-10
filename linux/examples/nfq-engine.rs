@@ -288,7 +288,7 @@ fn run(mut queue: NfqueueBackend, sender: RawSender, table: Table) {
             Served::Blind => eprintln!("[очередь] ослепла: дескриптор не добыт"),
             // Эта очередь клетку не производит (`nfq` глушит `ENOBUFS`), арм — для тотальности
             // матча на всём алфавите `Served`.
-            Served::Torn => eprintln!("[очередь] потеря: наблюдения были и не дошли"),
+            Served::Torn(_at) => eprintln!("[очередь] потеря: наблюдения были и не дошли"),
         }
     }
 }

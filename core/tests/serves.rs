@@ -150,7 +150,7 @@ fn every_taken_packet_gets_exactly_one_answer() {
     let served = std::iter::from_fn(
         || match queue.serve(Instant::now(), |held| held.seen().len() as u8) {
             Served::Answered(done) => Some(done),
-            Served::Idle | Served::Blind | Served::Torn => None,
+            Served::Idle | Served::Blind | Served::Torn(_) => None,
         },
     )
     .count();
