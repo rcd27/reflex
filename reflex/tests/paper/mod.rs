@@ -545,7 +545,9 @@ impl Mealy for Crier {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            _ => (self, SmallVec::new(), ()),
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -570,7 +572,9 @@ impl Mealy for Ticker {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Tick { .. } => (self, smallvec![Distress::NoBytes], ()),
-            _ => (self, SmallVec::new(), ()),
+            DetectorEvent::Packet { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }

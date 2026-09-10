@@ -2410,7 +2410,9 @@ mod tests {
         fn observe(&mut self, event: &DetectorEvent<Word>) -> SmallVec<[Distress; 2]> {
             match event {
                 DetectorEvent::Packet { .. } => smallvec![Distress::NoBytes],
-                _ => smallvec![],
+                DetectorEvent::Tick { .. }
+                | DetectorEvent::Opaque { .. }
+                | DetectorEvent::Torn { .. } => smallvec![],
             }
         }
 
@@ -2433,7 +2435,9 @@ mod tests {
                     let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     smallvec![Distress::Silence { ms }]
                 }
-                _ => smallvec![],
+                DetectorEvent::Tick { .. }
+                | DetectorEvent::Opaque { .. }
+                | DetectorEvent::Torn { .. } => smallvec![],
             }
         }
 

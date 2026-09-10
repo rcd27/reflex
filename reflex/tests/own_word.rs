@@ -49,7 +49,11 @@ impl Mealy for Prober {
         match event {
             // Любой пакет разговора: предмет теста — СЛОВАРЬ, а не то, что именно прибор ловит.
             DetectorEvent::Packet { .. } => (self, smallvec![Probed::Opened], ()),
-            _ => (self, SmallVec::new(), ()),
+            // Прибор предметно узок, но АЛФАВИТ ЗАКРЫТ: появится пятая буква — компилятор
+            // приведёт сюда, вместо того чтобы дать ей провалиться в «ничего не делаем».
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -67,7 +71,9 @@ impl Mealy for LikePark {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            _ => (self, SmallVec::new(), ()),
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }

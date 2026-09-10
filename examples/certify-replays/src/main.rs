@@ -56,7 +56,9 @@ impl Mealy for Peeking {
                 let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 (self, smallvec![Distress::Silence { ms }], ())
             }
-            _ => (self, smallvec![], ()),
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, smallvec![], ()),
         }
     }
 }
