@@ -88,23 +88,45 @@ impl Terminal for QueueSocket {
     }
 }
 
-/// Что даёт входящее сообщение шву. Чистая функция, отделённая от сокета: перевод сообщения в исход
-/// свидетельствовало бы иначе только живое ядро, а его в тесте нет.
+/// Что даёт входящее СООБЩЕНИЕ шву — уже РАЗОБРАННОЕ из буфера (`wire::incoming_of`). Переполнение
+/// сюда не долетает: оно ловится раньше, на уровне сисколла (`after_recv`, ниже). Чистая функция,
+/// отделённая от сокета: перевод сообщения в исход свидетельствовало бы иначе только живое ядро, а
+/// его в тесте нет.
 pub(crate) enum Taken {
     Packet(Packet),
-    Torn,
     Nothing,
 }
 
-/// `Failed` — ДЫРА (буква `Torn`, не тишина): ядро сказало, что пакеты потеряны, и `Overrun` здесь
-/// честный источник — в отличие от старого пути (крейт `nfq` глушил `ENOBUFS`), `QueueSocket`
-/// различает переполнение буквой (`socket.rs`), и здесь та буква доходит до шва. `Done` — конец
-/// пачки, не потеря: `Nothing`, не `Torn`.
+/// `Failed(code)` — НЕ дыра: это `NLMSG_ERROR` с ненулевым `code`, отказ ядра на НАШУ ЖЕ команду
+/// (bind/params/conntrack-flag — см. `wire.rs:195-201`), а не свидетельство потери пакетов. Прежний
+/// фасад его пропускал (`let Incoming::Packet(packet) = incoming else { continue }`), тем же словом
+/// отвечаем и здесь: пропуск, не дыра. Дыра о потере — отдельный предмет, живёт в `after_recv`, где
+/// ей и место (`QueueError::Overrun`). `Done` — конец пачки, тоже пропуск, не потеря.
 pub(crate) fn taken(incoming: Incoming) -> Taken {
     match incoming {
         Incoming::Packet(packet) => Taken::Packet(packet),
-        Incoming::Failed(_errno) => Taken::Torn,
+        Incoming::Failed(_errno) => Taken::Nothing,
         Incoming::Done => Taken::Nothing,
+    }
+}
+
+/// Что говорит `recv()` о состоянии очереди — чисто, ДО времени (момент штампует `serve`, не
+/// здесь). `Overrun` (`ENOBUFS`) — ДЫРА: ядро сказало, что пакеты потеряны между чтениями, и шов
+/// обязан узнать об этом буквой `Torn`, не молчанием — докблок `queue/mod.rs` называет это прямо:
+/// «крейт `nfq`... глушит `ENOBUFS` — а нам переполнение нужно буквой, не молчанием». Прочий отказ
+/// `recv()` (например `EAGAIN` — дескриптор был готов, но взять было нечего) — обычная тишина: не
+/// путать разные причины неудачи одним `Idle`.
+pub(crate) enum AfterRecv {
+    Torn,
+    Idle,
+    Filled(Vec<Incoming>),
+}
+
+pub(crate) fn after_recv(result: Result<Vec<Incoming>, QueueError>) -> AfterRecv {
+    match result {
+        Ok(batch) => AfterRecv::Filled(batch),
+        Err(QueueError::Overrun) => AfterRecv::Torn,
+        Err(_other) => AfterRecv::Idle,
     }
 }
 
@@ -119,8 +141,8 @@ pub(crate) fn taken(incoming: Incoming) -> Taken {
 ///
 /// ЗАКОН СРОКА (§8, «не возвращаться раньше `until`, кроме как с работой») исполняется РОВНО в
 /// одном месте — единственном `std::thread::sleep` внизу, за пределами цикла. Путь `Answered`/
-/// `Torn` возвращается раньше него: у обоих есть работа (пакет решён либо ядро объявило дыру), и
-/// закон её не касается. Все безответные исходы (`Waited::Idle`, `EAGAIN` при готовом дескрипторе,
+/// `Torn` возвращается раньше него: у обоих есть работа (пакет решён либо `after_recv` увидел
+/// `Overrun`), и закон её не касается. Все безответные исходы (`Waited::Idle`, `AfterRecv::Idle`,
 /// `Waited::Blind`) не возвращаются сами — они лишь дают `loop` значение через `break`, а спит и
 /// возвращает ровно один код ниже. Три копии сна — три копии закона, и четвёртая безответная ветка,
 /// дописанная завтра, забыла бы о нём молча; один код обойти нельзя, не пройдя мимо `break`.
@@ -141,8 +163,8 @@ impl Serves for QueueSocket {
                         let answer = decide(&held);
                         return Served::Answered(self.apply(held.answered(answer)));
                     }
-                    Taken::Torn => return Served::Torn,
-                    // Конец пачки — не потеря: снова к буферу (пуст — к `wait` ниже).
+                    // Конец пачки либо протокольный отказ на нашу команду — не потеря: снова к
+                    // буферу (пуст — к `wait` ниже).
                     Taken::Nothing => continue,
                 }
             }
@@ -153,12 +175,19 @@ impl Serves for QueueSocket {
                 // сделать вид, что варианта нет.
                 Waited::Blind => break Served::Blind,
                 Waited::Idle => break Served::Idle,
-                Waited::Ready => match self.recv() {
-                    // Пусто при готовом дескрипторе — `EAGAIN`: работы не было, ждать есть на чём.
-                    Err(_eagain) => break Served::Idle,
-                    Ok(batch) => {
+                Waited::Ready => match after_recv(self.recv()) {
+                    // Переполнение — ДЫРА, не тишина: см. докблок `after_recv`.
+                    AfterRecv::Torn => break Served::Torn,
+                    // Прочий отказ при готовом дескрипторе — работы не было, ждать есть на чём.
+                    AfterRecv::Idle => break Served::Idle,
+                    AfterRecv::Filled(batch) => {
                         let at = Instant::now();
                         self.pending.extend(batch.into_iter().map(|one| (one, at)));
+                        // Пачка вернулась пустой (только `Done`/`Failed`, без пакета), а срок уже
+                        // прошёл: не крутить ещё один `wait` ради нуля — исход и так `Idle`.
+                        if Instant::now() >= until && self.pending.is_empty() {
+                            break Served::Idle;
+                        }
                     }
                 },
             }
@@ -199,13 +228,31 @@ mod tests {
         }
     }
 
-    /// Разбор входящего в исход шва — ЧИСТО, до всякого сокета. `Failed` есть ДЫРА, а не пустота:
-    /// ядро сказало, что пакеты потеряны, и прибор вправе это знать. Прежде фасад её печатал.
+    /// Разбор входящего в исход шва — ЧИСТО, до всякого сокета. `Failed` — протокольный отказ на
+    /// НАШУ команду (`NLMSG_ERROR`), не дыра о потере пакетов: та ловится раньше, в `after_recv`.
+    /// Прежний фасад пропускал такие сообщения — тем же словом отвечаем и здесь.
     #[test]
-    fn переполнение_читается_дырой_а_конец_пачки_пустотой() {
-        assert!(matches!(taken(Incoming::Failed(105)), Taken::Torn));
+    fn протокольный_отказ_и_конец_пачки_читаются_пустотой() {
+        assert!(matches!(taken(Incoming::Failed(105)), Taken::Nothing));
         assert!(matches!(taken(Incoming::Done), Taken::Nothing));
         assert!(matches!(taken(Incoming::Packet(a_packet())), Taken::Packet(_)));
+    }
+
+    /// Переполнение — ДЫРА (буква `Torn`, не тишина): ядро сказало, что пакеты потеряны между
+    /// чтениями, и прибор вправе это знать (докблок `queue/mod.rs`: крейт `nfq` глушил ровно этот
+    /// случай, и уход от него был предметом переезда). Прочий отказ `recv()` — обычная тишина, не
+    /// дыра: смешивать причины было бы недоверенным сравнением через необъявленный разрыв.
+    #[test]
+    fn переполнение_recv_читается_дырой_а_прочий_отказ_пустотой() {
+        assert!(matches!(after_recv(Err(QueueError::Overrun)), AfterRecv::Torn));
+        assert!(matches!(
+            after_recv(Err(QueueError::Recv(libc::EAGAIN))),
+            AfterRecv::Idle
+        ));
+        match after_recv(Ok(vec![Incoming::Packet(a_packet())])) {
+            AfterRecv::Filled(batch) => assert_eq!(batch.len(), 1),
+            _ => panic!("ожидалась пачка"),
+        }
     }
 }
 
