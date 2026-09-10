@@ -92,6 +92,10 @@ pub struct Timeout<T> {
     idle_after: Duration,
     ceiling: Duration,
     waiting: Waiting,
+    /// Установлено ли ОТСУТСТВИЕ наблюдений в текущем окне. Прячущая буква (дыра, обрезанный кадр)
+    /// его снимает: пропавшие наблюдения могли быть событиями провода, и тогда предмет говорил.
+    /// Восстанавливает НАБЛЮДЕНИЕ, а не время — окно от него свободно от пропажи.
+    idle_certain: bool,
     sees: core::marker::PhantomData<T>,
 }
 
@@ -103,6 +107,7 @@ impl<T> Timeout<T> {
             idle_after,
             ceiling,
             waiting: Waiting::Unarmed,
+            idle_certain: true,
             sees: core::marker::PhantomData,
         }
     }
@@ -113,7 +118,10 @@ impl<T> Timeout<T> {
     fn crossed(&self, opened: Instant, last: Instant, at: Instant) -> Option<Expiry> {
         let silence = last + self.idle_after;
         let patience = opened + self.ceiling;
-        match (at >= silence, at >= patience) {
+        // `Idle` — вывод О МИРЕ из ОТСУТСТВИЯ наблюдений; без установленного отсутствия его нет.
+        // `Ceiling` — утверждение О НАС, из наблюдений мира не выводится вовсе и подделке
+        // недоступно: погасив его, мы разучились бы останавливаться (§7, Д7).
+        match (at >= silence && self.idle_certain, at >= patience) {
             (false, false) => None,
             (true, false) => Some(Expiry::Idle),
             (false, true) => Some(Expiry::Ceiling),
@@ -140,6 +148,7 @@ impl<T: crate::word::Word> Mealy for Timeout<T> {
             (DetectorEvent::Packet { at, .. }, Waiting::Since { opened, .. }) => (
                 Self {
                     waiting: Waiting::Since { opened, last: at },
+                    idle_certain: true,
                     ..self
                 },
                 smallvec![],
@@ -153,6 +162,7 @@ impl<T: crate::word::Word> Mealy for Timeout<T> {
                         opened: at,
                         last: at,
                     },
+                    idle_certain: true,
                     ..self
                 },
                 smallvec![],
@@ -179,10 +189,18 @@ impl<T: crate::word::Word> Mealy for Timeout<T> {
             // предмета (разбор не состоялся раньше, чем стало известно, тому ли разговору байты).
             // Считать его признаком жизни значило бы отодвигать тишину по неутверждаемому факту.
             (DetectorEvent::Opaque { .. }, _) => (self, smallvec![], ()),
-            // Дыра — тем более не признак жизни ИМЕННО этого предмета: она объявлена носителем
-            // целиком (ENOBUFS чужой очереди), не адресована нашему разговору, и не гарантирует
-            // даже того, что пропавшие байты вообще были нашими. Отодвигать тишину по ней значило
-            // бы читать неутверждаемую потерю как утверждённое присутствие.
+            // Дыра признаком жизни предмета не является — отодвигать по ней тишину значило бы
+            // читать неутверждаемую потерю как утверждённое присутствие. Но и молчать о ней нельзя:
+            // отсутствие наблюдений в окне ПЕРЕСТАЛО БЫТЬ УСТАНОВЛЕННЫМ, и `Idle` по такому окну
+            // приписал бы миру нашу слепоту. Гасим вывод о мире, наше нетерпение не трогаем.
+            (event, _) if event.hides_observation() => (
+                Self {
+                    idle_certain: false,
+                    ..self
+                },
+                smallvec![],
+                (),
+            ),
             (DetectorEvent::Torn { .. }, _) => (self, smallvec![], ()),
         }
     }

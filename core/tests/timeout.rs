@@ -178,3 +178,67 @@ fn nothing_ever_seen_means_nothing_to_expire() {
         Vec::<Deadline<Watched>>::new()
     );
 }
+
+/// ДЫРА НЕ ДЕЛАЕТ ИЗ ГОВОРИВШЕГО ПРЕДМЕТА ЗАМОЛЧАВШИЙ.
+///
+/// `Idle` есть вывод О МИРЕ, и выводится он из ОТСУТСТВИЯ наблюдений в окне. Дыра означает, что
+/// отсутствие не установлено: наблюдения были и до нас не дошли. Сказать `Idle` по такому окну —
+/// приписать миру собственную слепоту (§7, Д7).
+#[test]
+fn a_tear_does_not_turn_a_speaking_subject_into_a_silent_one() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0),
+            DetectorEvent::Torn {
+                at: t + Duration::from_millis(200)
+            },
+            tick(t, 400),
+        ]),
+        vec![],
+        "наблюдение в 200мс могло быть — окно с дырой о тишине не свидетельствует"
+    );
+}
+
+/// НАШЕ НЕТЕРПЕНИЕ ДЫРОЙ НЕ ПОДДЕЛЫВАЕТСЯ.
+///
+/// `Ceiling` говорит О НАС: сколько ждём мы. Утверждение о себе не выводится из наблюдений мира
+/// вовсе, и подделать его пропажей чужих байт нельзя — гасить его значило бы разучиться
+/// останавливаться.
+#[test]
+fn a_tear_does_not_touch_our_own_patience() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0),
+            DetectorEvent::Torn {
+                at: t + Duration::from_millis(100)
+            },
+            tick(t, 1_100),
+        ]),
+        vec![ceiling()],
+        "предмет может быть жив, но ждать мы перестали — это про нас"
+    );
+}
+
+/// ЗРЕНИЕ ВОЗВРАЩАЕТ НАБЛЮДЕНИЕ, А НЕ ВРЕМЯ.
+#[test]
+fn an_observation_after_the_tear_restores_the_verdict_about_the_world() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0),
+            DetectorEvent::Torn {
+                at: t + Duration::from_millis(100)
+            },
+            packet(t, 200),
+            tick(t, 400),
+            tick(t, 600),
+        ]),
+        vec![idle()],
+        "окно от нового наблюдения свободно от дыры — прибор обязан снова судить о мире"
+    );
+}
