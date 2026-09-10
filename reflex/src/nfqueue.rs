@@ -25,12 +25,6 @@ use reflex_linux::rawsend::RawSender;
 
 use crate::{Cause, IntoCarrier};
 
-/// Вид края conntrack — наружу через фасад, но ТОЛЬКО отсюда, из линуксового модуля. Прибор,
-/// которому нужен именно `CtEdge`, линуксов по построению; переносимый пишется над [`EdgeView`]
-/// (`crate::EdgeView`, реэкспортирован безусловно). Реэкспорт стоит здесь, а не в `lib.rs`, ровно
-/// затем, чтобы имя линукс-крейта не вернулось в фасад сразу после того, как его оттуда выселили.
-pub use reflex_linux::conntrack::CtEdge;
-
 /// Носитель — очередь netfilter. `engine(Nfqueue::queue(200))` открывает движок над ней.
 pub struct Nfqueue {
     queue: u16,
