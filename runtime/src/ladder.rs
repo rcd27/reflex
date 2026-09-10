@@ -78,8 +78,6 @@
 //! кандидат назван в отчёте своим исходом, и сумма исходов равна числу кандидатов — это и
 //! проверяется прогоном.
 
-use std::sync::Arc;
-
 use futures::stream::{FuturesUnordered, StreamExt};
 
 /// ЛЕЗТЬ ЛИ ДАЛЬШЕ — ось, независимая от того, что установлено. Не `bool`: у булева нет адреса, и
@@ -168,14 +166,26 @@ impl<K, T> Climbed<K, T> {
 /// Уже летящие ветви ДОСЛУШИВАЮТСЯ и после остановки: они состоялись, и выбросить их исход значило
 /// бы отчитаться «не запускали» о том, что запускали. Не долитые — не запускаются вовсе и получают
 /// `NotRun`.
+/// # Почему здесь НЕТ границ `Send`/`Sync`/`'static`
+///
+/// Потому что лестница НЕ СПАВНИТ. Ветви живут на стеке вызывающего: `FuturesUnordered`
+/// опрашивается тут же, в цикле `climb`, и ни одна проба не уезжает в чужой поток. Требовать
+/// потокобезопасности, которой оператор не пользуется, — тот же род беды, что «способность
+/// заявлена и недостижима», только с обратным знаком: ТРЕБОВАНИЕ ЗАЯВЛЕНО И НЕ НУЖНО.
+///
+/// Цена этой лишней строгости ложится не на нас, а на вызывающего, и она не косметическая:
+/// однопоточная оснастка (провод `Rc<dyn Fn>`, счётчик `Cell<usize>`) под неё не подходит, и
+/// автору пришлось бы переписать её на `Arc` и атомики — то есть платить синхронизацией за то,
+/// чего не происходит. Замер потребителя: восемь историй поля, в каждой свой провод.
+///
+/// Начнёт лестница спавнить — границы вернутся ВМЕСТЕ с тем решением и осознанно. Пока не спавнит,
+/// их здесь нет, и держит это прогоном тест с `Rc`/`Cell`: верни границы — он не соберётся.
 pub async fn climb<K, T, F, Fut>(candidates: Vec<K>, width: usize, probe: F) -> Climbed<K, T>
 where
-    K: Clone + Send + 'static,
-    T: Send + 'static,
-    F: Fn(K) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<(T, Climbing), String>> + Send,
+    K: Clone,
+    F: Fn(K) -> Fut,
+    Fut: std::future::Future<Output = Result<(T, Climbing), String>>,
 {
-    let probe = Arc::new(probe);
     let mut outcome: Vec<Option<Tried<T>>> = candidates.iter().map(|_| None).collect();
     let mut halt_at: Option<usize> = None;
     let mut next = 0usize;
@@ -187,9 +197,10 @@ where
         // когда просили не запускать ничего.
         while halt_at.is_none() && flight.len() < width.max(1) && next < candidates.len() {
             let index = next;
-            let candidate = candidates[index].clone();
-            let probe = Arc::clone(&probe);
-            flight.push(async move { (index, probe(candidate).await) });
+            // Проба зовётся ЗДЕСЬ, а будущее кладётся в полёт: так оно вольно заимствовать у
+            // вызывающего (`Rc`, `Cell`, что угодно не-`Send`), и лестница не диктует ему форму.
+            let trying = probe(candidates[index].clone());
+            flight.push(async move { (index, trying.await) });
             next += 1;
         }
 

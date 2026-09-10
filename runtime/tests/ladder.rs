@@ -188,3 +188,43 @@ async fn success_does_not_always_halt_and_a_halt_is_not_always_success() {
         "остановка обязана быть выразима БЕЗ объявления кандидата годным"
     );
 }
+
+/// ПРЕДМЕТ: лестница НЕ ТРЕБУЕТ потокобезопасности, которой не пользуется.
+///
+/// Оснастка здесь однопоточна ПО ПОСТРОЕНИЮ: провод — `Rc<dyn Fn>`, счётчик проб — `Cell<usize>`.
+/// Ни то ни другое не `Send`, и не по лени: у сценария один поток, и синхронизация в нём есть
+/// плата за то, чего не происходит. Замер потребителя, ради которого границы и сняты: восемь
+/// историй поля, в каждой свой провод.
+///
+/// Тест держит отсутствие границ ПРОГОНОМ: верни в подпись `Send`/`Sync`/`'static` — он не
+/// соберётся. Докблок такого не удержал бы.
+#[tokio::test]
+async fn a_single_threaded_probe_needs_no_send() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let tried = Rc::new(Cell::new(0usize));
+    let wire: Rc<dyn Fn(u8) -> bool> = Rc::new(|candidate: u8| candidate == 2);
+
+    let counting = Rc::clone(&tried);
+    let climbed = climb(vec![1u8, 2, 3], 1, move |candidate: u8| {
+        let wire = Rc::clone(&wire);
+        let counting = Rc::clone(&counting);
+        async move {
+            counting.set(counting.get() + 1);
+            Ok(match wire(candidate) {
+                true => ("взяло", Climbing::Halt),
+                false => ("не взяло", Climbing::Onward),
+            })
+        }
+    })
+    .await;
+
+    assert_eq!(climbed.halted().map(|(key, _)| *key), Some(2));
+    assert_eq!(
+        tried.get(),
+        2,
+        "до третьего не дошли — счётчик однопоточной оснастки это и показывает"
+    );
+    assert_eq!(climbed.tried[2].1, Tried::NotRun);
+}
