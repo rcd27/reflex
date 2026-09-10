@@ -7,6 +7,7 @@ mod socket;
 mod terminal;
 mod wire;
 
+pub use crate::conntrack::TimeoutBase;
 pub use socket::{QueueError, QueueSocket};
 pub use terminal::{Answer, Held};
 pub use wire::{

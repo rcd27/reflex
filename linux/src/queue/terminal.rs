@@ -4,14 +4,39 @@
 //! отпущенном пакете.
 
 use reflex_core::capability::CanRemember;
-use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+use reflex_core::held::{Answered, Delivered, Edging, Refused, Terminal};
+
+use crate::conntrack::{CtEdge, TimeoutBase};
 
 use super::socket::{QueueError, QueueSocket};
 use super::wire::Packet;
 
-/// Носитель права ответить: пакет, чей `id` нужен вердикту. Отдельный тип, не голый `Packet` —
-/// носитель едет к терминалу как ПРАВО ответить, а не как данные.
-pub struct Held(pub Packet);
+/// Носитель права ответить: пакет, чей `id` нужен вердикту, и база таймаутов, без которой `CtEdge`
+/// не построить. База едет с носителем, а не с приборами: снимается РАЗ при открытии очереди (см.
+/// `TimeoutBase::read`), а `Edging` спрашивают у сообщения — внутри `serve` бэкенд заимствован на
+/// всё время решения, вторично взять базу у него уже нечем (та же `E0499`, из-за которой очередь
+/// стала `Serves`, а не `Source`).
+pub struct Held {
+    packet: Packet,
+    base: TimeoutBase,
+}
+
+impl Held {
+    pub fn new(packet: Packet, base: TimeoutBase) -> Self {
+        Self { packet, base }
+    }
+}
+
+impl Edging for Held {
+    type Edge = CtEdge;
+
+    /// `None` — у пакета нет вида ядра (`NFQA_CT` не пришёл): поток ещё не в conntrack (первый
+    /// `SYN` вне таблицы). Клетка §7: «не считали» обязано отличаться от «цель не ответила», и
+    /// `map` этого не путает — оборачивает построенный край, не подставляет нулевой.
+    fn edge(&self) -> Option<CtEdge> {
+        self.packet.ct.map(|view| CtEdge::seen(view, self.base))
+    }
+}
 
 /// Чем ответить очереди. `Remembered` несёт следующее состояние в марку — тем же словом, что и
 /// вердикт (см. [`CanRemember`]): раздельные слова допускали бы «ответили, но не запомнили».
@@ -42,7 +67,7 @@ impl Terminal for QueueSocket {
         &mut self,
         answered: Answered<Held, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
-        let id = answered.carrier.0.id;
+        let id = answered.carrier.packet.id;
         let (accept, state) = asked(&answered.answer);
         match self.verdict(id, accept, state) {
             Ok(()) => Ok(Delivered {

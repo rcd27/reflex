@@ -224,7 +224,7 @@ fn certify_remembers(
 > {
     use reflex_core::certify::remembering::{remembers, Recaller};
     use reflex_linux::conntrack::{Dump, Tuple};
-    use reflex_linux::queue::{Held as Carried, Incoming, QueueSocket};
+    use reflex_linux::queue::{Held as Carried, Incoming, QueueSocket, TimeoutBase};
 
     /// Свидетель — ДРУГАЯ дверь: дамп conntrack, ищущий запись потока по кортежу и берущий её марку.
     struct DumpRecaller {
@@ -243,6 +243,12 @@ fn certify_remembers(
 
     let number: u16 = queue.parse().map_err(|_| format!("queue не число: {queue}"))?;
     let mut socket = QueueSocket::open(number).map_err(|why| format!("сокет: {why:?}"))?;
+    // База таймаутов снимается РАЗ, здесь же: `Carried` — носитель, у которого спрашивают `Edging`,
+    // и строить его без базы нечем (она приезжает с носителем, не с бэкендом — см. `queue::Held`).
+    let base = TimeoutBase::read().ok_or_else(|| {
+        "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"
+            .to_string()
+    })?;
 
     // Ждём пакет с ядерным видом: без `NFQA_CT` кортежа для свидетеля нет.
     let (held, tuple, planted) = loop {
@@ -258,7 +264,13 @@ fn certify_remembers(
             let tuple = ct.and_then(|view| view.tuple);
             let planted = ct.map(|view| view.mark).unwrap_or(0);
             match tuple {
-                Some(tuple) => break (Held::new(Carried(packet), Instant::now()), tuple, planted),
+                Some(tuple) => {
+                    break (
+                        Held::new(Carried::new(packet, base), Instant::now()),
+                        tuple,
+                        planted,
+                    )
+                }
                 None => continue, // не IPv4/нет вида — пропускаем, ждём годный
             }
         }
