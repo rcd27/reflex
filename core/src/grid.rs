@@ -20,6 +20,14 @@ fn step_nanos(every: Duration) -> Option<u64> {
     }
 }
 
+/// Номер следующего узла сетки после момента `before`. Возвращает `None` при отсутствии сетки
+/// (нулевой шаг) — узла не будет, какой бы момент ни спросил. Чистая функция: проходящий момент
+/// был бы гарантией «узел наступит», но нулевой шаг отменяет эту гарантию, оставляя только
+/// значение — его нет.
+pub(crate) fn next_due(start: Instant, before: Instant, every: Duration) -> Option<u64> {
+    step_nanos(every).map(|_| due(start, before, every) + 1)
+}
+
 /// Момент `nth`-го узла сетки от `start`. Умножение в `u64` наносекунд, не `Duration * u32`: прежние
 /// копии считали `every * (nth as u32)`, и на миллисекундной сетке `u32` кончается через 49 суток —
 /// сетка завернулась бы в прошлое, все временны́е операторы разом получили бы время назад.
@@ -50,7 +58,7 @@ pub fn nodes_between(
     after: Instant,
     every: Duration,
 ) -> impl Iterator<Item = Instant> {
-    let first = due(start, before, every) + 1;
     let last = due(start, after, every);
+    let first = next_due(start, before, every).unwrap_or_else(|| last + 1);
     (first..=last).map(move |nth| node(start, every, nth))
 }

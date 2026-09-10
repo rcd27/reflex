@@ -217,8 +217,21 @@ fn срок_есть_момент_следующего_узла() {
     let every = Duration::from_millis(100);
     let seam = Interleave::started(start, every);
 
-    assert_eq!(seam.next_node(), start + Duration::from_millis(100));
+    assert_eq!(seam.next_node(), Some(start + Duration::from_millis(100)));
 
     let (seam, _) = seam.idle::<()>(start + Duration::from_millis(250));
-    assert_eq!(seam.next_node(), start + Duration::from_millis(300));
+    assert_eq!(seam.next_node(), Some(start + Duration::from_millis(300)));
+}
+
+/// Нулевой шаг — отсутствие сетки: узла не будет никогда. Два места описывают один закон — `next_node`
+/// и `nodes_up_to` — и оба обязаны сказать одно: при нулевом шаге сетки нет, какая бы точка ни спросила.
+#[test]
+fn нулевой_шаг_даёт_отсутствие_сетки() {
+    let start = Instant::now();
+    let seam = Interleave::started(start, Duration::ZERO);
+
+    assert_eq!(seam.next_node(), None, "узела нет, сетки нет");
+
+    let (_seam, out) = seam.idle::<()>(start + Duration::from_secs(1));
+    assert_eq!(shape(&out, start), vec![], "idle на нулевой сетке не выдаёт узлов");
 }
