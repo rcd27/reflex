@@ -80,10 +80,10 @@ impl reflex_core::mealy::Mealy for RstInstrument {
                     }
                 }
             }
-            // Сброс сам есть момент: часы не нужны. Непонятое — не улика TCP.
-            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
-                (self, smallvec::SmallVec::new())
-            }
+            // Сброс сам есть момент: часы не нужны. Непонятое и дыра — не улика TCP.
+            reflex_core::DetectorEvent::Tick { .. }
+            | reflex_core::DetectorEvent::Opaque { .. }
+            | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
         };
         (state, signals, ())
     }
@@ -294,8 +294,13 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                 | (None, Watch::Fired)
                 | (None, Watch::Ended) => (self, smallvec::SmallVec::new()),
             },
-            // Непонятое не есть ответ цели; часы заводит тик, Opaque состояние не трогает.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            // Непонятое не есть ответ цели; часы заводит тик, Opaque состояние не трогает. Дыра —
+            // тем более не ответ: она объявлена носителем целиком, не этим разговором, и приписать
+            // её байты цели значило бы приписать носителю чужую вину. Часы всё равно тикают
+            // независимо от дыры и оценят срок по факту.
+            reflex_core::DetectorEvent::Opaque { .. } | reflex_core::DetectorEvent::Torn { .. } => {
+                (self, smallvec::SmallVec::new())
+            }
         };
         let noted = before_last.map(|last| Measured {
             since_ms: at.duration_since(last).as_millis() as u32,
@@ -491,6 +496,18 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
             }
             // Непонятое не несёт ни направления, ни длины — окно закрывает только тик.
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            // Дыра рвёт СЧЁТ ОКОН ПОДРЯД: `degraded_run` копит просевшие окна одно за другим, а
+            // окно, где носитель признал потерю, могло просесть не от троттлинга цели, а от
+            // пропавших байт `down`. Сравнить такое окно с соседними значило бы сравнивать
+            // наблюдения через необъявленную дыру — сбрасываем счётчик, планку и текущее окно не
+            // трогаем (та часть подписи дыре не подвластна).
+            reflex_core::DetectorEvent::Torn { .. } => (
+                Self {
+                    degraded_run: 0,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+            ),
         };
         (state, signals, ())
     }
@@ -658,8 +675,12 @@ impl reflex_core::mealy::Mealy for ChokedInstrument {
                     smallvec::smallvec![Distress::NoBytes],
                 ),
             },
-            // Непонятое ни просьбой, ни ответом не является.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            // Непонятое ни просьбой, ни ответом не является. Дыра — тоже не ответ цели: она
+            // объявлена носителем, не этим разговором, а обвинение здесь бьёт по цели ИМЕНЕМ —
+            // приписывать ей чужую потерю нельзя. Терпение всё равно меряет тик, дыра его не держит.
+            reflex_core::DetectorEvent::Opaque { .. } | reflex_core::DetectorEvent::Torn { .. } => {
+                (self, smallvec::SmallVec::new())
+            }
         };
         (state, signals, ())
     }
@@ -1121,9 +1142,9 @@ impl reflex_core::mealy::Mealy for SynDropInstrument {
                 }
             },
             // Порог даёт RTO клиентского ядра, не наш тик.
-            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
-                (self, smallvec::SmallVec::new())
-            }
+            reflex_core::DetectorEvent::Tick { .. }
+            | reflex_core::DetectorEvent::Opaque { .. }
+            | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
         };
         (state, signals, ())
     }

@@ -527,6 +527,9 @@ impl reflex_core::mealy::Mealy for SightingInstrument {
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
             reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new(), ()),
+            // Прибор докладывает готовое `Sighting`, ничего не считая сам; дыра его не несёт —
+            // молчит, как на тике.
+            reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new(), ()),
         }
     }
 }

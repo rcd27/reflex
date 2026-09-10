@@ -100,6 +100,7 @@ impl Mealy for Rst {
             } => (self, smallvec![], ()),
             DetectorEvent::Tick { .. } => (self, smallvec![], ()),
             DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
+            DetectorEvent::Torn { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -194,6 +195,7 @@ impl Mealy for Clock {
             DetectorEvent::Tick { .. } => (self, smallvec![Distress::Rst], ()),
             DetectorEvent::Packet { .. } => (self, smallvec![], ()),
             DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
+            DetectorEvent::Torn { .. } => (self, smallvec![], ()),
         }
     }
 }
@@ -297,6 +299,7 @@ impl Mealy for Level {
             DetectorEvent::Packet { input, .. } => (self, smallvec![input], ()),
             DetectorEvent::Tick { .. } => (self, smallvec![], ()),
             DetectorEvent::Opaque { .. } => (self, smallvec![], ()),
+            DetectorEvent::Torn { .. } => (self, smallvec![], ()),
         }
     }
 }

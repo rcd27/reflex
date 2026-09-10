@@ -300,6 +300,9 @@ fn moment<T>(event: &crate::detector::DetectorEvent<T>) -> Option<Instant> {
         // Провод виден целиком: непонятый кадр занял место в записи и раздвигает сетку тиков так
         // же, как понятый, — иначе плотный поток из одних Opaque читался бы как тишина.
         crate::detector::DetectorEvent::Opaque { at, .. } => Some(*at),
+        // Дыра — тоже место на ленте, не пустота: тот же довод, что у Opaque, иначе плотный поток
+        // дыр читался бы как тишина ровно там, где сетка обязана продолжать идти.
+        crate::detector::DetectorEvent::Torn { at } => Some(*at),
     }
 }
 
@@ -413,7 +416,9 @@ mod tick_tests {
             .iter()
             .filter_map(|e| match e {
                 DetectorEvent::Tick { node, .. } => Some(*node),
-                DetectorEvent::Packet { .. } | DetectorEvent::Opaque { .. } => None,
+                DetectorEvent::Packet { .. }
+                | DetectorEvent::Opaque { .. }
+                | DetectorEvent::Torn { .. } => None,
             })
             .collect();
 

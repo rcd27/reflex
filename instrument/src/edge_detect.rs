@@ -124,7 +124,13 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
         // Прибор края работает по букве `Packet`: тик марки прочесть не может (ct-вид едет с пакетом).
         let edge = match &event {
             DetectorEvent::Packet { input, .. } => &input.edge,
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => {
+            // Дыра — потеря НАШЕЙ очереди (ENOBUFS у NFQUEUE), а решение прибор берёт из
+            // conntrack — счётчик пакетов и возраст ведёт ЯДРО независимо от того, дошёл ли пакет
+            // до нас. Дыра здесь ничего не портит и не прячет: считать нечего, потому что считает
+            // не прибор.
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => {
                 return (self, (None, SmallVec::new()), ());
             }
         };

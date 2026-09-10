@@ -53,7 +53,7 @@ impl Mealy for Counting {
                 unread: self.unread + 1,
                 ..self
             },
-            DetectorEvent::Tick { .. } => self,
+            DetectorEvent::Tick { .. } | DetectorEvent::Torn { .. } => self,
         };
         (
             next,

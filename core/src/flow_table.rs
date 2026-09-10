@@ -140,9 +140,9 @@ mod tests {
                         let next = self.0 + 1;
                         (Counter(next), SmallVec::from_slice(&[Count(next)]), ())
                     }
-                    DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => {
-                        (self, SmallVec::new(), ())
-                    }
+                    DetectorEvent::Tick { .. }
+                    | DetectorEvent::Opaque { .. }
+                    | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
                 }
             }
         }

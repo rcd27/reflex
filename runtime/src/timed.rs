@@ -97,6 +97,8 @@ mod tests {
                     DetectorEvent::Packet { .. } => ('p', millis),
                     DetectorEvent::Tick { .. } => ('t', millis),
                     DetectorEvent::Opaque { .. } => ('o', millis),
+                    // 'x' — дыра: 't' занято тиком, буква не пересекается с остальными.
+                    DetectorEvent::Torn { .. } => ('x', millis),
                 }
             })
             .collect()

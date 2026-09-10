@@ -35,6 +35,11 @@ fn shape<T, K, C>(letters: &[TapeLetter<T, K, C>], start: Instant) -> Vec<(char,
                     event: DetectorEvent::Opaque { .. },
                     ..
                 } => 'o',
+                // 'x' — дыра: 't' занято тиком, буква не пересекается с остальными.
+                TapeLetter::Event {
+                    event: DetectorEvent::Torn { .. },
+                    ..
+                } => 'x',
                 TapeLetter::Answer(_) => 'a',
             };
             (kind, millis)

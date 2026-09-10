@@ -324,7 +324,7 @@ pub trait Probe<W>: Send {
 }
 
 /// Сузить широкое событие до алфавита прибора (§4, `Reads`). Пакет — по букве прибора (`None` —
-/// буква не его, шаг пропускается); тик и непонятое идут всем.
+/// буква не его, шаг пропускается); тик, непонятое и дыра идут всем.
 fn narrow<W, N: Reads<W>>(event: &DetectorEvent<W>) -> Option<DetectorEvent<N>> {
     match event {
         DetectorEvent::Packet { input, at } => {
@@ -335,6 +335,7 @@ fn narrow<W, N: Reads<W>>(event: &DetectorEvent<W>) -> Option<DetectorEvent<N>> 
             at: *at,
         }),
         DetectorEvent::Opaque { why, at } => Some(DetectorEvent::Opaque { why: *why, at: *at }),
+        DetectorEvent::Torn { at } => Some(DetectorEvent::Torn { at: *at }),
     }
 }
 

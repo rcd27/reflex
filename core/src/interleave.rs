@@ -101,6 +101,17 @@ impl Interleave {
         (Self { last: at, ..self }, events)
     }
 
+    /// Дыра объявлена. Симметрична [`Interleave::unread`]: узлы, которые дыра перешагнула, выходят
+    /// ПЕРЕД ней — порядок держит конструкция, а не дисциплина зовущего.
+    pub fn torn<T>(self, at: Instant) -> (Self, Vec<DetectorEvent<T>>) {
+        let at = at.max(self.last);
+        let events = self
+            .nodes_up_to(at)
+            .chain(core::iter::once(DetectorEvent::Torn { at }))
+            .collect();
+        (Self { last: at, ..self }, events)
+    }
+
     /// Узлы сетки с последнего выданного момента по `at` включительно. Номер узла — [`crate::grid::due`]
     /// на его же момент (момент узла попадает на сетку ровно): обратность [`crate::grid::node`] и
     /// [`crate::grid::due`] на ненулевом шаге.

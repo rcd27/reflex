@@ -44,8 +44,11 @@ impl Mealy for Counting {
         match event {
             DetectorEvent::Packet { .. } => (Counting(self.0 + 1), smallvec![Count(self.0)], ()),
             DetectorEvent::Tick { .. } => (self, SmallVec::new(), ()),
-            // Счётчик считает разобранные пакеты; непонятое ему не пакет и не тик — молчит так же.
-            DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
+            // Счётчик считает разобранные пакеты; непонятое и дыра ему не пакет и не тик — молчат
+            // так же.
+            DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
+                (self, SmallVec::new(), ())
+            }
         }
     }
 }

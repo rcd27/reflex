@@ -86,9 +86,9 @@ impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::mealy::Mealy for EpisodeI
                 let reading = self.read(&input, 0);
                 (self, reading.into_iter().collect(), ())
             }
-            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
-                (self, smallvec::SmallVec::new(), ())
-            }
+            reflex_core::DetectorEvent::Tick { .. }
+            | reflex_core::DetectorEvent::Opaque { .. }
+            | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new(), ()),
         }
     }
 }

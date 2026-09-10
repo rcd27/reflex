@@ -19,6 +19,11 @@ pub enum DetectorEvent<T> {
         why: crate::parse::Unread,
         at: Instant,
     },
+    /// Наблюдения были и до нас не дошли — носитель объявил потерю (`ENOBUFS` у очереди ядра,
+    /// переполнение у чужой ОС). Не `Opaque`: там пакет ПРИШЁЛ и не разобрался, здесь он не
+    /// приходил вовсе. Слить их значило бы объявить дыру непонятым пакетом — соврать о наблюдении,
+    /// которого не было. Без этой буквы прибор сравнивает наблюдения через необъявленную дыру.
+    Torn { at: Instant },
 }
 
 impl<T> DetectorEvent<T> {
@@ -29,6 +34,7 @@ impl<T> DetectorEvent<T> {
             DetectorEvent::Packet { at, .. } => *at,
             DetectorEvent::Tick { at, .. } => *at,
             DetectorEvent::Opaque { at, .. } => *at,
+            DetectorEvent::Torn { at } => *at,
         }
     }
 
@@ -180,6 +186,19 @@ where
                     Some(notes),
                 )
             }
+            // Дыра тоже не несёт `Wide` — сужать нечего, проходит как есть, путём тика.
+            DetectorEvent::Torn { at } => {
+                let (stepped, signals, notes) = inner.step(DetectorEvent::Torn { at });
+                (
+                    Self {
+                        inner: stepped,
+                        f,
+                        wide,
+                    },
+                    signals,
+                    Some(notes),
+                )
+            }
         }
     }
 }
@@ -233,8 +252,10 @@ where
         // До шага: сигнал этого наблюдения одевается в него, а не в предыдущее.
         let context = match &event {
             DetectorEvent::Packet { input, .. } => Some(pick(input)),
-            // Непонятое не несёт `I` — прежний контекст остаётся, как на тике.
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } => context,
+            // Непонятое и дыра не несут `I` — прежний контекст остаётся, как на тике.
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => context,
         };
         let (stepped, signals, notes) = inner.step(event);
         let dressed = signals

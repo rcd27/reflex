@@ -97,10 +97,15 @@ impl reflex_core::mealy::Mealy for RetransmitInstrument {
                 },
                 Seen::Closed { .. } => (self, smallvec::SmallVec::new()),
             },
-            // Часов нет: порог даёт RTO клиентского ядра, не наш тик.
-            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
-                (self, smallvec::SmallVec::new())
-            }
+            // Часов нет: порог даёт RTO клиентского ядра, не наш тик. Дыра несёт тот же риск для
+            // `down`, что и непонятое: обе прячут байты цели от счёта, и прибор УЖЕ читает `down==0`
+            // как «цель молчала», не различая честный ноль от недосчитанного (риск назван в `LIES`
+            // как «подозрение, не приговор»). Заводить для дыры отдельный запрет, которого нет для
+            // равной по силе слепоты `Opaque`, значило бы лечить одно незнание дважды разными
+            // законами — вместо одного `LIES` завести два разных источника недосчёта.
+            reflex_core::DetectorEvent::Tick { .. }
+            | reflex_core::DetectorEvent::Opaque { .. }
+            | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
         };
         (state, signals, ())
     }

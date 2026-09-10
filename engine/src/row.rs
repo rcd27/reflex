@@ -234,6 +234,10 @@ impl reflex_core::mealy::Mealy for BlindnessInstrument {
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, (), smallvec::SmallVec::new()),
             reflex_core::DetectorEvent::Opaque { .. } => (self, (), smallvec::SmallVec::new()),
+            // Слепота этого прибора — про `Sight`, уже посчитанный сравнением ядра и плоскости
+            // (`sighted` в свёртке строки); дыра в ЭТОМ потоке событий такого сравнения не несёт и
+            // не подменяет его — прибор остаётся немым, как на тике.
+            reflex_core::DetectorEvent::Torn { .. } => (self, (), smallvec::SmallVec::new()),
         }
     }
 }

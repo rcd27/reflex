@@ -180,7 +180,7 @@ impl Mealy for Tally {
                 opaque: self.opaque + 1,
                 ..self
             },
-            DetectorEvent::Tick { .. } => self,
+            DetectorEvent::Tick { .. } | DetectorEvent::Torn { .. } => self,
         };
         (next, next, ())
     }
@@ -242,7 +242,9 @@ async fn a_feeder_exists_the_seam_carries_opaque_traffic_end_to_end() {
         .iter()
         .filter_map(|event| match event {
             DetectorEvent::Opaque { why, .. } => Some(*why),
-            DetectorEvent::Packet { .. } | DetectorEvent::Tick { .. } => None,
+            DetectorEvent::Packet { .. }
+            | DetectorEvent::Tick { .. }
+            | DetectorEvent::Torn { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -256,7 +258,9 @@ async fn a_feeder_exists_the_seam_carries_opaque_traffic_end_to_end() {
         .iter()
         .filter_map(|event| match event {
             DetectorEvent::Packet { input, .. } => Some(*input),
-            DetectorEvent::Opaque { .. } | DetectorEvent::Tick { .. } => None,
+            DetectorEvent::Opaque { .. }
+            | DetectorEvent::Tick { .. }
+            | DetectorEvent::Torn { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -273,7 +277,9 @@ async fn a_feeder_exists_the_seam_carries_opaque_traffic_end_to_end() {
         .iter()
         .filter_map(|event| match event {
             DetectorEvent::Tick { node, .. } => Some(*node),
-            DetectorEvent::Packet { .. } | DetectorEvent::Opaque { .. } => None,
+            DetectorEvent::Packet { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => None,
         })
         .collect();
     assert_eq!(

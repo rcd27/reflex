@@ -82,9 +82,9 @@ impl reflex_core::mealy::Mealy for TrustInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => self.saw(input),
-            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
-                (self, smallvec::SmallVec::new())
-            }
+            reflex_core::DetectorEvent::Tick { .. }
+            | reflex_core::DetectorEvent::Opaque { .. }
+            | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
         };
         (state, signals, ())
     }

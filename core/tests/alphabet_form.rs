@@ -61,6 +61,7 @@ impl Mealy for Rst {
             DetectorEvent::Packet { .. } => (self, SmallVec::new(), ()),
             DetectorEvent::Tick { .. } => (self, SmallVec::new(), ()),
             DetectorEvent::Opaque { .. } => (self, SmallVec::new(), ()),
+            DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
