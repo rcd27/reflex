@@ -157,3 +157,53 @@ fn release_happens_at_the_first_node_after_the_window_not_exactly_at_its_end() {
         "выпуск на первом узле ПОСЛЕ конца окна"
     );
 }
+
+/// ДЫРА ОТОДВИГАЕТ ОКНО ЗАТИШЬЯ, А НЕ ГАСИТ ВЫПУСК.
+///
+/// Оператор выпускает удержанное, решив, что разговор ЗАТИХ, — а это вывод из отсутствия
+/// наблюдений в окне. Дыра означает, что отсутствие не установлено: пропавшее наблюдение вытеснило
+/// бы удержанное и сдвинуло окно. Гасить выпуск нельзя (значение застряло бы навсегда), поэтому
+/// окно отсчитывается ОТ ДЫРЫ: затишье обязано быть измерено по наблюдаемому участку (§7, Д7).
+#[test]
+fn a_tear_pushes_the_quiet_window_back() {
+    let t = Instant::now();
+    let torn = || DetectorEvent::Torn {
+        at: t + Duration::from_millis(200),
+    };
+
+    assert_eq!(
+        run(vec![
+            DetectorEvent::Packet {
+                input: Beat(1),
+                at: t
+            },
+            torn(),
+            DetectorEvent::Tick {
+                node: 350,
+                at: t + Duration::from_millis(350)
+            },
+        ]),
+        vec![],
+        "окно [0,350] содержит дыру: затишье по нему не измеримо"
+    );
+
+    assert_eq!(
+        run(vec![
+            DetectorEvent::Packet {
+                input: Beat(1),
+                at: t
+            },
+            torn(),
+            DetectorEvent::Tick {
+                node: 350,
+                at: t + Duration::from_millis(350)
+            },
+            DetectorEvent::Tick {
+                node: 550,
+                at: t + Duration::from_millis(550)
+            },
+        ]),
+        vec![Beat(1)],
+        "окно [200,550] свободно от дыры — затишье измерено, удержанное выходит"
+    );
+}
