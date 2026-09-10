@@ -9,11 +9,13 @@
 use std::ffi::CString;
 use std::time::{Duration, Instant};
 
+use reflex::{Cause, IntoCarrier};
 use reflex_core::backend::Sink;
 use reflex_core::capability::{CanHold, CanInject, CanRefuse};
 use reflex_core::command::InjectablePacket;
 use reflex_core::edge::EdgeView;
 use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
+use reflex_core::local::Local;
 use reflex_core::serves::Served;
 use reflex_core::Serves;
 use reflex_instrument::edge::Layout;
@@ -101,10 +103,13 @@ pub struct WinError(pub u32);
 /// РЕАЛЬНЫЙ ДОКТЕСТ НА ЭТОМ ТИПЕ (не на заместителе) — оставлен ради будущей проверки на Windows,
 /// но здесь НЕ ПРОВЕРЯЕТСЯ НИЧЕМ: `compile_fail` проверяет прогон (`cargo test --doc`), а
 /// `WinDivertHandle` существует только под `#[cfg(windows)]`, прогнать которую здесь нечем
-/// (докблок крейта, раздел «что доказывает `cargo check`, а что нет»). Синтаксис требует ещё и
-/// `reflex::Act` — от `reflex` этот крейт нарочно не зависит (докблок `struct WinDivert`, «предел
-/// IntoCarrier»), поэтому фрагмент ниже — ИЛЛЮСТРАЦИЯ, `ignore`, а не `compile_fail`: он не бежит
-/// здесь тоже. Форма ЭТОГО ЖЕ гейта, реально прогнанная (`compile_fail` + мутация), — `crate::witness`.
+/// (докблок крейта, раздел «что доказывает `cargo check`, а что нет»). С задачи 12¾ крейт ЗАВИСИТ
+/// от `reflex` под тем же `cfg(windows)` (`Cargo.toml`), и `reflex::Act` синтаксически достижим —
+/// но это снимает лишь ОДНУ из двух причин `ignore`: вторая, что исполнить доктест здесь нечем
+/// (нет MSVC-линковщика для x86_64-pc-windows-msvc в этой песочнице), не снята и не снимется этой
+/// задачей. `compile_fail` был бы утверждением «здесь проверено падением» — а оно не проверено
+/// НИЧЕМ, поэтому фрагмент ниже остаётся `ignore`: ИЛЛЮСТРАЦИЯ, не бежит здесь тоже. Форма ЭТОГО ЖЕ
+/// гейта, реально прогнанная (`compile_fail` + мутация), — `crate::witness`.
 ///
 /// ```ignore
 /// use reflex::Act;
@@ -468,15 +473,13 @@ impl Drop for WinDivertHandle {
 const MARK_MASK: u32 = 0x0FFF_E000;
 const MARK_TAG: u8 = 0b101;
 
-/// Рецепт носителя WinDivert. Метод и поле называют то же, что называет `reflex::IntoCarrier`
-/// (`open`/`layout`/`name`) — форма СОВПАДАЕТ буквально (та же тройка методов с теми же
-/// сигнатурами), но `impl IntoCarrier for WinDivert` здесь НЕ ПИШЕТСЯ: предел, названный в
-/// докблоке крейта («предел IntoCarrier»), — коротко, дом трейта (крейт `reflex`) не проходит
-/// кросс-проверку на Windows по причине, к WinDivert отношения не имеющей. Связывание — ОДНА
-/// строка (`impl IntoCarrier for WinDivert { type Carrier = Local<WinDivertHandle>; fn
-/// open(self){self.open()} fn layout(&self){self.layout()} fn name(&self){self.name()} }`) в
-/// крейте `reflex`, как только его зависимость от `reflex-engine-nfq` перестанет быть
-/// безусловной — отдельная задача, заведённая этой находкой (10.09.2026), не эта.
+/// Рецепт носителя WinDivert — `impl reflex::IntoCarrier for WinDivert` ниже, БУКВАЛЬНО: та же
+/// дверь `engine(..)`, что и у `Nfqueue` (`reflex/src/nfqueue.rs`). Задача 12 совпала форму вручную
+/// (`open`/`layout`/`name` теми же сигнатурами, но без `impl`) и назвала причину — дом трейта
+/// (крейт `reflex`) не проходил кросс-сборку под Windows. Задача 12½ причину сняла, задача 12¾
+/// написала связывание: РУЧНОЙ формы рядом с реализацией НЕТ — `open`/`layout`/`name` ниже И ЕСТЬ
+/// тело `impl`, не отдельный метод инструмента, случайно совпавший с трейтом сигнатурой (докблок
+/// крейта, раздел «Связано: `IntoCarrier` реализован буквально»).
 pub struct WinDivert {
     filter: String,
 }
@@ -485,10 +488,16 @@ impl WinDivert {
     /// Фильтр на языке WinDivert (не наш язык — компилирует и проверяет его сам `WinDivertOpen`
     /// при открытии, докблок `WinDivertHandle::open`).
     ///
-    /// ИЛЛЮСТРАЦИЯ ЦЕПОЧКИ ПОТРЕБИТЕЛЯ — ТЕКСТ, НЕ ПРОВЕРЯЕМЫЙ ЗДЕСЬ НИЧЕМ (помечен `ignore`, не
-    /// `no_run`: `no_run` обещает «собирается, просто не исполняется», а этот код сегодня НЕ
-    /// СОБИРАЕТСЯ — `reflex::engine` требует `C: IntoCarrier`, а этот крейт его не заявляет,
-    /// докблок выше). Показывает форму, которую даст СВЯЗЫВАНИЕ после отдельной задачи:
+    /// ЦЕПОЧКА ПОТРЕБИТЕЛЯ — ТА ЖЕ ДВЕРЬ, ЧТО У `Nfqueue`, ниже неё ни одна строка не отличается от
+    /// канонического примера `reflex/src/lib.rs` (`engine(Nfqueue::queue(200))...`) — это и есть
+    /// предъявление DoD задачи 12¾: разница между платформами — первая строка. ПОМЕЧЕН `ignore`, НЕ
+    /// `no_run`: с этой задачи `impl IntoCarrier for WinDivert` существует и зависимость на `reflex`
+    /// реальна (`Cargo.toml`, `cfg(windows)`), но ПРОВЕРИТЬ, что фрагмент действительно собирается,
+    /// здесь по-прежнему нечем — `cargo check` доктестов не собирает вовсе (докблок крейта, «что
+    /// доказывает cargo check»), а `cargo test --doc` для x86_64-pc-windows-msvc в этой песочнице
+    /// не запустить (нет MSVC-линковщика). `no_run` был бы утверждением «собирается», не
+    /// проверенным здесь ничем; `ignore` честнее — говорит именно то, что есть: форма названа,
+    /// прогон не поставлен.
     ///
     /// ```ignore
     /// use reflex::*;
@@ -498,9 +507,16 @@ impl WinDivert {
     ///     engine(WinDivert::filter("outbound and tcp.DstPort == 443"))
     ///         .from(Tcp)
     ///         .extract(Sni)
-    ///         .detect(Retransmit::unanswered())
-    ///         .detect(Silence::after(secs(5)))
-    ///         .on(|target, distress| report!("{target}: {distress:?}"))
+    ///         .detect(Retransmit::unanswered()) // быстрое подозрение — по повтору клиента
+    ///         .detect(Silence::after(secs(5)))  // медленное подтверждение — по окну тишины
+    ///         .on(|target, distress| match distress {
+    ///             Distress::Retransmit { after_ms } => {
+    ///                 report!("подозрение на тихий дроп: {target} (повтор через {after_ms}мс)")
+    ///             }
+    ///             Distress::Silence { ms } => report!("подтверждено: {target} молчит {ms}мс"),
+    ///             Distress::NoBytes => report!("подтверждено: {target} не ответил вовсе"),
+    ///             _ => {}
+    ///         })
     ///         .run()
     /// }
     /// ```
@@ -509,21 +525,27 @@ impl WinDivert {
             filter: filter.to_string(),
         }
     }
+}
 
-    /// Форма `IntoCarrier::open`: открыть носитель, обернув его в `Local` — у WinDivert нет
-    /// ядерного дома (§ докблок крейта), край и состояние строит `Local` сам, в юзерспейсе, той же
-    /// формой, что и `reflex::LocalNfqueue` (`reflex/src/nfqueue.rs`) для очереди без conntrack.
-    pub fn open(self) -> Result<reflex_core::local::Local<WinDivertHandle>, WinError> {
-        WinDivertHandle::open(&self.filter).map(reflex_core::local::Local::new)
+impl IntoCarrier for WinDivert {
+    type Carrier = Local<WinDivertHandle>;
+
+    /// Открыть носитель, обернув его в `Local` — у WinDivert нет ядерного дома (докблок крейта),
+    /// край и состояние строит `Local` сам, в юзерспейсе, той же формой, что и
+    /// `reflex::LocalNfqueue` (`reflex/src/nfqueue.rs`) для очереди без conntrack. `WinError` —
+    /// код, не текст (докблок `struct WinError`); в `Cause` он идёт через `{why:?}`, тем же приёмом,
+    /// каким `LocalNfqueue::open` заворачивает `QueueError` (`reflex/src/nfqueue.rs`).
+    fn open(self) -> Result<Local<WinDivertHandle>, Cause> {
+        WinDivertHandle::open(&self.filter)
+            .map(Local::new)
+            .map_err(|why| Cause(format!("{why:?}")))
     }
 
-    /// Форма `IntoCarrier::layout`.
-    pub fn layout(&self) -> Layout {
+    fn layout(&self) -> Layout {
         Layout::new(MARK_MASK, MARK_TAG).expect("умолчание: 15 бит, ненулевой тег")
     }
 
-    /// Форма `IntoCarrier::name`.
-    pub fn name(&self) -> String {
+    fn name(&self) -> String {
         format!("windivert \"{}\"", self.filter)
     }
 }

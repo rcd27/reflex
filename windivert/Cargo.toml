@@ -29,3 +29,12 @@ description = "Носитель WinDivert для reflex — свидетель �
 [dependencies]
 reflex-core = { path = "../core" }
 reflex-instrument = { path = "../instrument" }
+
+# `IntoCarrier` ЖИВЁТ В `reflex` (задача 12¾, 10.09.2026) — раньше эта строка была бы недостижима:
+# `cargo check -p reflex --target x86_64-pc-windows-msvc` падал (23 ошибки в `nfq`, докблок
+# `src/lib.rs` цитирует дословно), а соседняя задача 12½ эту причину сняла. `cfg(windows)`, А НЕ
+# БЕЗУСЛОВНО — на Linux этот крейт пуст (`#[cfg(windows)] mod carrier;` в `src/lib.rs`), и тянуть
+# туда весь фасад (движок, приборы, разбор провода) незачем: `cargo build --workspace` на Linux эту
+# зависимость просто не видит.
+[target.'cfg(windows)'.dependencies]
+reflex = { path = "../reflex" }
