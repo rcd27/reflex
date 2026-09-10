@@ -66,5 +66,6 @@ members = [
     "examples/sever-silent-drop",
     "examples/bring-your-own-detector",
     "examples/certify-replays",
+    "examples/replay-recording",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately

@@ -181,3 +181,54 @@ fn тихий_дроп_из_записи_подтверждается_возра
         "окно в пять секунд обязано идти по часам ФАЙЛА, а не по нашим: прогон занял {spent:?}"
     );
 }
+
+/// ПРЕДМЕТ: два прибора над одним проводом говорят КАЖДЫЙ СВОЁ. Быстрый (`Retransmit`) —
+/// подозрение по повтору клиента, медленный (`Silence`) — подтверждение по возрасту разговора.
+/// Склейку «подозрение → подтверждение» пишет потребитель, и для этого ему нужны ОБА слова.
+///
+/// Тест заведён находкой примера: на той же записи цепочка с двумя приборами сказала только
+/// повтор, хотя прибор тишины на ней же в одиночку говорит `NoBytes`.
+#[test]
+fn два_прибора_над_одной_записью_говорят_каждый_своё() {
+    let hello = reflex_core::tls::build_client_hello("example.com");
+    let path = saved(
+        "both",
+        &recording(&[
+            (0, from_client(0, TcpFlags::SYN, &[])),
+            (20_000, from_target(0, 1, TcpFlags::SYN | TcpFlags::ACK)),
+            (25_000, from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello)),
+            (
+                1_025_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
+            (
+                3_025_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
+            (
+                7_025_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
+        ]),
+    );
+
+    let heard = std::sync::Mutex::new(Vec::new());
+    let report = pcap(&path)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Retransmit::unanswered())
+        .detect(Silence::after(secs(5)))
+        .on(|_target: &str, distress| heard.lock().expect("журнал не отравлен").push(distress))
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard.iter().any(|d| matches!(d, Distress::Retransmit { .. })),
+        "быстрый прибор обязан высказаться; услышано: {heard:?}, отчёт: {report:?}"
+    );
+    assert!(
+        heard.contains(&Distress::NoBytes),
+        "медленный прибор обязан подтвердить — в одиночку на этой же записи он это делает; \
+         услышано: {heard:?}"
+    );
+}

@@ -1,0 +1,15 @@
+[package]
+name = "replay-recording"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: прогнать снятую запись через те же приборы, что и живой провод"
+
+# ЗАВИСИМОСТЬ ОДНА — и здесь это не общее правило, а ПРОВЕРКА двери записи: понадобься примеру
+# `reflex-core` ради чтения файла, дверь была бы не дверью, а полуфабрикатом.
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "replay-recording"
+path = "src/main.rs"
