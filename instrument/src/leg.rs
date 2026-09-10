@@ -133,3 +133,63 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> crate::Instrument for LinkIn
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reflex_core::mealy::Mealy;
+    use reflex_core::DetectorEvent;
+
+    /// Окно канала, как его видит прибор: сколько разговоров несёт и сколько из них стоит.
+    /// Отдельный тип, а не кортеж: прибор спрашивает ДВА независимых закона (`Carrying`,
+    /// `Stalled`), и подать их одним кортежем значило бы связать то, что фреймворк развёл.
+    #[derive(Debug, Clone, Copy)]
+    struct Window {
+        carrying: usize,
+        stalled: usize,
+    }
+
+    impl crate::ask::Carrying for Window {
+        fn carrying(&self) -> usize {
+            self.carrying
+        }
+    }
+
+    impl crate::ask::Stalled for Window {
+        fn stalled(&self) -> usize {
+            self.stalled
+        }
+    }
+
+    fn said(carrying: usize, stalled: usize) -> Vec<Leg> {
+        let (_instrument, out, ()) = LinkInstrument::<Window>::new().step(DetectorEvent::Packet {
+            input: Window { carrying, stalled },
+            at: std::time::Instant::now(),
+        });
+        out.into_iter().collect()
+    }
+
+    /// ПРЕДМЕТ: различитель ПРОПОРЦИОНАЛЬНЫЙ, и порог — ровно половина. Это единственный прибор,
+    /// отвечающий «а не мы ли виноваты»: при заторе стоят ВСЕ, при цензуре — избирательно.
+    #[test]
+    fn half_the_talks_stalled_is_a_stalled_leg() {
+        assert_eq!(said(10, 5), vec![Leg::Stalled], "ровно половина — уже затор");
+        assert_eq!(said(10, 9), vec![Leg::Stalled]);
+    }
+
+    /// Вторая половина пары: избирательная беда ногу не обвиняет. Без неё тест был бы зелен и на
+    /// приборе, который кричит «затор» всегда.
+    #[test]
+    fn a_few_stalled_talks_do_not_accuse_the_leg() {
+        assert_eq!(said(10, 4), vec![Leg::Healthy]);
+        assert_eq!(said(10, 0), vec![Leg::Healthy]);
+    }
+
+    /// Пустое окно НЕ СУДИТСЯ: доли без знаменателя нет. «Ноль из нуля» есть отсутствие
+    /// наблюдения, а не здоровая нога — скажи прибор `Healthy`, и молчащий канал выглядел бы
+    /// исправным ровно тогда, когда о нём ничего не известно (§7).
+    #[test]
+    fn an_empty_window_is_not_a_healthy_leg() {
+        assert!(said(0, 0).is_empty());
+    }
+}
