@@ -538,20 +538,32 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                     true => (emptied, smallvec::smallvec![Distress::Throttled { bps }]),
                 }
             }
-            // Непонятое не несёт ни направления, ни длины — окно закрывает только тик.
-            reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-            // Дыра рвёт СЧЁТ ОКОН ПОДРЯД: `degraded_run` копит просевшие окна одно за другим, а
-            // окно, где носитель признал потерю, могло просесть не от троттлинга цели, а от
-            // пропавших байт `down`. Сравнить такое окно с соседними значило бы сравнивать
-            // наблюдения через необъявленную дыру — сбрасываем счётчик, планку и текущее окно не
-            // трогаем (та часть подписи дыре не подвластна).
-            reflex_core::DetectorEvent::Torn { .. } => (
+            // ПРЯЧУЩАЯ БУКВА РВЁТ СЧЁТ ОКОН ПОДРЯД. `degraded_run` копит просевшие окна одно за
+            // другим, а окно, в котором наблюдения ПРОПАЛИ (дыра носителя либо обрезанный кадр),
+            // могло просесть не от троттлинга цели, а от недосчитанных байт `down`. Сравнить такое
+            // окно с соседними значило бы сравнивать наблюдения через слепоту — и объявить
+            // `Distress::Throttled` о мире по собственному незрению. Сбрасываем счётчик; планку и
+            // текущее окно не трогаем (та часть подписи пропаже не подвластна).
+            //
+            // Критерий — ОДИН на дерево (`DetectorEvent::hides_observation`, §7, Д7), а не список
+            // букв здесь: прежде прибор перечислял их сам и знал только `Torn`, оттого обрезанный
+            // кадр съедал байты, счётчик подряд не рвался и рождалось ЛОЖНОЕ обвинение. Гард стоит
+            // ВЫШЕ разбора по имени — иначе `Opaque { why: Truncated }` уходил бы в тождество
+            // ниже. Проверено тестом
+            // `detect::throttled_and_choked_tests::a_truncated_frame_does_not_become_a_throttling_accusation`.
+            hiding if hiding.hides_observation() => (
                 Self {
                     degraded_run: 0,
                     ..self
                 },
                 smallvec::SmallVec::new(),
             ),
+            // Непонятое, наблюдения НЕ прячущее (чужой протокол, не IPv4), не несёт ни направления,
+            // ни длины — окно закрывает только тик. `Torn` сюда не доходит: его целиком забирает
+            // гард выше, а назван он для полноты `match`, которую гардами не доказать.
+            reflex_core::DetectorEvent::Opaque { .. } | reflex_core::DetectorEvent::Torn { .. } => {
+                (self, smallvec::SmallVec::new())
+            }
         };
         (state, signals, ())
     }
@@ -938,6 +950,9 @@ mod throttled_and_choked_tests {
         Packet(In),
         Tick,
         Torn,
+        /// Непонятое с ПРИЧИНОЙ: `Truncated` прячет наблюдение, `NotOurProtocol` — нет. Причина
+        /// параметром, а не двумя шагами: тесты ниже проверяют именно РАЗНИЦУ между ними.
+        Opaque(reflex_core::parse::Unread),
     }
 
     /// Прогон со сценарием. Алфавит берётся у прибора (`In`): соседи по модулю на разных
@@ -957,6 +972,7 @@ mod throttled_and_choked_tests {
                         Step::Packet(seen) => DetectorEvent::Packet { input: seen, at },
                         Step::Tick => DetectorEvent::Tick { node: after_ms, at },
                         Step::Torn => DetectorEvent::Torn { at },
+                        Step::Opaque(why) => DetectorEvent::Opaque { why, at },
                     };
                     let (stepped, signals, _) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())
@@ -1036,6 +1052,69 @@ mod throttled_and_choked_tests {
             said,
             Vec::<Distress>::new(),
             "дыра обязана была сбросить счёт подряд идущих просевших окон"
+        );
+    }
+
+    /// ОБРЕЗАННЫЙ КАДР РВЁТ СЧЁТ ТАК ЖЕ, КАК ДЫРА, — и по той же причине: байты `down` пропали не
+    /// потому, что цель их не прислала, а потому, что мы их не прочли. Сценарий буквально повторяет
+    /// [`a_tear_breaks_the_degraded_run_so_far_the_target_is_not_accused`], заменив `Torn` на
+    /// `Opaque { why: Truncated }`: прибор перечислял буквы САМ и знал только `Torn`, оттого
+    /// обрезанный кадр давал ЛОЖНОЕ `Throttled` — беду, выдуманную из собственной слепоты.
+    ///
+    /// Мутация: убрать гард `hides_observation()` (или опустить его ниже арма `Opaque`) — тест
+    /// краснеет одним `Distress::Throttled`.
+    #[test]
+    fn a_truncated_frame_does_not_become_a_throttling_accusation() {
+        let said = run(
+            ThrottledInstrument::over(Duration::from_secs(1)),
+            vec![
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(1_000_000)), 10),
+                (Step::Tick, 1_000), // окно 1 закрывает планку — просадки ещё нет
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000), // окно 2 просело: счёт подряд идущих = 1
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000), // окно 3 просело: счёт = 2 (до приговора одно)
+                (Step::Opaque(reflex_core::parse::Unread::Truncated), 3_050),
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000), // окно 4 просело: счёт = 1 (был бы 3 и приговор)
+                (Step::Packet(SeenTcp::received(40_000)), 4_100),
+                (Step::Tick, 5_000), // окно 5 просело: счёт = 2 — порога всё ещё нет
+            ],
+        );
+
+        assert_eq!(
+            said,
+            Vec::<Distress>::new(),
+            "обрезанный кадр прячет наблюдение — обвинять по такому окну значит винить свою слепоту"
+        );
+    }
+
+    /// ВТОРАЯ ПОЛОВИНА ЗАКОНА, без которой первая прошла бы и на «гасим всякое `Opaque`»: чужой
+    /// протокол наблюдения НЕ прячет (ответом в нашем разговоре такой кадр быть не мог), счёт окон
+    /// подряд он не рвёт — и те же четыре просевших окна обвинение дают.
+    #[test]
+    fn an_alien_protocol_does_not_break_the_degraded_run() {
+        let said = run(
+            ThrottledInstrument::over(Duration::from_secs(1)),
+            vec![
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(1_000_000)), 10),
+                (Step::Tick, 1_000),
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000),
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000),
+                (Step::Opaque(reflex_core::parse::Unread::NotOurProtocol), 3_050),
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000),
+            ],
+        );
+
+        assert_eq!(
+            said,
+            vec![Distress::Throttled { bps: 40_000 }],
+            "чужой протокол слепотой не является — счёт окон он рвать не вправе"
         );
     }
 

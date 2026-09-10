@@ -6,6 +6,7 @@
 
 use reflex_core::detector::DetectorEvent;
 use reflex_core::mealy::Mealy;
+use reflex_core::parse::Unread;
 use reflex_core::timeout::{Deadline, Expiry, Timeout};
 use reflex_core::word::{Base, Word};
 use std::time::{Duration, Instant};
@@ -240,5 +241,55 @@ fn an_observation_after_the_tear_restores_the_verdict_about_the_world() {
         ]),
         vec![idle()],
         "окно от нового наблюдения свободно от дыры — прибор обязан снова судить о мире"
+    );
+}
+
+/// ОБРЕЗАННЫЙ КАДР ПРЯЧЕТ НАБЛЮДЕНИЕ ТАК ЖЕ, КАК ДЫРА.
+///
+/// `Opaque { why: Truncated }` — кадр БЫЛ и мог нести ответ цели; прочесть его не удалось. Окно с
+/// ним об отсутствии наблюдений не свидетельствует, и `Idle` («предмет замолчал» — утверждение О
+/// МИРЕ) по такому окну приписал бы миру нашу слепоту.
+///
+/// Проверяет ПОРЯДОК АРМОВ в `Timeout::step`, а не только критерий: разбор по имени
+/// (`DetectorEvent::Opaque { .. }`) стоял ВЫШЕ гарда `hides_observation()`, и гард видел одну лишь
+/// `Torn`. Мутация — вернуть арм `Opaque` наверх; тест краснеет, `a_tear_…` остаётся зелёным.
+#[test]
+fn a_truncated_frame_hides_the_verdict_about_the_world() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0),
+            DetectorEvent::Opaque {
+                why: Unread::Truncated,
+                at: t + Duration::from_millis(200),
+            },
+            tick(t, 400),
+        ]),
+        vec![],
+        "наблюдение в 200мс могло быть — окно с обрезанным кадром о тишине не свидетельствует"
+    );
+}
+
+/// ЧУЖОЙ ПРОТОКОЛ ЗРЕНИЯ НЕ ОТНИМАЕТ.
+///
+/// Вторая половина того же закона, без которой первая прошла бы и на «гасим всякое `Opaque`»:
+/// `NotIpv4`/`NotOurProtocol` — законное и вечное свойство чужого трафика, ответом в НАШЕМ
+/// разговоре такой кадр быть не мог. Ослепнуть на нём значило бы онеметь зря.
+#[test]
+fn an_alien_protocol_does_not_blind_the_verdict_about_the_world() {
+    let t = Instant::now();
+
+    assert_eq!(
+        run(vec![
+            packet(t, 0),
+            DetectorEvent::Opaque {
+                why: Unread::NotOurProtocol,
+                at: t + Duration::from_millis(200),
+            },
+            tick(t, 400),
+        ]),
+        vec![idle()],
+        "чужой протокол ответом быть не мог — окно осталось свободным от пропажи"
     );
 }
