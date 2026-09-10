@@ -83,37 +83,61 @@ fn вопрос_над_очередью_не_собирается() {
     let source = dir.join("ask_over_queue.rs");
     std::fs::write(&source, sample).expect("образец записан");
 
-    let deps = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("корень воркспейса")
-        .join("target/debug/deps");
-    // Свежайший артефакт крейта: в `deps` их лежит по нескольку (разные профили и прогоны), и
-    // `--extern` по имени выбрать не сможет — откажется с E0464, то есть НЕ по нашей причине.
-    let newest = |crate_name: &str| -> std::path::PathBuf {
-        let prefix = format!("lib{crate_name}-");
-        std::fs::read_dir(&deps)
-            .expect("каталог артефактов")
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension().is_some_and(|kind| kind == "rlib")
-                    && path
-                        .file_name()
-                        .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
-            })
-            .max_by_key(|path| {
-                std::fs::metadata(path)
-                    .and_then(|meta| meta.modified())
-                    .expect("время правки артефакта")
-            })
-            .unwrap_or_else(|| panic!("артефакт {crate_name} не найден в {}", deps.display()))
-    };
+    // АРТЕФАКТ НАЗЫВАЕТ САМА СБОРКА, А НЕ ВРЕМЯ ПРАВКИ ФАЙЛА.
+    //
+    // Прежде брался свежайший `libreflex_linux-*.rlib` в `deps`, и оракул врал: любой прогон с
+    // другим набором фич (`cargo test -p reflex-linux --features conntrack`) кладёт туда СВОЙ
+    // артефакт, тот оказывается новее, и образец падает с `cannot find nfqueue` — отказом по
+    // ЧУЖОЙ причине, неотличимым от нашего по вердикту «не собралось». Одна такая ложная краснота
+    // уже стоила разбирательства. Время правки — следствие сборки, а не она сама.
+    //
+    // `--message-format=json` называет файлы ТОЙ сборки, что здесь запрошена, вместе с её фичами,
+    // и делает это даже когда собирать нечего (`fresh: true` — сообщение приходит всё равно).
     let built = std::process::Command::new(env!("CARGO"))
-        .args(["build", "-p", "reflex", "-p", "reflex-linux"])
+        .args([
+            "build",
+            "-p",
+            "reflex",
+            "-p",
+            "reflex-linux",
+            "--message-format=json",
+        ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("сборка зависимостей образца");
     assert!(built.status.success(), "зависимости образца не собрались");
+    let manifest = String::from_utf8_lossy(&built.stdout);
+
+    // Разбор без serde: крейту он не нужен ни для чего другого, а искомое — одна строка внутри
+    // одного массива. Ошибка формы даст `panic` с именем крейта, а не молчаливо чужой артефакт.
+    // Имя ЦЕЛИ, не пакета: cargo зовёт её `reflex_linux` там, где пакет зовётся
+    // `reflex-linux`, и ровно это имя стоит в `--extern` ниже — одно имя на оба употребления.
+    let artifact = |target: &str| -> std::path::PathBuf {
+        let mark = format!("\"name\":\"{target}\"");
+        manifest
+            .lines()
+            .filter(|line| line.contains("\"reason\":\"compiler-artifact\"") && line.contains(&mark))
+            .find_map(|line| {
+                let tail = line.split("\"filenames\":[").nth(1)?;
+                tail.split(&[',', ']'][..])
+                    .map(|name| name.trim_matches(&['"', ' '][..]))
+                    // ЧЕРЕЗ `.rmeta` В `deps`, А НЕ ЧЕРЕЗ НАЗВАННЫЙ `.rlib`.
+                    //
+                    // Артефакт члена воркспейса cargo ПОДНИМАЕТ: называет `target/debug/libX.rlib`
+                    // (копия без хеша) и рядом — `deps/libX-ХЕШ.rmeta`. Взять поднятую копию
+                    // значит увести `-L` из `deps`, где лежат транзитивные зависимости, и
+                    // получить E0460 «возможно, более новая версия крейта» — снова отказ по ЧУЖОЙ
+                    // причине. Хешированный `.rlib` (жёсткая ссылка на ту же копию) в `filenames`
+                    // не назван, но стоит рядом с `.rmeta` и зовётся так же.
+                    .find(|name| name.ends_with(".rmeta") && name.contains("/deps/"))
+                    .map(|meta| std::path::PathBuf::from(meta).with_extension("rlib"))
+                    .filter(|rlib| rlib.exists())
+            })
+            .unwrap_or_else(|| panic!("сборка не назвала rlib цели {target}"))
+    };
+    let reflex_rlib = artifact("reflex");
+    let linux_rlib = artifact("reflex_linux");
+    let deps = linux_rlib.parent().expect("каталог артефактов").to_path_buf();
 
     let compiled = std::process::Command::new("rustc")
         .arg(&source)
@@ -121,9 +145,9 @@ fn вопрос_над_очередью_не_собирается() {
         .arg("-L")
         .arg(&deps)
         .arg("--extern")
-        .arg(format!("reflex={}", newest("reflex").display()))
+        .arg(format!("reflex={}", reflex_rlib.display()))
         .arg("--extern")
-        .arg(format!("reflex_linux={}", newest("reflex_linux").display()))
+        .arg(format!("reflex_linux={}", linux_rlib.display()))
         .arg("-o")
         .arg(dir.join("ask_over_queue"))
         .output()
