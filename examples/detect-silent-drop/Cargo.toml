@@ -15,6 +15,12 @@ reflex = { path = "../../reflex" }
 reflex-linux = { path = "../../linux", features = ["nfqueue", "conntrack"] }
 reflex-instrument = { path = "../../instrument" }
 reflex-core = { path = "../../core" }
+# ВИТРИНА НОСИТЕЛЯ WINDIVERT (Task 12) — `src/bin/windows.rs`, под `#[cfg(windows)]`. Собирается
+# пустой на Linux (крейт `reflex-windivert` сам пуст на Linux, докблок его `Cargo.toml`), и на
+# Windows сегодня не идёт через фасад (`reflex::IntoCarrier` не связан, докблок
+# `reflex_windivert::lib`, «предел») — бинарь честно показывает ПРЯМОЕ использование носителя, не
+# цепочку фасада, которой сегодня нет.
+reflex-windivert = { path = "../../windivert" }
 
 [[bin]]
 name = "detect-silent-drop"

@@ -1,0 +1,486 @@
+//! Носитель — владение, не наблюдение (§9, докблок крейта): `WinDivertRecvEx` изымает пакет из
+//! стека, `WinDivertSend` возвращает, не послать = уронить. Отсюда [`Serves`], а не `Source` — той
+//! же причиной, что и у очереди ядра (`reflex_core::held`, `linux/src/queue/terminal.rs`).
+//!
+//! Крейт целиком собирается только под Windows — этот модуль подключён `#[cfg(windows)]` в
+//! `lib.rs`, и здесь, единственном месте крейта, тела вызовов НАСТОЯЩИЕ (не заглушки): открытие,
+//! приём со сроком, отдача решения.
+
+use std::ffi::CString;
+use std::time::{Duration, Instant};
+
+use reflex_core::backend::Sink;
+use reflex_core::capability::{CanHold, CanInject, CanRefuse};
+use reflex_core::command::InjectablePacket;
+use reflex_core::edge::EdgeView;
+use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
+use reflex_core::serves::Served;
+use reflex_core::Serves;
+use reflex_instrument::edge::Layout;
+
+use crate::ffi;
+
+/// Тип-ЗАГЛУШКА для `Serves::Edge` — НАЗВАН заместителем прямо в докблоке, а не только в отчёте
+/// (по требованию контролёра, 10.09.2026). У WinDivert НЕТ своего дома (в отличие от `QueueSocket`
+/// + conntrack на Linux): заводить его здесь значило бы завести ВТОРОЙ учёт того же предмета, что
+/// уже пишет `reflex_core::local::Local` (докблок `core::local`: «свой счёт заводить нельзя, он
+/// уже написан один раз» — то же решение, каким задача 11 устроила местный носитель очереди ядра).
+///
+/// `Serves::serve` этого носителя ВСЕГДА отдаёт `decide` `None` — тип нужен ТОЛЬКО чтобы заполнить
+/// ассоциированный тип законным значением (`EdgeView`). Экземпляра `NoEdge` не существует, и это
+/// доказывает КОМПИЛЯТОР, а не комментарий: `enum` без вариантов необитаем, `match *self {}`
+/// исчерпывающ ровно потому, что вариантов нет.
+#[derive(Debug, Clone, Copy)]
+pub enum NoEdge {}
+
+impl EdgeView for NoEdge {
+    fn down_packets(&self) -> Option<u64> {
+        match *self {}
+    }
+    fn up_packets(&self) -> Option<u64> {
+        match *self {}
+    }
+    fn down_bytes(&self) -> Option<u64> {
+        match *self {}
+    }
+    fn up_bytes(&self) -> Option<u64> {
+        match *self {}
+    }
+    fn idle(&self) -> Option<Duration> {
+        match *self {}
+    }
+    fn age(&self) -> Option<Duration> {
+        match *self {}
+    }
+    fn mark(&self) -> u32 {
+        match *self {}
+    }
+}
+
+/// Носитель права ответа: пакет, изъятый драйвером, и адрес, под которым его изъяли — `WinDivertSend`
+/// просит ТОТ ЖЕ адрес назад, если пакет отпускается (`doc/windivert.html` §5.7: «pAddr: The address
+/// of the injected packet», о повторной инъекции изъятого — без изменений).
+pub struct Recved {
+    packet: Vec<u8>,
+    addr: ffi::WinDivertAddress,
+}
+
+impl Observed for Recved {
+    fn payload(&self) -> &[u8] {
+        &self.packet
+    }
+}
+
+/// Чем этот носитель отвечает удержанному. Два слова, не три: память на крае (`Remembered` у
+/// `QueueSocket`) здесь взять неоткуда — родного дома нет (см. [`NoEdge`]), а его поверх строит
+/// `Local` СВОИМ словарём (`reflex_core::local::Answer`), не этим.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    Pass,
+    Stop,
+}
+
+/// Отказ `WinDivertSend`/`WinDivertOpen` — код `GetLastError()`, не текст: тексты `FormatMessage`
+/// сюда не тащим (то же решение, что и `QueueError` в `linux/src/queue/socket.rs` — число, не
+/// перевод числа в строку, это дело отчёта, не типа).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WinError(pub u32);
+
+/// Носитель — открытый хэндл WinDivert. Захват и инъекция идут ОДНИМ хэндлом (не парой, как у
+/// `NfqueueCarrier` — очередь netfilter + отдельный сырой сокет инъекции): `WinDivertSend` на ТОМ
+/// ЖЕ хэндле, которым принят пакет, и есть штатный путь и отпускания, и инъекции произвольного
+/// пакета (`doc/windivert.html` §5.7 — `pPacket`/`pAddr` не обязаны происходить из `WinDivertRecv`
+/// этого же вызова: «The injected packet may be one received from WinDivertRecv(), or a modified
+/// version, or a completely new packet»).
+///
+/// СПРОСИТЬ КОНТУР НЕ УМЕЕТ — дверь одна, вердикт изъятому пакету (`Answer::Pass`/`Stop`), к
+/// постороннему собеседнику она не говорит. `CanAsk` не заявлен, и это сказано ОТСУТСТВИЕМ impl,
+/// а не константным `None` в нём — заглушка, запрещённая §9.1 (докблок крейта, «Решения
+/// контроллера», п.3).
+///
+/// РЕАЛЬНЫЙ ДОКТЕСТ НА ЭТОМ ТИПЕ (не на заместителе) — оставлен ради будущей проверки на Windows,
+/// но здесь НЕ ПРОВЕРЯЕТСЯ НИЧЕМ: `compile_fail` проверяет прогон (`cargo test --doc`), а
+/// `WinDivertHandle` существует только под `#[cfg(windows)]`, прогнать которую здесь нечем
+/// (докблок крейта, раздел «что доказывает `cargo check`, а что нет»). Синтаксис требует ещё и
+/// `reflex::Act` — от `reflex` этот крейт нарочно не зависит (докблок `struct WinDivert`, «предел
+/// IntoCarrier»), поэтому фрагмент ниже — ИЛЛЮСТРАЦИЯ, `ignore`, а не `compile_fail`: он не бежит
+/// здесь тоже. Форма ЭТОГО ЖЕ гейта, реально прогнанная (`compile_fail` + мутация), — `crate::witness`.
+///
+/// ```ignore
+/// use reflex::Act;
+/// use reflex_windivert::WinDivertHandle;
+/// let _ = Act::<WinDivertHandle>::ask(1);
+/// ```
+pub struct WinDivertHandle {
+    handle: ffi::Handle,
+}
+
+// SAFETY: хэндл WinDivert — обычный дескриптор ядра Windows (как файловый HANDLE), владение им не
+// подразумевает потокового аффинитета; сам носитель используется из ОДНОГО ведущего цикла за раз
+// (тот же контракт, что у `QueueSocket` — синхронный `Serves`, не задача с разделяемым состоянием).
+unsafe impl Send for WinDivertHandle {}
+
+impl WinDivertHandle {
+    /// Открыть на слое `Network` (единственный слой, дающий И захват, И инъекцию — докблок `ffi.rs`).
+    /// Фильтр — язык WinDivert, не наш: `WinDivertOpen` сам его компилирует и валидирует, ошибка
+    /// синтаксиса фильтра придёт тем же путём, что и прочий отказ открытия (`GetLastError`).
+    pub fn open(filter: &str) -> Result<WinDivertHandle, WinError> {
+        let c_filter = CString::new(filter)
+            // NUL внутри фильтра — не код WinDivert; отдаём код Windows «параметр неверен»
+            // (`ERROR_INVALID_PARAMETER` = 87, `doc/windivert.html` §5.4), чтобы не заводить
+            // второй тип ошибки ради одного случая, которого фильтр как строка Rust и так не
+            // допускает нигде, кроме этого места.
+            .map_err(|_| WinError(87))?;
+        let handle = unsafe {
+            ffi::WinDivertOpen(
+                c_filter.as_ptr(),
+                ffi::WinDivertLayer::Network,
+                0,
+                ffi::WINDIVERT_FLAG_NONE,
+            )
+        };
+        if handle == ffi::INVALID_HANDLE_VALUE {
+            return Err(WinError(unsafe { ffi::GetLastError() }));
+        }
+        Ok(WinDivertHandle { handle })
+    }
+
+    /// Момент до `until` дать `WaitForSingleObject` — симметрично `linux/src/nfqueue/terminal.rs`
+    /// `millis_until`, только тип `DWORD` (`u32`), не `i32` (`poll`): те же часы (`Instant::now()`),
+    /// которыми штампуется `Held::at` ниже, — предел «часы носителя обязаны быть теми же, которыми
+    /// штампуется `Held::at`» (бриф задачи) выполнен буквально, потому что часы ОДНИ, не пара.
+    fn millis_until(until: Instant) -> u32 {
+        u32::try_from(until.saturating_duration_since(Instant::now()).as_millis())
+            .unwrap_or(u32::MAX)
+    }
+
+    /// Один приём, ограниченный `until`. `WinDivertRecvEx` таймаута не берёт (докблок `ffi.rs`) —
+    /// границу даёт `OVERLAPPED` + `WaitForSingleObject`: запрос уходит асинхронно
+    /// (`ERROR_IO_PENDING`), ждём РОВНО остаток срока, по истечении отменяем СВОЙ запрос
+    /// (`CancelIoEx` с НАШИМ `OVERLAPPED`, не `CancelIo` без разбора — на хэндле может быть другой
+    /// незавершённый запрос, если носитель когда-нибудь начнёт готовить следующий приём заранее;
+    /// сегодня не готовит, но чужого не трогаем даже так).
+    ///
+    /// СОБСТВЕННЫЙ `CreateEventW`/`CloseHandle` НА КАЖДЫЙ ВЫЗОВ, А НЕ ПЕРЕИСПОЛЬЗУЕМОЕ СОБЫТИЕ —
+    /// названная цена, не недосмотр: держать `OVERLAPPED` и событие МЕЖДУ вызовами `serve`
+    /// (переиздавая запрос не каждый тик, а только когда предыдущий завершился) дешевле по
+    /// syscall'ам, но заводит состояние, переживающее один оборот цикла, а этот скелет — свидетель
+    /// ФОРМЫ способностей, не производительности; заведение и закрытие события на попытку —
+    /// простейшее правильное решение, и цена его названа здесь, а не скрыта.
+    fn attempt_recv(&mut self, until: Instant) -> RecvOutcome {
+        let mut buffer = vec![0u8; ffi::WINDIVERT_MTU_MAX];
+        let mut addr = ffi::WinDivertAddress::zeroed();
+        let mut recv_len: u32 = 0;
+        let mut addr_len = std::mem::size_of::<ffi::WinDivertAddress>() as u32;
+
+        let event =
+            unsafe { ffi::CreateEventW(std::ptr::null_mut(), ffi::TRUE, ffi::FALSE, std::ptr::null()) };
+        if event.is_null() {
+            // `CreateEventW` не выдал дескриптор — ждать НЕ НА ЧЕМ, ещё до попытки приёма. Ровно
+            // смысл `Served::Blind` очереди ядра (там — netlink-сокет не открылся, докблок
+            // `queue/terminal.rs`): дескриптор не добыт, а не «добыт, но пуст».
+            return RecvOutcome::Blind;
+        }
+        let mut overlapped = ffi::Overlapped::zeroed(event);
+
+        let ok = unsafe {
+            ffi::WinDivertRecvEx(
+                self.handle,
+                buffer.as_mut_ptr() as *mut _,
+                buffer.len() as u32,
+                &mut recv_len,
+                0,
+                &mut addr,
+                &mut addr_len,
+                &mut overlapped,
+            )
+        };
+
+        let got = if ok == ffi::TRUE {
+            // Завершилось синхронно (пакет уже ждал) — `recv_len` уже верный.
+            true
+        } else if unsafe { ffi::GetLastError() } != ffi::ERROR_IO_PENDING {
+            // Отказ, не «в процессе» (например `ERROR_NO_DATA` — хэндл заглушен извне). Дескриптор
+            // на приём БЫЛ — это не `Blind`, а обычное «работы не вышло», ждать есть на чём тем же
+            // хэндлом на следующем обороте (симметрично `AfterRecv::Idle` у `QueueSocket` на
+            // «обычном» отказе `recv()`, докблок `queue/terminal.rs`).
+            unsafe { ffi::CloseHandle(event) };
+            return RecvOutcome::Idle;
+        } else {
+            match unsafe { ffi::WaitForSingleObject(event, Self::millis_until(until)) } {
+                ffi::WAIT_OBJECT_0 => {
+                    let mut transferred = 0u32;
+                    let done = unsafe {
+                        ffi::GetOverlappedResult(
+                            self.handle,
+                            &mut overlapped,
+                            &mut transferred,
+                            ffi::FALSE,
+                        )
+                    };
+                    recv_len = transferred;
+                    done == ffi::TRUE
+                }
+                // И `WAIT_TIMEOUT` (честный срок вышел), и всякий иной код (отказ самого ожидания)
+                // — запрос всё ещё может висеть в драйвере, отменяем СВОЙ (докблок функции про
+                // `CancelIoEx`). Различать их дальше некому: обеим достаётся одна и та же буква
+                // ниже (`RecvOutcome::Idle`) — работы не было, а не «случилась беда».
+                ffi::WAIT_TIMEOUT | _ => {
+                    unsafe { ffi::CancelIoEx(self.handle, &mut overlapped) };
+                    false
+                }
+            }
+        };
+
+        unsafe { ffi::CloseHandle(event) };
+
+        if got {
+            buffer.truncate(recv_len as usize);
+            RecvOutcome::Got(buffer, addr, Instant::now())
+        } else {
+            RecvOutcome::Idle
+        }
+    }
+}
+
+/// Что даёт `attempt_recv` шву — своя алгебра, не `Option`, по той же причине, по которой
+/// `Served` (`reflex_core::serves`) не `Option`: «дескриптора нет» и «дескриптор есть, но пуст»
+/// чинятся по-разному (`Blind` заставляет цикл ждать иначе, чем честная тишина `Idle`).
+enum RecvOutcome {
+    Got(Vec<u8>, ffi::WinDivertAddress, Instant),
+    Idle,
+    Blind,
+}
+
+impl Terminal for WinDivertHandle {
+    type Carrier = Recved;
+    type Answer = Answer;
+    type Refusal = WinError;
+
+    /// Цена дома здесь не случается (в отличие от `Local::apply`, докблок `core::local`) — этому
+    /// носителю нечего писать, кроме самого пакета: `Pass` шлёт его назад ТЕМ ЖЕ адресом, `Stop` —
+    /// не шлёт вовсе. Не послать и есть дроп: драйвер уже изъял пакет из стека при приёме
+    /// (докблок модуля), второго действия «выбросить» на этом хэндле не существует.
+    fn apply(
+        &mut self,
+        answered: Answered<Recved, Answer>,
+    ) -> Result<Delivered<Answer>, Refused<Answer, WinError>> {
+        let Answered {
+            carrier,
+            at,
+            answer,
+        } = answered;
+        match answer {
+            Answer::Pass => {
+                let mut sent = 0u32;
+                let ok = unsafe {
+                    ffi::WinDivertSend(
+                        self.handle,
+                        carrier.packet.as_ptr() as *const _,
+                        carrier.packet.len() as u32,
+                        &mut sent,
+                        &carrier.addr,
+                    )
+                };
+                if ok == ffi::TRUE {
+                    Ok(Delivered { at, answer })
+                } else {
+                    Err(Refused {
+                        at,
+                        answer,
+                        why: WinError(unsafe { ffi::GetLastError() }),
+                    })
+                }
+            }
+            Answer::Stop => Ok(Delivered { at, answer }),
+        }
+    }
+}
+
+impl CanHold for WinDivertHandle {
+    fn release() -> Answer {
+        Answer::Pass
+    }
+}
+
+impl CanRefuse for WinDivertHandle {
+    fn refuse() -> Answer {
+        Answer::Stop
+    }
+}
+
+/// Очередь вошла в категорию как [`Serves`], очередью же и объясняется почему (докблок модуля):
+/// `WinDivertRecvEx` изымает пакет, второго `&mut` на носителя внутри потока наблюдения не
+/// достать — та же `E0499`, из-за которой `QueueSocket` (`linux/src/queue/terminal.rs`) выбрала
+/// `Serves`, а не `Source`.
+///
+/// ЗАКОН СРОКА: `serve` не возвращается раньше `until`, кроме как с работой. `Served::Answered`
+/// возвращается СРАЗУ (работа не ждёт остатка срока); обе безответные буквы (`Idle`/`Blind` из
+/// [`RecvOutcome`]) проходят через ОДИН И ТОТ ЖЕ вызов `sleep` — не две копии одного и того же
+/// кода досыпания, а одна ветвь `match`, повторённая по букве результата. `WaitForSingleObject`
+/// внутри `attempt_recv` уже прождал ровно до `until` (или до готовности) на пути `Idle` — второй
+/// копии этого ожидания заводить незачем, хвостовой `sleep` лишь досыпает остаток, который округление
+/// миллисекунд вниз могло не долежать (симметрично хвостовому `sleep` у `QueueSocket`,
+/// `queue/terminal.rs`); на пути `Blind` (`CreateEventW` отказал ДО всякого ожидания) этот же `sleep`
+/// — единственное, что вообще выдерживает срок, ждать оказалось не на чем ни на миг.
+///
+/// `Served::Torn` ЭТОТ НОСИТЕЛЬ НЕ ВОЗВРАЩАЕТ НИКОГДА — предел носителя, названный прямо, а не
+/// скрытый отсутствием ветки. У netfilter-очереди дыра — БУКВА: `ENOBUFS` от `recv()` (докблок
+/// `linux/src/queue/socket.rs`: «нам переполнение нужно буквой, не молчанием»). У WinDivert такой
+/// буквы НЕТ: официальная документация (`doc/windivert.html`, параметры `QUEUE_LENGTH`/
+/// `QUEUE_TIME`/`QUEUE_SIZE`) прямо говорит, что переполненная либо состарившаяся очередь ДРАЙВЕРА
+/// роняет пакеты МОЛЧА — ни один код `GetLastError()` эту потерю не объявляет (`ERROR_NO_DATA`/232
+/// — конец после `WinDivertShutdown`, `ERROR_INSUFFICIENT_BUFFER`/122 — наш буфер мал, оба про
+/// иное). Подделывать источник, которого нет, нельзя — тем же словом, каким `NfqueueBackend`
+/// (старый путь через крейт `nfq`, `linux/src/nfqueue/terminal.rs`) объясняет свою собственную
+/// невозможность увидеть `Torn`: «переполнение и обычный пустой приём здесь неразличимы, и
+/// подделывать источник, которого нет, нельзя».
+impl Serves for WinDivertHandle {
+    type Edge = NoEdge;
+
+    fn serve<F>(
+        &mut self,
+        until: Instant,
+        decide: F,
+    ) -> Served<Delivered<Answer>, Refused<Answer, WinError>>
+    where
+        F: FnOnce(&Held<Recved>, Option<NoEdge>) -> Answer,
+    {
+        match self.attempt_recv(until) {
+            RecvOutcome::Got(packet, addr, at) => {
+                let held = Held::new(Recved { packet, addr }, at);
+                let answer = decide(&held, None);
+                Served::Answered(self.apply(held.answered(answer)))
+            }
+            RecvOutcome::Idle => {
+                std::thread::sleep(until.saturating_duration_since(Instant::now()));
+                Served::Idle
+            }
+            RecvOutcome::Blind => {
+                std::thread::sleep(until.saturating_duration_since(Instant::now()));
+                Served::Blind
+            }
+        }
+    }
+}
+
+/// Инъекция произвольного пакета — ТЕМ ЖЕ хэндлом, что и приём (докблок `struct WinDivertHandle`).
+/// `Sink`, не `Terminal::apply`: адресат уже не «удержанный конкретный пакет», а поток команд извне.
+impl Sink for WinDivertHandle {
+    type Command = InjectablePacket;
+    type Error = WinError;
+
+    fn emit(&mut self, command: InjectablePacket) -> Result<(), WinError> {
+        let bytes = command.serialize_ip();
+        // Синтетический адрес — не адрес изъятого пакета (этого пути с изъятым не связать, `emit`
+        // принимает команду ИЗВНЕ решения, докблок `core::capability::CanInject`). Направление
+        // — `Outbound` (§ докблок крейта, «что догадано»): выбрано потому, что для НЕГО
+        // `IfIdx`/`SubIfIdx` документированно НЕ обязаны быть валидными номерами интерфейса
+        // (`doc/windivert.html` §5.7: «For packets injected into the inbound path, the
+        // pAddr->Network.IfIdx and pAddr->Network.SubIfIdx fields are assumed to contain valid
+        // interface numbers» — про ВХОДЯЩЕЕ, не про исходящее), а взять их здесь неоткуда: `emit`
+        // не привязан к конкретному изъятому пакету, из которого их можно было бы скопировать.
+        // Это РЕШЕНИЕ ФОРМЫ, не выверенное прогоном (живьём не бежит нигде, докблок крейта).
+        let mut addr = ffi::WinDivertAddress::zeroed();
+        addr.set_outbound(true);
+
+        let mut sent = 0u32;
+        let ok = unsafe {
+            ffi::WinDivertSend(
+                self.handle,
+                bytes.as_ptr() as *const _,
+                bytes.len() as u32,
+                &mut sent,
+                &addr,
+            )
+        };
+        if ok == ffi::TRUE {
+            Ok(())
+        } else {
+            Err(WinError(unsafe { ffi::GetLastError() }))
+        }
+    }
+}
+
+impl CanInject for WinDivertHandle {
+    fn inject(packet: InjectablePacket) -> InjectablePacket {
+        packet
+    }
+}
+
+impl Drop for WinDivertHandle {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::WinDivertClose(self.handle);
+        }
+    }
+}
+
+/// НАШИ биты марки по умолчанию — то же умолчание и по тем же соображениям, что у
+/// `reflex::Nfqueue::queue` (`reflex/src/nfqueue.rs`: 15 бит, сдвинутые в старшую половину,
+/// ненулевой тег). У WinDivert нет ядерного `ct_mark`, но `Local` (докблок крейта, ниже) кодирует
+/// состояние детектора В ТОМ ЖЕ формате бит (`Layout`), независимо от того, ГДЕ марка хранится
+/// физически (ядро против userspace-карты `Local`) — раскладка бит остаётся предметом одной
+/// сущности (`reflex_instrument::edge::Layout`), и заводить для неё другое умолчание здесь незачем.
+const MARK_MASK: u32 = 0x0FFF_E000;
+const MARK_TAG: u8 = 0b101;
+
+/// Рецепт носителя WinDivert. Метод и поле называют то же, что называет `reflex::IntoCarrier`
+/// (`open`/`layout`/`name`) — форма СОВПАДАЕТ буквально (та же тройка методов с теми же
+/// сигнатурами), но `impl IntoCarrier for WinDivert` здесь НЕ ПИШЕТСЯ: предел, названный в
+/// докблоке крейта («предел IntoCarrier»), — коротко, дом трейта (крейт `reflex`) не проходит
+/// кросс-проверку на Windows по причине, к WinDivert отношения не имеющей. Связывание — ОДНА
+/// строка (`impl IntoCarrier for WinDivert { type Carrier = Local<WinDivertHandle>; fn
+/// open(self){self.open()} fn layout(&self){self.layout()} fn name(&self){self.name()} }`) в
+/// крейте `reflex`, как только его зависимость от `reflex-engine-nfq` перестанет быть
+/// безусловной — отдельная задача, заведённая этой находкой (10.09.2026), не эта.
+pub struct WinDivert {
+    filter: String,
+}
+
+impl WinDivert {
+    /// Фильтр на языке WinDivert (не наш язык — компилирует и проверяет его сам `WinDivertOpen`
+    /// при открытии, докблок `WinDivertHandle::open`).
+    ///
+    /// ИЛЛЮСТРАЦИЯ ЦЕПОЧКИ ПОТРЕБИТЕЛЯ — ТЕКСТ, НЕ ПРОВЕРЯЕМЫЙ ЗДЕСЬ НИЧЕМ (помечен `ignore`, не
+    /// `no_run`: `no_run` обещает «собирается, просто не исполняется», а этот код сегодня НЕ
+    /// СОБИРАЕТСЯ — `reflex::engine` требует `C: IntoCarrier`, а этот крейт его не заявляет,
+    /// докблок выше). Показывает форму, которую даст СВЯЗЫВАНИЕ после отдельной задачи:
+    ///
+    /// ```ignore
+    /// use reflex::*;
+    /// use reflex_windivert::WinDivert;
+    ///
+    /// fn main() -> Report {
+    ///     engine(WinDivert::filter("outbound and tcp.DstPort == 443"))
+    ///         .from(Tcp)
+    ///         .extract(Sni)
+    ///         .detect(Retransmit::unanswered())
+    ///         .detect(Silence::after(secs(5)))
+    ///         .on(|target, distress| report!("{target}: {distress:?}"))
+    ///         .run()
+    /// }
+    /// ```
+    pub fn filter(filter: &str) -> WinDivert {
+        WinDivert {
+            filter: filter.to_string(),
+        }
+    }
+
+    /// Форма `IntoCarrier::open`: открыть носитель, обернув его в `Local` — у WinDivert нет
+    /// ядерного дома (§ докблок крейта), край и состояние строит `Local` сам, в юзерспейсе, той же
+    /// формой, что и `reflex::LocalNfqueue` (`reflex/src/nfqueue.rs`) для очереди без conntrack.
+    pub fn open(self) -> Result<reflex_core::local::Local<WinDivertHandle>, WinError> {
+        WinDivertHandle::open(&self.filter).map(reflex_core::local::Local::new)
+    }
+
+    /// Форма `IntoCarrier::layout`.
+    pub fn layout(&self) -> Layout {
+        Layout::new(MARK_MASK, MARK_TAG).expect("умолчание: 15 бит, ненулевой тег")
+    }
+
+    /// Форма `IntoCarrier::name`.
+    pub fn name(&self) -> String {
+        format!("windivert \"{}\"", self.filter)
+    }
+}
