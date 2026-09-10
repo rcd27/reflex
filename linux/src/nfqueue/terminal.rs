@@ -165,18 +165,11 @@ impl reflex_core::Serves for NfqueueBackend {
         F: FnOnce(&reflex_core::held::Held<Queued>) -> Answer,
     {
         use reflex_core::serves::Served;
-        // Ждём здесь, до `until`: дескриптор у бэкенда, часы — у зовущего, срок в подписи мирит
-        // обоих (§9.3). Прежде стоял `wait(0)`, а сколько крутиться, «знал ведущий цикл» — которому
-        // ждать было не на чем (дескриптор внутри бэкенда); оттуда и собственное ожидание фасада
-        // мимо шва, и вместе с ним регресс 3202628.
-        match self.wait(millis_until(until)) {
-            super::Waited::Blind => {
-                // Со сроком в подписи носитель обязан проспать остаток сам: иначе слепой цикл жжёт
-                // ядро на пустом опросе, полагаясь на соглашение снаружи шва — то самое, что не
-                // удержалось однажды.
-                std::thread::sleep(until.saturating_duration_since(std::time::Instant::now()));
-                Served::Blind
-            }
+        // `poll` ждёт до `until` (§9.3) — это латентность, не гарантия: `millis_until` округляет
+        // остаток вниз, `poll` может вернуться на доли миллисекунды раньше срока. Гарантию держит
+        // ЕДИНЫЙ выход ниже, а не эта строка.
+        let outcome = match self.wait(millis_until(until)) {
+            super::Waited::Blind => Served::Blind,
             super::Waited::Idle => Served::Idle,
             super::Waited::Ready => match self.recv() {
                 // Пусто при готовом дескрипторе — `EAGAIN`: работы не было, ждать есть на чем.
@@ -188,9 +181,19 @@ impl reflex_core::Serves for NfqueueBackend {
                     let held =
                         reflex_core::held::Held::new(Queued(message), std::time::Instant::now());
                     let answer = decide(&held);
-                    Served::Answered(self.apply(held.answered(answer)))
+                    return Served::Answered(self.apply(held.answered(answer)));
                 }
             },
-        }
+        };
+
+        // Закон шва живёт РОВНО здесь, одной веткой на все безответные исходы — не по копии в
+        // каждом месте, откуда можно вернуть «работы не было». Три пути сюда сходятся (таймаут
+        // `poll`, слепой дескриптор, ошибка `recv` при готовом дескрипторе), и один из них —
+        // `Ready => Err(_)` — прежде возвращался немедленно, в обход срока: дыра, не видная, пока
+        // оба нынешних зовущих передают `until = Instant::now()` (гонка замаскирована выбором
+        // зовущих, не законом). Четвёртая ветка, дописанная завтра, обязана пройти через этот же
+        // выход, а не завести свой сон.
+        std::thread::sleep(until.saturating_duration_since(std::time::Instant::now()));
+        outcome
     }
 }

@@ -23,6 +23,10 @@ impl Observed for Envelope {
 struct Memo {
     waiting: Vec<Vec<u8>>,
     answered: Rc<RefCell<Vec<u8>>>,
+    /// Играет ошибку приёма при готовом дескрипторе (`Waited::Ready => Err(_)` у
+    /// `NfqueueBackend`) — путь, отдельный от пустой очереди, но с тем же законом шва: работы не
+    /// было, а значит не возвращаться раньше `until`.
+    broken: bool,
 }
 
 impl Terminal for Memo {
@@ -50,6 +54,7 @@ impl Memo {
         Memo {
             waiting: Vec::new(),
             answered: Rc::new(RefCell::new(Vec::new())),
+            broken: false,
         }
     }
 
@@ -58,6 +63,18 @@ impl Memo {
         Memo {
             waiting: vec![b"a".to_vec()],
             answered: Rc::new(RefCell::new(Vec::new())),
+            broken: false,
+        }
+    }
+
+    /// Носитель, у которого приём срывается при готовом дескрипторе — третий путь к «работы не
+    /// было» (`NfqueueBackend`: `Waited::Ready => self.recv() == Err(_)`), отдельный от пустой
+    /// очереди и от слепоты. Закон шва общий на все три: без работы — не раньше `until`.
+    fn with_broken_receive() -> Self {
+        Memo {
+            waiting: Vec::new(),
+            answered: Rc::new(RefCell::new(Vec::new())),
+            broken: true,
         }
     }
 }
@@ -67,20 +84,22 @@ impl Serves for Memo {
     where
         F: FnOnce(&Held<Envelope>) -> u8,
     {
-        match self.waiting.is_empty() {
-            // Закон шва: без работы носитель спит до `until` сам — часы у того же, у кого
-            // дескриптор. Без сна здесь ведущий цикл был бы вынужден заводить своё ожидание мимо
-            // шва, как это уже случилось (регресс 3202628).
-            true => {
-                std::thread::sleep(until.saturating_duration_since(Instant::now()));
-                Served::Idle
-            }
-            false => {
+        let outcome = match (self.broken, self.waiting.is_empty()) {
+            (true, _) => Served::Idle,
+            (false, true) => Served::Idle,
+            (false, false) => {
                 let held = Held::new(Envelope(self.waiting.remove(0)), Instant::now());
                 let answer = decide(&held);
-                Served::Answered(self.apply(held.answered(answer)))
+                return Served::Answered(self.apply(held.answered(answer)));
             }
-        }
+        };
+
+        // Закон шва живёт РОВНО здесь, одной веткой на все безответные исходы — не по копии на
+        // каждый путь к «работы не было». Дописанный завтра третий (`broken`) путь прошёл бы этот
+        // же выход, не заводя свой сон; так и в `NfqueueBackend` ветка `Ready => Err(_)` раньше
+        // возвращалась немедленно, минуя закон, пока сон стоял по одной копии на ветку.
+        std::thread::sleep(until.saturating_duration_since(Instant::now()));
+        outcome
     }
 }
 
@@ -91,6 +110,7 @@ fn a_decision_made_from_the_observation_reaches_the_world() {
     let mut queue = Memo {
         waiting: vec![b"first".to_vec(), b"second".to_vec()],
         answered: Rc::clone(&answered),
+        broken: false,
     };
 
     let outcome = queue.serve(Instant::now(), |held| held.seen().len() as u8);
@@ -111,6 +131,7 @@ fn nothing_to_serve_is_not_a_failure() {
     let mut queue = Memo {
         waiting: Vec::new(),
         answered: Rc::new(RefCell::new(Vec::new())),
+        broken: false,
     };
 
     assert_eq!(queue.serve(Instant::now(), |_held| 0), Served::Idle);
@@ -123,6 +144,7 @@ fn every_taken_packet_gets_exactly_one_answer() {
     let mut queue = Memo {
         waiting: vec![b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()],
         answered: Rc::clone(&answered),
+        broken: false,
     };
 
     let served = std::iter::from_fn(
@@ -160,4 +182,19 @@ fn работа_возвращается_сразу() {
 
     assert!(matches!(outcome, Served::Answered(Ok(_))));
     assert!(Instant::now() < until, "ждал срока, имея работу");
+}
+
+/// Закон шва не признаёт исключений по ветке: ошибка приёма при готовом дескрипторе — тоже
+/// «работы не было», и досыпать обязана та же единая ветвь, что и на пустой очереди, а не третья
+/// копия сна. Дыра была именно тут: `NfqueueBackend`, `Waited::Ready => self.recv() == Err(_)`,
+/// возвращался немедленно, в обход срока.
+#[test]
+fn ошибка_приёма_тоже_держит_срок() {
+    let mut carrier = Memo::with_broken_receive();
+    let until = Instant::now() + Duration::from_millis(50);
+
+    let outcome = carrier.serve(until, |_held| unreachable!("работы не было"));
+
+    assert!(matches!(outcome, Served::Idle));
+    assert!(Instant::now() >= until, "вернулся раньше срока");
 }
