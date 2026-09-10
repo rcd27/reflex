@@ -1,0 +1,54 @@
+# Проверки, которые проходят СЕГОДНЯ и потому поставлены обязательными.
+#
+# Здесь нет `fmt` и `clippy`, и это названо нарочно, а не забыто: на 10.09.2026 `cargo fmt --check`
+# даёт расхождения, `cargo clippy` — 26 замечаний. Поставить их зелёными значило бы завести
+# проверку, которая красная с первого дня, — а к красной проверке привыкают и перестают читать.
+# Их включение — отдельная работа: сперва чистка, потом обязательство.
+#
+# Кросс-сборка под Windows стоит здесь не для поддержки Windows, а как ЕДИНСТВЕННЫЙ проверяемый
+# критерий переносимости: соберётся фасад под чужую платформу — значит Linux не протёк в цепочку.
+# Грепом это мерить нельзя, он мерит отсутствие ИМЕНИ, а предмет — отсутствие ЗАВИСИМОСТИ.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: тесты дерева
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Привилегий не требует: боевые стенды живут отдельно (`examples/*/lab/`) и в CI не гоняются —
+      # им нужен реальный ТСПУ, которого у раннера нет. Здесь проверяется дерево, а не мир.
+      - run: cargo test --workspace
+
+  portable:
+    name: фасад не знает Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p reflex --target x86_64-pc-windows-msvc
+
+  docs:
+    name: документация собирается
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `deny(rustdoc::broken_intra_doc_links)` стоит в крейтах: обещание ИМЕНИ в докблоке держит
+      # компилятор, а не читатель. Здесь это обещание и проверяется.
+      - run: cargo doc --workspace --no-deps

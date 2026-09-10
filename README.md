@@ -1,5 +1,7 @@
 # reflex
 
+[![CI](https://github.com/rcd27/reflex/actions/workflows/ci.yml/badge.svg)](https://github.com/rcd27/reflex/actions/workflows/ci.yml)
+
 **Поведение сети как значение.**
 
 Диагностика сетевых блокировок в реальном времени: движок наблюдает провод, приборы говорят о том,
