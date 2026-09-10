@@ -80,7 +80,14 @@ impl fmt::Display for PreflightError {
 
 impl std::error::Error for PreflightError {}
 
-pub(crate) fn check() -> Result<(), PreflightError> {
+/// Годится ли МАШИНА для очереди: права, модули ядра, учёт conntrack.
+///
+/// Зовётся носителем при открытии (`IntoCarrier::open`), а не циклом: предпосылка проверяется до
+/// первого пакета, иначе потребитель узнаёт о ней голым `errno` из `socket(2)`. Каждая ветка
+/// ошибки несёт ЛЕЧЕНИЕ, а не только диагноз («Fix: sudo modprobe …»): первый запуск у нового
+/// человека проваливается чаще всего именно здесь, и «Operation not permitted» ему не говорит
+/// ничего.
+pub fn check() -> Result<(), PreflightError> {
     check_capabilities()?;
     check_kernel_module()?;
     check_conntrack()?;

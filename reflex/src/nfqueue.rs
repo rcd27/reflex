@@ -93,6 +93,9 @@ impl IntoCarrier for LocalNfqueue {
     /// отдаёт `decide` СВОЙ `LocalEdge`. Читать sysctl ради величины, которую тут же выбросят, было
     /// бы вторым, никому не нужным замером — потому подставлен ноль, а не итог `::read()`.
     fn open(self) -> Result<Local<QueueSocket>, Cause> {
+        // Предпосылка машины — ДО сокета: иначе отсутствующий модуль ядра доедет до потребителя
+        // голым `errno`, а он о `nfnetlink_queue` не знает и знать не обязан.
+        reflex_linux::nfqueue::preflight::check().map_err(|why| Cause(why.to_string()))?;
         let discarded_by_local = TimeoutBase {
             syn_sent: Duration::ZERO,
             established: Duration::ZERO,
@@ -210,6 +213,7 @@ impl IntoCarrier for Nfqueue {
     /// она была бы абсурдна (WinDivert про conntrack не слышал). Сырой сокет инъекции поднимается
     /// следом, тоже здесь и тоже безусловно (см. докблок [`NfqueueCarrier`]).
     fn open(self) -> Result<NfqueueCarrier, Cause> {
+        reflex_linux::nfqueue::preflight::check().map_err(|why| Cause(why.to_string()))?;
         let base = TimeoutBase::read().ok_or_else(|| {
             Cause(
                 "нет базы таймаутов conntrack: включи nf_conntrack_acct и nf_conntrack_timestamp"

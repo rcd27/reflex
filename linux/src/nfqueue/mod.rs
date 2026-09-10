@@ -9,7 +9,7 @@
 //! Знание не потеряно: оно в истории, путь до него — этот коммит.
 
 mod backend;
-mod preflight;
+pub mod preflight;
 mod terminal;
 
 pub use backend::{NfqueueBackend, Waited};
