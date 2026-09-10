@@ -123,4 +123,14 @@ impl Interleave {
             at,
         })
     }
+
+    /// Момент следующего узла сетки. Чист: часов не спрашивает, считает от последнего выданного
+    /// момента — оттого срок не плывёт от того, когда его спросили.
+    pub fn next_node(&self) -> Instant {
+        crate::grid::node(
+            self.start,
+            self.every,
+            crate::grid::due(self.start, self.last, self.every) + 1,
+        )
+    }
 }

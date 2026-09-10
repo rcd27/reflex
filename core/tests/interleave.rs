@@ -207,3 +207,18 @@ fn moments_never_decrease_across_the_whole_stream() {
         shape(&all, start)
     );
 }
+
+/// Срок для носителя — момент СЛЕДУЮЩЕГО узла, отсчитанный от последнего выданного. Не «сейчас
+/// плюс шаг»: тогда каждый пакет продлевал бы ожидание, и тик уезжал бы вправо тем сильнее, чем
+/// плотнее трафик — часы приборов молчания зависели бы от трафика, что §8 запрещает.
+#[test]
+fn срок_есть_момент_следующего_узла() {
+    let start = Instant::now();
+    let every = Duration::from_millis(100);
+    let seam = Interleave::started(start, every);
+
+    assert_eq!(seam.next_node(), start + Duration::from_millis(100));
+
+    let (seam, _) = seam.idle::<()>(start + Duration::from_millis(250));
+    assert_eq!(seam.next_node(), start + Duration::from_millis(300));
+}
