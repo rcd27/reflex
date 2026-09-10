@@ -9,7 +9,8 @@ use std::time::Instant;
 use libc::{c_int, c_void, close, poll, pollfd, recv, send, socket, AF_NETLINK, POLLIN, SOCK_RAW};
 
 use super::wire::{
-    bind_request, conntrack_flag_request, incoming_of, params_request, verdict_message, Incoming,
+    bind_request, conntrack_flag_request, incoming_of, params_request, queue_maxlen_request,
+    verdict_message, Incoming,
 };
 use crate::conntrack::TimeoutBase;
 use crate::netlink::errno;
@@ -18,6 +19,23 @@ use crate::nfqueue::Waited;
 const NETLINK_NETFILTER: c_int = 12;
 const COPY_RANGE: u16 = 0xFFFF;
 const BUFFER: usize = 64 * 1024;
+
+/// Мутант ЗАМЕРА №1 (Д8, T13): сузить ёмкость очереди, чтобы `queue_dropped` мог доказанно уйти
+/// от нуля. Читается ОДИН раз, при открытии, — не публичная величина, а щель в оснастку стенда.
+fn tiny_queue_mutant() -> Option<u32> {
+    std::env::var("REFLEX_LAB_TINY_QUEUE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+}
+
+/// Мутант ЗАМЕРА №2 (Д8, T13): сузить приёмный буфер СВОЕГО сокета, чтобы `user_dropped` мог
+/// доказанно уйти от нуля — оракул, зеркальный первому (ядро роняет ДО очереди против роняет ДО
+/// нашего чтения). Возвращает `c_int`: ровно то, что просит `setsockopt(SO_RCVBUF)`.
+fn tiny_rcvbuf_mutant() -> Option<c_int> {
+    std::env::var("REFLEX_LAB_TINY_RCVBUF")
+        .ok()
+        .and_then(|value| value.parse().ok())
+}
 
 /// Чем сокет очереди может отказать. `Overrun` (`ENOBUFS`) — не «ошибка приёма», а буква: ядро
 /// сказало, что очередь переполнилась и пакеты потеряны. Прибору это знание нужно — сравнение оттиска
@@ -64,10 +82,35 @@ impl QueueSocket {
     /// приходит АРГУМЕНТОМ: снимает её ровно один читатель выше по цепочке (`Nfqueue::open`),
     /// `TimeoutBase::read()` здесь не зовётся — вторым чтением этот сокет развёл бы с ним закон об
     /// одной величине внутри одного прогона.
+    ///
+    /// ПОСЛЕ трёх — два мутанта ЗАМЕРА (Д8, T13), оба за флагом окружения и оба МОЛЧА отсутствуют
+    /// без него: боевой путь этих строк не видит. `REFLEX_LAB_TINY_QUEUE=N` сужает ёмкость очереди
+    /// до `N` (`queue_dropped` — «до очереди не дошло»); `REFLEX_LAB_TINY_RCVBUF=N` сужает приёмный
+    /// буфер СВОЕГО сокета (`user_dropped` — «мы не забрали», роняет ядро при `ENOBUFS`, минуя
+    /// очередь). Оба нужны РАЗНЫМ оракулам: замер частоты `ENOBUFS` на боевой очереди (ёмкость
+    /// 1024, ~15 п/с) дал ноль, и без доказанной способности хотя бы одного оракула показать
+    /// ненуль этот ноль был бы «не измерено», выданным за «измерено и пусто». Публичной ручкой
+    /// фасада не становятся (YAGNI) — настраиваемой длины очереди никто не просил.
     pub fn open(queue: u16, base: TimeoutBase) -> Result<QueueSocket, QueueError> {
         let fd = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER) };
         if fd < 0 {
             return Err(QueueError::Socket(errno()));
+        }
+        if let Some(bytes) = tiny_rcvbuf_mutant() {
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    &bytes as *const libc::c_int as *const c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if ret < 0 {
+                let why = errno();
+                unsafe { close(fd) };
+                return Err(QueueError::Socket(why));
+            }
         }
         let sock = QueueSocket {
             fd,
@@ -78,6 +121,9 @@ impl QueueSocket {
         sock.send(&bind_request(queue, 1))?;
         sock.send(&params_request(queue, 2, COPY_RANGE))?;
         sock.send(&conntrack_flag_request(queue, 3))?;
+        if let Some(maxlen) = tiny_queue_mutant() {
+            sock.send(&queue_maxlen_request(queue, 4, maxlen))?;
+        }
         Ok(sock)
     }
 

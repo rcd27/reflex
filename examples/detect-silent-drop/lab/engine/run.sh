@@ -10,6 +10,16 @@ QUEUE=200
 LOG=/tmp/reflex.log
 
 echo "[стенд] цель=$TARGET  контроль=$CONTROL  очередь=$QUEUE"
+if [ -n "${REFLEX_LAB_TINY_QUEUE:-}" ] || [ -n "${REFLEX_LAB_TINY_RCVBUF:-}" ]; then
+  echo "[стенд] мутант ЗАМЕРА: REFLEX_LAB_TINY_QUEUE=${REFLEX_LAB_TINY_QUEUE:-нет}  REFLEX_LAB_TINY_RCVBUF=${REFLEX_LAB_TINY_RCVBUF:-нет}"
+fi
+
+# `queue_dropped`/`user_dropped` — ДВА разных оракула (Д8, T13): первый видит ядро ДО очереди,
+# второй — ДО нашего чтения. Формат: `queue_num peer_portid queue_total copy_mode copy_range
+# queue_dropped user_dropped id_sequence 1` (нашей ОЧЕРЕДИ соответствует первое поле).
+qstats() {
+  awk -v q="$QUEUE" '$1==q {print $6, $7}' /proc/net/netfilter/nfnetlink_queue 2>/dev/null
+}
 
 # 0. Предпосылка КРАЯ: движок читает счётчики и возраст потока у conntrack. `compose.yml` ставит
 #    `nf_conntrack_acct`/`timestamp` namespaced-sysctl'ами ПРИ СОЗДАНИИ netns — единственном
@@ -31,6 +41,9 @@ sleep 1
 if ! kill -0 "$ENGINE" 2>/dev/null; then
   echo "[стенд] движок не поднялся:"; cat "$LOG"; exit 2
 fi
+
+BEFORE=$(qstats); BEFORE=${BEFORE:-"? ?"}
+echo "[стенд] счётчики очереди ДО (queue_dropped user_dropped): $BEFORE"
 
 # 2. Наш :443 — в очередь, обе стороны (исходящий ClientHello и входящий ответ/его отсутствие).
 nft add table inet reflex_lab
@@ -54,6 +67,12 @@ curl -s4 --noproxy '*' --max-time 8 "https://$CONTROL/" >/dev/null 2>&1 || true
 
 # 4. Дать движку тикнуть за окно тишины (5с) с запасом.
 sleep 9
+
+AFTER=$(qstats); AFTER=${AFTER:-"? ?"}
+OVERRUN=$(grep -c Overrun "$LOG" 2>/dev/null || echo 0)
+echo "[стенд] счётчики очереди ПОСЛЕ (queue_dropped user_dropped): $AFTER  строк Overrun=$OVERRUN"
+# Строка для машинного разбора (`mutants.sh`) — не для человека: тот читает строку выше.
+echo "[метрика] queue_dropped=$(echo "$AFTER" | awk '{print $1}') user_dropped=$(echo "$AFTER" | awk '{print $2}') overrun=$OVERRUN"
 
 # 5. Прибраться.
 nft delete table inet reflex_lab 2>/dev/null

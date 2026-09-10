@@ -23,6 +23,7 @@ const NFQA_CT: u16 = 11;
 
 const NFQA_CFG_CMD: u16 = 1;
 const NFQA_CFG_PARAMS: u16 = 2;
+const NFQA_CFG_QUEUE_MAXLEN: u16 = 3; // щель среди занятых 1,2,4,5 — тот же tlv, что copy mode.
 const NFQA_CFG_MASK: u16 = 4; // НЕ 6.
 const NFQA_CFG_FLAGS: u16 = 5;
 
@@ -125,6 +126,22 @@ pub fn params_request(queue: u16, seq: u32, copy_range: u16) -> Vec<u8> {
         queue,
         seq,
         &tlv(NFQA_CFG_PARAMS, &params_body(copy_range)),
+    )
+}
+
+/// Ограничить ёмкость очереди (`NFQA_CFG_QUEUE_MAXLEN`, тело — голый `__u32` be, БЕЗ упаковки
+/// `params_body`: это не `nfqnl_msg_config_params`, а самостоятельный атрибут). ПОЧЕМУ этот метод
+/// вообще существует: закон «замер без доказанной способности показать ненуль не считается»
+/// (Д8) требовал предъявить `queue_dropped` ненулевым, а боевая очередь (ёмкость 1024) на
+/// пятнадцати пакетах в секунду не переполняется НИКОГДА — доказать способность оракула иначе,
+/// чем сузив саму ёмкость, было нечем. Не публичная ручка фасада (YAGNI): настраиваемой длины
+/// очереди никто не просил, дверь — `linux/src/queue/socket.rs` за флагом окружения ЗАМЕРА.
+pub fn queue_maxlen_request(queue: u16, seq: u32, maxlen: u32) -> Vec<u8> {
+    message(
+        NFQNL_MSG_CONFIG,
+        queue,
+        seq,
+        &tlv(NFQA_CFG_QUEUE_MAXLEN, &maxlen.to_be_bytes()),
     )
 }
 
