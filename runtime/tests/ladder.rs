@@ -8,23 +8,33 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use reflex_runtime::ladder::{climb, Tried};
+use reflex_runtime::ladder::{climb, Climbing, Tried};
 
-/// ПРЕДМЕТ: до первой годной ВКЛЮЧИТЕЛЬНО. Годная в отчёте, а не отброшена вместе с остановкой;
-/// то, до чего не дошли, названо `NotRun`, а не «не годится».
+/// ПРЕДМЕТ: до остановки ВКЛЮЧИТЕЛЬНО. Ступень остановки в отчёте, а не отброшена вместе с ней;
+/// то, до чего не дошли, названо `NotRun`, а не приговором кандидату.
 #[tokio::test]
-async fn the_first_good_rung_stops_the_climb_and_stays_in_the_report() {
+async fn the_rung_that_halts_the_climb_stays_in_the_report() {
     let climbed = climb(vec![1, 2, 3, 4, 5], 1, |candidate: i32| async move {
-        Ok((candidate == 2).then_some(format!("годен {candidate}")))
+        Ok(match candidate == 2 {
+            true => (format!("взяло {candidate}"), Climbing::Halt),
+            false => (format!("не взяло {candidate}"), Climbing::Onward),
+        })
     })
     .await;
 
     assert_eq!(
-        climbed.good().map(|(key, good)| (*key, good.clone())),
-        Some((2, "годен 2".to_string())),
-        "годная обязана остаться в отчёте"
+        climbed.halted().map(|(key, what)| (*key, what.clone())),
+        Some((2, "взяло 2".to_string())),
+        "ступень остановки обязана остаться в отчёте"
     );
-    assert_eq!(climbed.tried[0].1, Tried::Bad, "первый пробовали — не годен");
+    assert_eq!(
+        climbed.tried[0].1,
+        Tried::Established {
+            what: "не взяло 1".to_string(),
+            then: Climbing::Onward
+        },
+        "проба состоялась и УСТАНОВИЛА своё — знание не выбрасывается"
+    );
     assert_eq!(
         climbed.tried[2].1,
         Tried::NotRun,
@@ -44,12 +54,12 @@ async fn a_refusal_of_the_world_is_not_a_verdict_on_the_candidate() {
     let climbed = climb(vec!["a", "b", "c"], 3, |candidate: &str| async move {
         match candidate {
             "b" => Err("сокет не открылся".to_string()),
-            _ => Ok(None::<()>),
+            _ => Ok(("не взяло", Climbing::Onward)),
         }
     })
     .await;
 
-    assert_eq!(climbed.tried[0].1, Tried::Bad);
+    assert!(climbed.tried[0].1.established());
     assert_eq!(
         climbed.tried[1].1,
         Tried::Refused("сокет не открылся".to_string()),
@@ -71,7 +81,10 @@ async fn a_refusal_of_the_world_is_not_a_verdict_on_the_candidate() {
 async fn every_candidate_is_named_in_the_report() {
     let candidates: Vec<u8> = (0..20).collect();
     let climbed = climb(candidates.clone(), 4, |candidate: u8| async move {
-        Ok((candidate == 3).then_some(candidate))
+        Ok(match candidate == 3 {
+            true => (candidate, Climbing::Halt),
+            false => (candidate, Climbing::Onward),
+        })
     })
     .await;
 
@@ -97,7 +110,7 @@ async fn the_width_of_the_climb_is_never_exceeded() {
             peak.fetch_max(now, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(5)).await;
             flying.fetch_sub(1, Ordering::SeqCst);
-            Ok(None::<()>)
+            Ok(((), Climbing::Onward))
         }
     })
     .await;
@@ -110,11 +123,11 @@ async fn the_width_of_the_climb_is_never_exceeded() {
     );
 }
 
-/// ПРЕДМЕТ: первая годная — ПО ПОРЯДКУ ПОДАЧИ, а не по времени ответа. Здесь второй кандидат
-/// отвечает быстрее первого, и оба годны; лестница обязана отдать ПЕРВОГО, иначе один и тот же вход
+/// ПРЕДМЕТ: остановка — ПО ПОРЯДКУ ПОДАЧИ, а не по времени ответа. Здесь второй кандидат отвечает
+/// быстрее первого, и оба велят встать; лестница обязана отдать ПЕРВОГО, иначе один и тот же вход
 /// давал бы разный ответ в зависимости от темпа сети — то есть перестал бы быть входом.
 #[tokio::test]
-async fn the_good_one_is_the_first_by_order_not_by_speed() {
+async fn the_halt_is_the_first_by_order_not_by_speed() {
     let climbed = climb(vec![10u64, 20u64], 2, |candidate: u64| async move {
         // Первый отвечает медленнее второго вдвое.
         let delay = match candidate {
@@ -122,18 +135,56 @@ async fn the_good_one_is_the_first_by_order_not_by_speed() {
             _ => 5,
         };
         tokio::time::sleep(Duration::from_millis(delay)).await;
-        Ok(Some(candidate))
+        Ok((candidate, Climbing::Halt))
     })
     .await;
 
     assert_eq!(
-        climbed.good().map(|(key, _)| *key),
+        climbed.halted().map(|(key, _)| *key),
         Some(10),
         "медленный, но первый — он и есть ответ"
     );
     assert!(
-        matches!(climbed.tried[1].1, Tried::Good(_)),
-        "второй тоже состоялся и годен — выбрасывать его исход значило бы отчитаться «не \
-         запускали» о том, что запускали"
+        climbed.tried[1].1.established(),
+        "второй тоже состоялся — выбрасывать его исход значило бы отчитаться «не запускали» о \
+         том, что запускали"
+    );
+}
+
+/// ПРЕДМЕТ ДВУХ ОСЕЙ, ради которого форма и менялась: успех НЕ ВСЕГДА конец поиска, а остановка НЕ
+/// ВСЕГДА успех.
+///
+/// Первый кандидат берёт цель, но с повторами — знание установлено, искать чище стоит, перебор
+/// идёт дальше. Второй устанавливает, что цель не берётся ничем: перебор встаёт, и это ПРИГОВОР
+/// ЦЕЛИ, а не находка. Слей эти оси в одну — и «встал» пришлось бы объявить «нашли», то есть
+/// соврать ровно там, где отчёт и читают.
+#[tokio::test]
+async fn success_does_not_always_halt_and_a_halt_is_not_always_success() {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Found {
+        TakesWithRetries,
+        Unreachable,
+    }
+
+    let climbed = climb(vec!["повторами", "никак"], 1, |candidate: &str| async move {
+        Ok(match candidate {
+            "повторами" => (Found::TakesWithRetries, Climbing::Onward),
+            _ => (Found::Unreachable, Climbing::Halt),
+        })
+    })
+    .await;
+
+    assert_eq!(
+        climbed.tried[0].1,
+        Tried::Established {
+            what: Found::TakesWithRetries,
+            then: Climbing::Onward
+        },
+        "успех, на котором перебор продолжается, обязан быть выразим"
+    );
+    assert_eq!(
+        climbed.halted().map(|(_, what)| what.clone()),
+        Some(Found::Unreachable),
+        "остановка обязана быть выразима БЕЗ объявления кандидата годным"
     );
 }

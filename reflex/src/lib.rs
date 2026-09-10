@@ -92,6 +92,7 @@ pub use reflex_engine::Flow;
 use reflex_instrument::edge::{Layout, Memo};
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
+use reflex_instrument::detect::{ChokedInstrument, RstInstrument, ThrottledInstrument};
 use reflex_instrument::retransmit::RetransmitInstrument;
 pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 pub use smallvec::{smallvec, SmallVec};
@@ -428,6 +429,58 @@ impl SynDrop {
     }
 }
 
+/// Детектор СБРОСА: путь ломают снаружи. Ось «отдала ли цель байт до сброса» отделяет перехват от
+/// законного прощания, и различает их сам прибор — двери на это не нужно.
+///
+/// Дверь заведена 11.09.2026, прибор существовал задолго до неё. Что до потребителя он не доходил,
+/// нашлось ПРОГОНОМ у потребителя, а не чтением у нас: боевая цепочка, собранная из всего, что
+/// предлагал парк, молчала на записи, где сброс ЕСТЬ. Слово `Distress::Rst` при этом в словаре
+/// стояло — то есть фасад умел про сброс СКАЗАТЬ и не умел его УВИДЕТЬ, а `match` у потребителя
+/// собирался с веткой, которой некому было сработать.
+pub struct Rst;
+
+impl Rst {
+    /// Сброс, пришедший на разговор.
+    pub fn seen() -> Rst {
+        Rst
+    }
+}
+
+/// Детектор ТРОТТЛИНГА: скорость ниже доказанной. Единственный в парке, чьё показание — ВЕЛИЧИНА
+/// (`Distress::Throttled { bps }`), а не факт: «столько байт в секунду против стольких доказанных».
+///
+/// `window` — на чём мерить скорость. Окно живёт здесь, а не константой прибора, потому что цена
+/// ошибки несимметрична: узкое окно кричит на всякой паузе TCP, широкое просыпает медленную
+/// удавку. Кто мерит — тот и знает свой трафик.
+pub struct Throttled {
+    window: Duration,
+}
+
+impl Throttled {
+    /// Окно, на котором считается скорость.
+    pub fn over(window: Duration) -> Throttled {
+        Throttled { window }
+    }
+}
+
+/// Детектор ЗАХЛЁБЫВАНИЯ: клиент просит, цель не отдаёт, планки не доказывала.
+///
+/// От [`Silence`] отличается требованием ДОКАЗАННОГО СПРОСА — без просьбы молчание законно, и
+/// молчащий сервер, которого никто не спрашивал, здесь не бедствует. Оттого и два довода:
+/// `ceiling` — планка, которую цель когда-то показала (ниже неё есть о чём говорить), `after` —
+/// сколько ждать, прежде чем назвать это бедой.
+pub struct Choked {
+    ceiling: u64,
+    after: Duration,
+}
+
+impl Choked {
+    /// Планка в байтах в секунду, которую цель доказала, и терпение до вердикта.
+    pub fn after(ceiling: u64, after: Duration) -> Choked {
+        Choked { ceiling, after }
+    }
+}
+
 /// Детектор отравления DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ). Подозрение: легитимный
 /// `NXDOMAIN` даёт то же. Транспорт — `Udp`.
 pub struct DnsPoison;
@@ -673,6 +726,47 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
     }
     fn window(&self) -> Duration {
         BLACKHOLE_WINDOW
+    }
+}
+
+/// Сброс живёт В ПРОВОДЕ: улика — флаг `RST` в заголовке, а счётчики края флагов не хранят.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Rst {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, SeenTcp, _, Distress, Distress>(
+            RstInstrument::new(),
+        ))
+    }
+}
+
+/// Троттлинг живёт В ПРОВОДЕ: показание — величина, считанная по окну, и окно это НАШЕ, а не
+/// ядерное. Край даёт байты нарастающим итогом, но не помнит, сколько их было окно назад.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Throttled {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, SeenTcp, _, Distress, Distress>(
+            ThrottledInstrument::over(self.window),
+        ))
+    }
+    fn window(&self) -> Duration {
+        self.window
+    }
+}
+
+/// Захлёбывание живёт В ПРОВОДЕ по той же причине, что и троттлинг: предмет — СПРОС клиента против
+/// отдачи цели, а спрос виден просьбами в проводе, не счётчиком края.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Choked {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _, Distress, Distress>(
+            ChokedInstrument::after(self.ceiling, self.after),
+        ))
+    }
+    fn window(&self) -> Duration {
+        self.after
     }
 }
 

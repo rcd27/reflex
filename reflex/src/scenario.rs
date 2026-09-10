@@ -668,6 +668,37 @@ pub fn request(src_port: u16) -> Vec<u8> {
     frame(src_port, 443, 0x18, &[0x16, 0x03, 0x01, 0x00, 0x40])
 }
 
+/// ОТВЕТ ЦЕЛИ — кадр в обратную сторону. Нужен всякому сценарию, где беда приходит ОТ цели, а не
+/// от молчания: сброс, инжект, ответ с нагрузкой. Без него сочинить можно было только просьбы
+/// клиента, и приборы, читающие ответ, оставались непроверяемы на сочинённом проводе.
+fn from_target(dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+    let total = 20 + 20 + payload.len();
+    let mut packet = vec![0u8; total];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+    packet[9] = 6;
+    packet[12..16].copy_from_slice(&[93, 184, 216, 34]);
+    packet[16..20].copy_from_slice(&[10, 0, 0, 1]);
+    packet[20..22].copy_from_slice(&443u16.to_be_bytes());
+    packet[22..24].copy_from_slice(&dst_port.to_be_bytes());
+    packet[32] = 5 << 4;
+    packet[33] = flags;
+    packet[34..36].copy_from_slice(&64240u16.to_be_bytes());
+    packet[40..].copy_from_slice(payload);
+    packet
+}
+
+/// СБРОС ОТ ЦЕЛИ: `RST` в ответ на разговор — улика прибора [`reflex::Rst`](crate::Rst).
+pub fn rst(client_port: u16) -> Vec<u8> {
+    from_target(client_port, 0x04, &[])
+}
+
+/// ОТВЕТ ЦЕЛИ С НАГРУЗКОЙ: `PSH+ACK` и столько байт, сколько просят. Им меряют скорость — то есть
+/// им и кормятся приборы величины ([`reflex::Throttled`](crate::Throttled)).
+pub fn reply(client_port: u16, bytes: usize) -> Vec<u8> {
+    from_target(client_port, 0x18, &vec![0x41; bytes])
+}
+
 /// ЧУЖОЙ кадр: не наш порт, транспорт его не опознает (`observe → Observation::Foreign`).
 pub fn alien() -> Vec<u8> {
     frame(40000, 80, 0x18, &[0x41; 8])
