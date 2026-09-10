@@ -980,10 +980,27 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
 
     /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
     /// случилось. Пакет идёт как шёл.
-    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, F, H, S> {
+    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, ByName<F>, H, S> {
         Running {
             detecting: self,
-            react,
+            react: ByName(react),
+            certify: false,
+        }
+    }
+
+    /// НАБЛЮДАТЬ С АДРЕСОМ: реакция получает [`Whom`] — имя цели И ключ разговора.
+    ///
+    /// Отдельная дверь, а не второй способ звать `.on`: вывод типов у замыканий без аннотаций
+    /// требует, чтобы подпись была известна из сигнатуры метода. Две двери здесь не два закона, а
+    /// два ОБЪЁМА одного адреса: кому довольно имени цели — `.on`, кому нужно различать разговоры
+    /// одной цели — `.on_addressed`.
+    pub fn on_addressed<F: FnMut(Whom<'_>, S)>(
+        self,
+        react: F,
+    ) -> Running<C, T, Addressed<F>, H, S> {
+        Running {
+            detecting: self,
+            react: Addressed(react),
             certify: false,
         }
     }
@@ -1137,7 +1154,7 @@ impl<C: Bordered, T: Transport, S> Speaking<C, T, MarkWriter, S> {
 
 impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
     /// НАБЛЮДАТЬ слова о РАЗГОВОРАХ — вторая дверь пары. Слова о цели уже адресованы `.on_target`.
-    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, F, H, S> {
+    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, ByName<F>, H, S> {
         self.detecting.on(react)
     }
 }
@@ -1222,17 +1239,67 @@ impl<T: CanHold + CanAsk> Act<T> {
 /// носителя своим сокетом, как ездил до §9.4.
 trait Voice<K, S> {
     /// Слово услышано — чем цепочка обещает тронуть мир. Пусто у наблюдателя.
-    fn hears(&mut self, target: &str, distress: S, seen: &[u8]) -> SmallVec<[Effect; 2]>;
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]>;
     /// Исполнить обещанное носителем. У наблюдателя обещаний не бывает — тело пусто по построению.
     fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>);
+}
+
+/// КОМУ адресовано слово — всё, что фасад знает о его авторе.
+///
+/// Имя цели было наружу всегда; ключ РАЗГОВОРА — нет, и это была дыра: слово принадлежит
+/// разговору (§4), а наружу выходило, потеряв его адрес. Потребитель, которому нужно различать
+/// разговоры одной цели, восстанавливал адрес в обход конструкции — стоком мимо алфавита, то есть
+/// нарушением §2 (замер: слушатель канала над сканилкой стратегий, 10.09).
+///
+/// Края здесь НЕТ намеренно. Он носитель-зависим (`CtEdge` против `LocalEdge`), и отдать его
+/// типом значило бы вернуть потребителю знание о носителе — ровно то, что выселялось всей веткой.
+/// Что из края выводимо и переносимо, прибор кладёт в СВОЁ СЛОВО: с тех пор как словарь стал
+/// потребительским, это законно и адреса не требует.
+#[derive(Debug, Clone, Copy)]
+pub struct Whom<'a> {
+    /// Имя цели — то же, что приходило первым аргументом прежде.
+    pub target: &'a str,
+    /// Ключ разговора: пятёрка, которой он опознан.
+    pub flow: Flow,
+}
+
+/// Как реакция принимает адрес. Два способа, и оба — одна дверь `.on`: `|target, слово|` берёт
+/// только имя (так писали всегда, и примеры не изменились ни строкой), `addressed(|whom, слово|)`
+/// берёт адрес целиком.
+///
+/// Через обёртку, а не через второй метод: предмет один — «реакция на слово», и заводить ему две
+/// двери значило бы развести один закон надвое (тот же довод, что у `Placed`: род объявляет
+/// прибор, а не спрашивающий).
+pub trait Reaction<S> {
+    fn call(&mut self, whom: Whom<'_>, word: S);
+}
+
+/// Реакция по ИМЕНИ — как писали всегда. Обёртка, а не blanket-`impl` по `FnMut`: blanket ломает
+/// вывод типов у замыканий без аннотаций, и `.on(|target, distress| …)` в примерах перестал бы
+/// собираться. Обёртку ставит сам `.on`, потребителю она не видна.
+pub struct ByName<F>(F);
+
+impl<S, F: FnMut(&str, S)> Reaction<S> for ByName<F> {
+    fn call(&mut self, whom: Whom<'_>, word: S) {
+        (self.0)(whom.target, word)
+    }
+}
+
+/// Обёртка для реакции, которой нужен АДРЕС, а не только имя. Ставит её `.on_addressed`.
+pub struct Addressed<F>(F);
+
+impl<S, F: FnMut(Whom<'_>, S)> Reaction<S> for Addressed<F> {
+    fn call(&mut self, whom: Whom<'_>, word: S) {
+        (self.0)(whom, word)
+    }
 }
 
 /// СМОТРЕТЬ: реакция потребителя, мира не касающаяся.
 struct Watch<F>(F);
 
-impl<K, S, F: FnMut(&str, S)> Voice<K, S> for Watch<F> {
-    fn hears(&mut self, target: &str, distress: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        (self.0)(target, distress);
+impl<K, S, F: Reaction<S>> Voice<K, S> for Watch<F> {
+    fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        self.0.call(whom, word);
         SmallVec::new()
     }
 
@@ -1249,8 +1316,8 @@ where
     K::Error: std::fmt::Debug,
     F: FnMut(&str, S) -> Act<K>,
 {
-    fn hears(&mut self, target: &str, distress: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        let (_word, effects) = emit::<K>((self.0)(target, distress), seen);
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        let (_word, effects) = emit::<K>((self.0)(whom.target, word), seen);
         effects
     }
 
@@ -1281,7 +1348,7 @@ where
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
-    F: FnMut(&str, S),
+    F: Reaction<S>,
 {
     /// НАБЛЮДАТЬ. Ведущий цикл один на оба терминала — см. [`drive`]; отсюда в него едет голос
     /// [`Watch`], мира не касающийся.
@@ -1760,7 +1827,14 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             for (key, flow, signals) in said {
                 let named = label(&key);
                 for signal in signals {
-                    effects.extend(voice.hears(&named, signal.clone(), evidence));
+                    effects.extend(voice.hears(
+                        Whom {
+                            target: &named,
+                            flow,
+                        },
+                        signal.clone(),
+                        evidence,
+                    ));
                     // Слой копится РАДИ копредела и больше ни для чего: нет свёртки — некому его
                     // читать, и наполнять его значило бы платить за слово, которое не родится.
                     if self.about.is_some() {

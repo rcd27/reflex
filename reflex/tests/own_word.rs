@@ -138,3 +138,33 @@ fn парк_без_чужого_прибора_говорит_бедой_как_
         .detect(Silence::after(Duration::from_secs(5)))
         .on(|_target, _distress: Distress| {});
 }
+
+/// АДРЕС НАРУЖУ: реакция различает РАЗГОВОРЫ одной цели, а не только цель.
+///
+/// До этой двери наружу выходило только имя цели, и потребитель, которому нужно различать
+/// разговоры, восстанавливал адрес в обход конструкции — стоком мимо алфавита (§2). Замер:
+/// слушатель канала над сканилкой стратегий, 10.09.
+#[test]
+fn реакция_получает_ключ_разговора_а_не_только_имя_цели() {
+    let seen = log::<u16>();
+    let paper = Paper::new()
+        .then_packet(request(40001))
+        .then_packet(request(40002))
+        .then_stop();
+
+    let sink = seen;
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Prober))
+        .on_addressed(move |whom: Whom<'_>, _word: Probed| {
+            sink.lock().expect("адреса").push(whom.flow.src.port())
+        })
+        .run();
+
+    let ports = seen.lock().expect("адреса").clone();
+    assert!(
+        ports.contains(&40001) && ports.contains(&40002),
+        "адрес обязан различать разговоры одной цели; пришло: {ports:?}"
+    );
+}
