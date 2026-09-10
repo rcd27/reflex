@@ -1,18 +1,18 @@
-//! Очередь ядра — боевой бэкенд продукта. Модуль был вдвое больше: `guard`/`nft_guard` ставили
-//! правила netfilter, `typed`/`witness`/`combined` разбирали провод — всё это звала только закрытая
-//! deprecated-ветка, не собиравшаяся. Потребитель правила ставит СНАРУЖИ (скриптами стенда), а из
-//! очереди берёт `NfqHandler`/`NfqPacket`/`NfqPipeline`. Фундамент, несущий обвязку мёртвого
-//! потребителя, — музей; знание в истории, путь до него назван в коммите сноса.
+//! Очередь ядра. Модуль ужимался дважды: сперва ушли `guard`/`nft_guard`/`typed`/`witness`, потом
+//! (10.09.2026) — `pipeline` с `NfqPipeline`/`NfqStep`/`NfqVerdictKind`. Второй снос по правилу
+//! хозяина: код без живого потребителя либо уходит, либо обзаводится примером, который его
+//! употребляет. У `pipeline` пример был (`nfq-passthrough`), но держал он сам труп, а не живое —
+//! боевой путь ходит через `queue::QueueSocket`, и три алфавита вердикта на одни четыре слова
+//! (`NfqVerdict`, `NfqVerdictKind`, `Answer`) с ним ушли тоже.
+//!
+//! Потребитель правила netfilter ставит СНАРУЖИ (скриптами стенда), а из очереди берёт `Answer`.
+//! Знание не потеряно: оно в истории, путь до него — этот коммит.
 
 mod backend;
-mod pipeline;
 mod preflight;
 mod terminal;
 
 pub use backend::{NfqueueBackend, Waited};
-pub use pipeline::{
-    NfqCounts, NfqHandler, NfqPacket, NfqPipeline, NfqShared, NfqStep, NfqVerdictKind,
-};
 pub use terminal::{Answer, NotTaken, Queued};
 // Только внутри крейта: `millis_until` — закон округления остатка до `poll`, общий с
 // `queue::terminal` (второй бэкенд на своём netlink-сокете, тот же предмет).
