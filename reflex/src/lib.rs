@@ -81,7 +81,7 @@ pub use smallvec::{smallvec, SmallVec};
 /// граница была проверяема ГРЕПОМ: имени линукс-крейта в `lib.rs` не должно встретиться ни разу,
 /// иначе «WinDivert встаёт в ту же дверь» остаётся обещанием, а не свойством.
 mod nfqueue;
-pub use nfqueue::{Nfqueue, NfqueueCarrier, INJECT_MARK};
+pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};

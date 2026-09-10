@@ -9,10 +9,13 @@
 //! состояние. Всё прочее — способности, которыми носитель отвечает удержанному пакету и вводит
 //! свои пакеты в сеть.
 
+use std::time::Duration;
+
 use reflex_core::backend::Sink;
 use reflex_core::capability::{CanHold, CanInject, CanRefuse, CanRemember, CanSever, Toward};
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+use reflex_core::local::Local;
 use reflex_core::serves::Served;
 use reflex_core::Serves;
 use reflex_instrument::edge::Layout;
@@ -60,6 +63,58 @@ impl Nfqueue {
     /// release).
     pub fn marking(self, mask: u32, tag: u8) -> Option<Nfqueue> {
         Layout::new(mask, tag).map(|layout| Nfqueue { layout, ..self })
+    }
+
+    /// Та же очередь, но БЕЗ ядерного дома: край и дом строит [`Local`] сам, в юзерспейсе, а не
+    /// `conntrack`/`ct_mark`. Второй свидетель закона `EdgeView` на Linux (задача 11) — не костыль
+    /// для теста, а законный носитель для машины без `nf_conntrack_acct`, на которой
+    /// [`Nfqueue::queue`] сегодня не поднимается вовсе (`TimeoutBase::read()` отдаёт `None`).
+    pub fn local(num: u16) -> LocalNfqueue {
+        LocalNfqueue {
+            queue: num,
+            layout: Layout::new(MARK_MASK, MARK_TAG).expect("умолчание: 15 бит, ненулевой тег"),
+        }
+    }
+}
+
+/// Рецепт местного носителя: та же очередь netfilter (`queue num N` ставится снаружи, как и у
+/// [`Nfqueue::queue`]), но `open` строит [`Local<QueueSocket>`] и НЕ читает базу таймаутов
+/// conntrack — местный край и дом не зависят от ядерного учёта, потому и предпосылки у него нет.
+pub struct LocalNfqueue {
+    queue: u16,
+    layout: Layout,
+}
+
+impl IntoCarrier for LocalNfqueue {
+    type Carrier = Local<QueueSocket>;
+
+    /// `TimeoutBase::read()` здесь НЕ ЗВУЧИТ — это и есть отличие от [`Nfqueue::open`], ради
+    /// которого носитель заведён: на машине без `nf_conntrack_acct` он остаётся `None`, и
+    /// ядерный носитель не откроется вовсе, а местному эта величина не нужна ни для чего своего.
+    ///
+    /// `QueueSocket::open` всё равно просит `TimeoutBase` — ТИПОМ, не смыслом: сокет строит из неё
+    /// `CtEdge` на пакетах, у которых пришёл вид ядра (`NFQA_CT`), но `Local::serve` этот
+    /// `Option<C::Edge>` принимает и ОТБРАСЫВАЕТ (докблок `impl Serves for Local` в `local.rs`) —
+    /// отдаёт `decide` СВОЙ `LocalEdge`. Читать sysctl ради величины, которую тут же выбросят, было
+    /// бы вторым, никому не нужным замером — потому подставлен ноль, а не итог `::read()`.
+    fn open(self) -> Result<Local<QueueSocket>, Cause> {
+        let discarded_by_local = TimeoutBase {
+            syn_sent: Duration::ZERO,
+            established: Duration::ZERO,
+        };
+        let socket = QueueSocket::open(self.queue, discarded_by_local)
+            .map_err(|why| Cause(format!("{why:?}")))?;
+        Ok(Local::new(socket))
+    }
+
+    fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// Отличимо от [`Nfqueue::queue`] по имени — тот же номер очереди годится и ядерному, и
+    /// местному носителю, и отчёт об отказе обязан сказать, КАКОЙ из двух не поднялся.
+    fn name(&self) -> String {
+        format!("очередь {} (местный край)", self.queue)
     }
 }
 

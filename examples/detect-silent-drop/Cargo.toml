@@ -23,3 +23,10 @@ path = "src/main.rs"
 [[bin]]
 name = "detect-silent-drop-edge"
 path = "src/edge_main.rs"
+
+# ДИФФЕРЕНЦИАЛЬНЫЙ СТЕНД (Task 11): ОДНА цепочка фасада, ДВА носителя (`Nfqueue::queue`/`local`,
+# выбор — переменной `CARRIER`) — оба движка на ОДНОМ трафике сверяются `lab/edges/compare.sh`.
+# Зависит только от `reflex` (докблок `edges_main.rs`).
+[[bin]]
+name = "detect-silent-drop-edges"
+path = "src/edges_main.rs"

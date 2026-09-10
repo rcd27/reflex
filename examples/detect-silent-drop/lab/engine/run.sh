@@ -11,13 +11,18 @@ LOG=/tmp/reflex.log
 
 echo "[стенд] цель=$TARGET  контроль=$CONTROL  очередь=$QUEUE"
 
-# 0. Предпосылки КРАЯ: движок читает счётчики и возраст потока у conntrack, а ядро их не ведёт,
-#    пока не сказано. Без учёта движок не поднимется — и скажет об этом, а не соврёт нулями.
-#    Пишем в /proc напрямую: `sysctl` в тонком образе нет, а procps ради двух строк не тянем.
-echo 1 >/proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null \
-  || echo "[стенд] ВНИМАНИЕ: учёт счётчиков не включился — краевые приборы будут молчать честно"
-echo 1 >/proc/sys/net/netfilter/nf_conntrack_timestamp 2>/dev/null \
-  || echo "[стенд] ВНИМАНИЕ: отметки времени не включились — возраста потока не будет"
+# 0. Предпосылка КРАЯ: движок читает счётчики и возраст потока у conntrack. `compose.yml` ставит
+#    `nf_conntrack_acct`/`timestamp` namespaced-sysctl'ами ПРИ СОЗДАНИИ netns — единственном
+#    моменте, когда /proc/sys ещё не read-only; здесь их только ЧИТАЕМ. Прежде здесь стояла ЗАПИСЬ
+#    поверх уже готового — она гарантированно отказывала ("Read-only file system") и печатала
+#    «ВНИМАНИЕ: не включился» даже когда учёт работал, путая читающего: отказ записи не был
+#    отказом края.
+ACCT=$(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null || echo '?')
+TS=$(cat /proc/sys/net/netfilter/nf_conntrack_timestamp 2>/dev/null || echo '?')
+echo "[стенд] учёт conntrack: acct=$ACCT timestamp=$TS (ставит compose.yml при создании netns)"
+if [ "$ACCT" != "1" ] || [ "$TS" != "1" ]; then
+  echo "[стенд] ВНИМАНИЕ: учёт и правда не включён — краевые приборы будут молчать честно" >&2
+fi
 
 # 1. Движок на очереди. Правило ставим ПОСЛЕ — очередь без слушателя дропает трафик.
 detect-silent-drop >"$LOG" 2>&1 &

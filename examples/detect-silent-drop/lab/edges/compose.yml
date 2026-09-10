@@ -1,0 +1,25 @@
+# Дифференциальный стенд (задача 11): ОДИН сервис, а не два — оба движка обязаны стоять в ОДНОМ
+# netns, иначе правила nft развели бы их по разным сетевым пространствам, и через каждую очередь
+# прошёл бы СВОЙ трафик, а не ОДИН И ТОТ ЖЕ пакет. Сами правила — ДВЕ ОТДЕЛЬНЫЕ цепочки одного хука
+# на соседних приоритетах, а не два `queue num` в одной цепочке: докблок `run.sh` называет ЗАМЕР,
+# которым это установлено (вердикт `NF_ACCEPT` из очереди завершает обход СВОЕЙ цепочки, второе
+# правило той же цепочки недостижимо по построению).
+services:
+  edges:
+    build:
+      context: ../../../..
+      dockerfile: examples/detect-silent-drop/lab/edges/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    # Предпосылка КРАЯ engine-ct: `nf_conntrack_acct`/`timestamp`. Ставятся ЗДЕСЬ, а не в run.sh —
+    # /proc/sys в контейнере read-only, и docker кладёт namespaced-sysctl'ы при создании netns,
+    # единственном моменте, когда они ещё пишутся. engine-local (`Nfqueue::local`) в них не нуждается
+    # вовсе — и это весь смысл его существования (докблок `reflex/src/nfqueue.rs`).
+    sysctls:
+      net.netfilter.nf_conntrack_acct: "1"
+      net.netfilter.nf_conntrack_timestamp: "1"
+    # Реальная цель на нашем вантаже и чистый контроль — та же пара, что в `lab/engine`, устойчивая
+    # на этом линке (README там же называет оговорку про недетерминизм ТСПУ).
+    environment:
+      TARGET: rutracker.org
+      CONTROL: vk.com
