@@ -112,6 +112,9 @@ pub use smallvec::{smallvec, SmallVec};
 #[cfg(unix)]
 mod nfqueue;
 pub mod pcap;
+// ЗАМЫКАНИЕ КОНТУРА — черновая дверь за фичей, каноном не объявленная. Цена в манифесте.
+#[cfg(feature = "telling")]
+pub mod telling;
 #[cfg(unix)]
 pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
 /// Дверь записи стоит в КОРНЕ рядом с [`engine`]: `reflex::pcap("файл")`. Имя делят модуль и
@@ -842,6 +845,8 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             park,
             longest,
             about: None,
+            #[cfg(feature = "telling")]
+            telling: None,
             transport: PhantomData,
         }
     }
@@ -901,6 +906,10 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     park: Park<Wide<T::Wire, C::Edge>, S>,
     longest: Duration,
     about: Option<(Fold<S>, TargetVoice<S>)>,
+    /// Ручка внеполосной двери, если её просили. `None` — не просили: контур разомкнут, и это
+    /// обычное состояние наблюдателя.
+    #[cfg(feature = "telling")]
+    telling: Option<crate::telling::Telling>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -921,8 +930,23 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             park: self.park,
             longest: self.longest,
             about: self.about,
+            #[cfg(feature = "telling")]
+            telling: self.telling,
             transport: PhantomData,
         }
+    }
+
+    /// ДВЕРЬ ВНЕПОЛОСНОГО ЗНАНИЯ (черновая, за фичей `telling`). Ручка копируется и уезжает в
+    /// чужую нить; движок раз в оборот забирает положенное и кладёт решение в дом КЛЮЧА, откуда
+    /// оно читается вердиктом СЛЕДУЮЩИХ пакетов той же цели.
+    ///
+    /// Область марки под решение объявляется потребителем и обязана НЕ ПЕРЕСЕКАТЬСЯ с областью
+    /// приборов — проверка стоит здесь, при постройке, а не на первой записи: пересечение значило
+    /// бы, что два писателя затирают друг друга, и узналось бы это поведением сети.
+    #[cfg(feature = "telling")]
+    pub fn telling(mut self, telling: crate::telling::Telling) -> Detecting<C, T, H, S> {
+        self.telling = Some(telling);
+        self
     }
 }
 
@@ -1790,6 +1814,10 @@ struct Turning<C: Bordered, T: Transport, S> {
     /// Чем кончилось свидетельство §10, если его просили. Живёт на обороте, а не в `Alive`: это
     /// исход ПРОГОНА, и уходит он в [`Report`], когда источник кончился.
     certified: Option<Replayed>,
+    /// Внеполосная дверь и ДОМ РЕШЕНИЙ ПО КЛЮЧУ. Дом здесь, а не в `Alive`: решение не наблюдение
+    /// и приборам не достаётся — оно живёт до вердикта и читается им.
+    #[cfg(feature = "telling")]
+    telling: Option<(crate::telling::Telling, HashMap<String, reflex_core::mark::Marked>)>,
 }
 
 impl<C, T, S> Turning<C, T, S>
@@ -1813,9 +1841,30 @@ where
             park,
             longest,
             about,
+            #[cfg(feature = "telling")]
+            telling,
             ..
         } = chain;
         let name = recipe.name();
+        // НЕПЕРЕСЕЧЕНИЕ ОБЛАСТЕЙ — ПРИ ПОСТРОЙКЕ, не при первой записи. Пересекись область решений
+        // с областью приборов, и два писателя затирали бы друг друга: фаза прибора читалась бы как
+        // чужая, решение — как испорченное, и заметно это стало бы по поведению сети, а не по
+        // красному тесту. Отказ здесь — ЗНАЧЕНИЕ (`Report`), как и всякий несостоявшийся запуск.
+        #[cfg(feature = "telling")]
+        if let Some(handle) = telling.as_ref() {
+            let ours = reflex_core::mark::Region::new(recipe.layout().mask());
+            if ours.is_some_and(|ours| handle.region().overlaps(&ours)) {
+                return Err(Report::not_started(
+                    name,
+                    format!(
+                        "область решений 0x{:08X} пересекается с областью приборов 0x{:08X}: \
+                         два писателя затирали бы друг друга",
+                        handle.region().mask(),
+                        recipe.layout().mask()
+                    ),
+                ));
+            }
+        }
         // Носитель открывает СЕБЯ: свои предпосылки, свои сокеты. Цикл о них не знает и знать не может
         // — предпосылка носителя есть дело носителя (у WinDivert она другая).
         let carrier = match recipe.open() {
@@ -1862,6 +1911,8 @@ where
             seeds,
             name,
             certified: None,
+            #[cfg(feature = "telling")]
+            telling: telling.map(|handle| (handle, HashMap::new())),
         })
     }
 
@@ -1878,6 +1929,16 @@ where
             self.certified = self.alive.certified(&self.seeds, true).or(self.certified.take());
             return false;
         }
+        // ВНЕПОЛОСНОЕ ЗНАНИЕ ЗАБИРАЕТСЯ ПЕРЕД РАБОТОЙ, а не после: решение, положенное автором до
+        // прихода пакета, обязано быть учтено ЭТИМ пакетом, а не следующим. Сетку положенное не
+        // двигает — оно не наблюдение провода, и узел, рождённый чужим решением, был бы скрытым
+        // входом для приборов молчания (см. докблок `telling`: место на ленте — следующий срез).
+        #[cfg(feature = "telling")]
+        if let Some((handle, decisions)) = self.telling.as_mut() {
+            for told in handle.drain() {
+                decisions.insert(told.target, told.decided);
+            }
+        }
         let Turning {
             carrier,
             alive,
@@ -1886,6 +1947,9 @@ where
             seeds,
             ..
         } = self;
+        // Дом решений — только на чтение внутри решения о вердикте.
+        #[cfg(feature = "telling")]
+        let decisions = self.telling.as_ref().map(|(_handle, decisions)| decisions);
     // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
     // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
     // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
@@ -1931,14 +1995,36 @@ where
             }
         };
         *grid = moved;
+        // Ярлык цели снимается ДО того, как `whose` уедет в раздачу: решение адресовано ключу, а
+        // владение ключом уходит вместе с буквой.
+        #[cfg(feature = "telling")]
+        let decided: Option<reflex_core::mark::Marked> = decisions.and_then(|decisions| {
+            whose
+                .as_ref()
+                .and_then(|(_flow, key)| decisions.get(&label(key)).copied())
+        });
+        #[cfg(not(feature = "telling"))]
+        let decided: Option<reflex_core::mark::Marked> = None;
         let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
         crossed = node;
         // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
         // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
         // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
-        match memo {
-            Some(memo) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
-            None => <C::Carrier as CanHold>::release(),
+        // Памятка прибора и решение потребителя живут в РАЗНЫХ областях марки и ложатся ОДНИМ
+        // словом — тем же, каким пакет отпускается. Разведи их по двум путям, и вернулась бы та
+        // болезнь, от которой уходили: «ответили, но не запомнили» (§5, «отпустить и запомнить»
+        // неделимо). Порядок наложений безразличен ровно потому, что области не пересекаются —
+        // и это проверено при постройке, а не здесь, на горячем пути.
+        match (memo, decided) {
+            (Some(memo), Some(decided)) => <C::Carrier as CanRemember>::remember(
+                decided.apply_to(memo.apply_to(mark)),
+                true,
+            ),
+            (Some(memo), None) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
+            (None, Some(decided)) => {
+                <C::Carrier as CanRemember>::remember(decided.apply_to(mark), true)
+            }
+            (None, None) => <C::Carrier as CanHold>::release(),
         }
     });
 
