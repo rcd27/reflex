@@ -867,9 +867,19 @@ mod throttled_and_choked_tests {
     use reflex_core::DetectorEvent;
     use std::time::Instant;
 
+    /// Буква сценария — что подать шагом. `Option<In>` вмещал только пакет и тик; дыре в нём нет
+    /// клетки (`None` уже занято тиком), и харнес не мог собрать её ни для одного из тестов ниже —
+    /// вариант завёлся ради `degraded_run` у `ThrottledInstrument`, единственного нового
+    /// стейтфул-поведения этой задачи.
+    enum Step<In> {
+        Packet(In),
+        Tick,
+        Torn,
+    }
+
     /// Прогон со сценарием. Алфавит берётся у прибора (`In`): соседи по модулю на разных
     /// протоколах, общий хелпер с прибитым словарём поверял бы одного чужим входом.
-    fn run<D, In>(instrument: D, script: Vec<(Option<In>, u64)>) -> Vec<Distress>
+    fn run<D, In>(instrument: D, script: Vec<(Step<In>, u64)>) -> Vec<Distress>
     where
         D: Mealy<In = DetectorEvent<In>, Out = smallvec::SmallVec<[Distress; 2]>>,
     {
@@ -878,11 +888,12 @@ mod throttled_and_choked_tests {
             .into_iter()
             .fold(
                 (instrument, Vec::new()),
-                |(state, said), (seen, after_ms)| {
+                |(state, said), (step, after_ms)| {
                     let at = start + Duration::from_millis(after_ms);
-                    let event = match seen {
-                        Some(seen) => DetectorEvent::Packet { input: seen, at },
-                        None => DetectorEvent::Tick { node: after_ms, at },
+                    let event = match step {
+                        Step::Packet(seen) => DetectorEvent::Packet { input: seen, at },
+                        Step::Tick => DetectorEvent::Tick { node: after_ms, at },
+                        Step::Torn => DetectorEvent::Torn { at },
                     };
                     let (stepped, signals, _) = state.step(event);
                     (stepped, said.into_iter().chain(signals).collect())
@@ -897,15 +908,15 @@ mod throttled_and_choked_tests {
         let said = run(
             ThrottledInstrument::over(Duration::from_secs(1)),
             vec![
-                (Some(SeenTcp::sent(100)), 0),
-                (Some(SeenTcp::received(1_000_000)), 10),
-                (None, 1_000),
-                (Some(SeenTcp::received(40_000)), 1_100),
-                (None, 2_000),
-                (Some(SeenTcp::received(40_000)), 2_100),
-                (None, 3_000),
-                (Some(SeenTcp::received(40_000)), 3_100),
-                (None, 4_000),
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(1_000_000)), 10),
+                (Step::Tick, 1_000),
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000),
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000),
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000),
             ],
         );
 
@@ -918,19 +929,51 @@ mod throttled_and_choked_tests {
         let said = run(
             ThrottledInstrument::over(Duration::from_secs(1)),
             vec![
-                (Some(SeenTcp::sent(100)), 0),
-                (Some(SeenTcp::received(40_000)), 10),
-                (None, 1_000),
-                (Some(SeenTcp::received(40_000)), 1_100),
-                (None, 2_000),
-                (Some(SeenTcp::received(40_000)), 2_100),
-                (None, 3_000),
-                (Some(SeenTcp::received(40_000)), 3_100),
-                (None, 4_000),
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(40_000)), 10),
+                (Step::Tick, 1_000),
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000),
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000),
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000),
             ],
         );
 
         assert_eq!(said, Vec::<Distress>::new());
+    }
+
+    /// Дыра рвёт СЧЁТ ОКОН ПОДРЯД: два просевших окна, потом носитель объявляет потерю, потом ещё
+    /// два просевших — обвинения нет, потому что счёт после дыры начат заново и до порога
+    /// (`DEGRADED_RUN = 3`) не успевает дойти. Без дыры те же четыре просевших окна подряд обвинили
+    /// бы уже на третьем — ровно это показывает
+    /// [`a_target_that_slowed_below_its_own_proven_rate_is_trouble`].
+    #[test]
+    fn a_tear_breaks_the_degraded_run_so_far_the_target_is_not_accused() {
+        let said = run(
+            ThrottledInstrument::over(Duration::from_secs(1)),
+            vec![
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(1_000_000)), 10),
+                (Step::Tick, 1_000), // окно 1 закрывает планку — просадки ещё нет
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000), // окно 2 просело: счёт подряд идущих = 1
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000), // окно 3 просело: счёт подряд идущих = 2 (до приговора одно)
+                (Step::Torn, 3_050), // дыра: счёт сброшен на 0
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000), // окно 4 просело: счёт = 1 (был бы 3 и приговор без дыры)
+                (Step::Packet(SeenTcp::received(40_000)), 4_100),
+                (Step::Tick, 5_000), // окно 5 просело: счёт = 2 — порога всё ещё нет
+            ],
+        );
+
+        assert_eq!(
+            said,
+            Vec::<Distress>::new(),
+            "дыра обязана была сбросить счёт подряд идущих просевших окон"
+        );
     }
 
     /// Захлёбывание требует и спроса, и терпения. Средний случай оплачен: `nalog.ru` за 348 мс был
@@ -940,15 +983,21 @@ mod throttled_and_choked_tests {
         // Не просили вовсе — «спроса не было» есть отсутствие событий.
         let no_demand = run(
             ChokedInstrument::after(0, Duration::from_millis(1_000)),
-            vec![(None, 0), (None, 5_000)],
+            vec![(Step::Tick, 0), (Step::Tick, 5_000)],
         );
         let too_early = run(
             ChokedInstrument::after(0, Duration::from_millis(1_000)),
-            vec![(Some(Seen::Sent { count: 100 }), 0), (None, 348)],
+            vec![
+                (Step::Packet(Seen::Sent { count: 100 }), 0),
+                (Step::Tick, 348),
+            ],
         );
         let waited = run(
             ChokedInstrument::after(0, Duration::from_millis(1_000)),
-            vec![(Some(Seen::Sent { count: 100 }), 0), (None, 1_500)],
+            vec![
+                (Step::Packet(Seen::Sent { count: 100 }), 0),
+                (Step::Tick, 1_500),
+            ],
         );
 
         assert_eq!(no_demand, Vec::<Distress>::new());
@@ -961,7 +1010,10 @@ mod throttled_and_choked_tests {
     fn a_target_that_once_proved_itself_is_spared() {
         let said = run(
             ChokedInstrument::after(1_000_000, Duration::from_millis(1_000)),
-            vec![(Some(Seen::Sent { count: 100 }), 0), (None, 5_000)],
+            vec![
+                (Step::Packet(Seen::Sent { count: 100 }), 0),
+                (Step::Tick, 5_000),
+            ],
         );
 
         assert_eq!(said, Vec::<Distress>::new());
