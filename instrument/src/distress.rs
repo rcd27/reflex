@@ -92,14 +92,16 @@ impl reflex_core::word::Word for Spoken {
 /// нельзя по построению — закон пары разных областей не складывает, а спустить слово о цели к
 /// разговору значило бы отменить только что сделанную агрегацию.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Voiced {
-    pub distress: Distress,
+pub struct Voiced<S = Distress> {
+    pub distress: S,
     /// Возраст самого свежего из сведённых наблюдений. Годность судит потребитель — фреймворк
     /// отдаёт величину.
     pub since: std::time::Duration,
 }
 
-impl reflex_core::word::Word for Voiced {
+/// Слово о цели принадлежит области ЦЕЛИ, каким бы ни было слово разговоров под ним: копредел
+/// меняет ОБЛАСТЬ, а не словарь (§4).
+impl<S> reflex_core::word::Word for Voiced<S> {
     type Of = reflex_core::word::Target;
 }
 

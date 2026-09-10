@@ -50,8 +50,10 @@ use reflex_core::backend::Sink;
 use reflex_core::capability::{CanAsk, CanHold, CanInject, CanRemember};
 use reflex_core::certify::replays::{replays, Replayed};
 use reflex_core::colimit::Layer;
+use reflex_core::word::Word;
 use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
+use reflex_core::edge::EdgeView;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::held::{Held, Terminal};
@@ -92,24 +94,7 @@ pub use smallvec::{smallvec, SmallVec};
 #[cfg(unix)]
 mod nfqueue;
 #[cfg(unix)]
-pub use nfqueue::{CtEdge, LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
-
-/// ЧТО НУЖНО КРАЕВОМУ ПРИБОРУ — через фасад, без второй зависимости у потребителя. `EdgeView` —
-/// закон края (счётчики и возраст, которые ведёт носитель), `Edged` — слово, в котором прибор видит
-/// провод и край разом, `ResetBy` — автор сброса. Все три БЕЗУСЛОВНЫ: краевой прибор пишется над
-/// законом, а не над носителем, и на Windows он тот же. Носительский `CtEdge` уезжает отдельно и
-/// только под `cfg(unix)` (см. `mod nfqueue`).
-///
-/// Пределом это было замерено снаружи: первое употребление фреймворка из чужой репы искало эти
-/// имена в `reflex` и не нашло — краевой прибор через фасад написать было нельзя.
-pub use reflex_core::edge::EdgeView;
-pub use reflex_instrument::edge_word::Edged;
-pub use reflex_instrument::wire::ResetBy;
-
-/// Причина, по которой кадр не прочитан. Реэкспорт, а не внутреннее имя: она стоит в подписи
-/// [`Transport::observe`], и без неё свой транспорт снаружи не написать — а `Truncated` из неё
-/// решает, ослепнут приборы на этой букве или нет (`DetectorEvent::hides_observation`).
-pub use reflex_core::parse::Unread;
+pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};
@@ -221,36 +206,8 @@ pub trait Transport {
     const PORT: u16;
     /// Состояние разбора (память разговоров, личность цели) — своё у каждого транспорта.
     type State: Default;
-    /// Что вышло из кадра. ТРИ исхода, не два: наблюдение, ПРОПАВШЕЕ наблюдение и чужой кадр.
-    ///
-    /// Прежде подпись отдавала `Option`, и «кадр обрезан» схлопывалось с «не мой транспорт» в один
-    /// `None`. Цена схлопывания замерена и была двойной: (1) обрезанный кадр доезжал до цикла
-    /// неотличимым от чужого и двигал часы тишины через `Interleave::idle` — то есть кадр,
-    /// СПРЯТАВШИЙ ответ цели, работал свидетельством молчания; (2) буква `Opaque { why: Truncated }`
-    /// с боевого пути не рождалась вовсе, и работа пяти приборов по прячущей букве
-    /// (`DetectorEvent::hides_observation`) не срабатывала ни разу за жизнь продукта — механизм,
-    /// потреблённый ноль раз. `Read::Truncated` доезжал сюда из `parse::read` и терялся ровно здесь.
-    ///
-    /// Кто пишет свой транспорт: `Observation::Unread` — только для кадра, который БЫЛ и МОГ нести
-    /// ответ этого разговора (сегодня это `Read::Truncated`). Чужой протокол, чужой порт, не-IPv4 —
-    /// `Observation::Foreign`: ослепнуть на них значило бы онеметь зря (тот же довод, что в
-    /// `DetectorEvent::hides_observation`).
-    fn observe(state: &mut Self::State, read: Read<'_>) -> Observation<Self::Wire>;
-}
-
-/// Исход разбора кадра транспортом. Три клетки, потому что цикл отвечает на них ТРЕМЯ разными
-/// буквами шва, и слить любые две значило бы солгать приборам о том, что было на проводе.
-pub enum Observation<W> {
-    /// Наблюдение состоялось — [`Interleave::saw`].
-    Seen(Observed<W>),
-    /// Кадр БЫЛ и мог нести ответ цели, но прочесть его не удалось. Причина едет в букве:
-    /// [`Interleave::unread`] родит `Opaque { why }`, и приборы, судящие по ОТСУТСТВИЮ, на такой
-    /// букве слепнут — отсутствие наблюдений в окне перестало быть установленным.
-    Unread(Unread),
-    /// Кадр не нашего разговора: чужой протокол, чужой порт, не-IPv4, либо наш протокол, но
-    /// состояние разбора наблюдения из него не сделало. Момент прихода СЕТКУ ДВИГАЕТ (иначе поток
-    /// чужого трафика выглядел бы тишиной), а зрения не отнимает.
-    Foreign,
+    /// Из разобранного кадра — наблюдение, либо ничего (не наш кадр).
+    fn observe(state: &mut Self::State, read: Read<'_>) -> Option<Observed<Self::Wire>>;
 }
 
 /// Транспорт TCP: словарь соединения (`Reading`), порт 443, личность по SNI.
@@ -294,17 +251,9 @@ impl Transport for Tcp {
     const PORT: u16 = 443;
     type State = TcpState;
 
-    fn observe(state: &mut TcpState, read: Read<'_>) -> Observation<Reading> {
-        let wire = match read {
-            Read::Tcp(wire) => wire,
-            // Обрезанный кадр — ПОТЕРЯ, а не свойство чужого трафика: заголовок не поместился
-            // целиком, и байты этого разговора могли быть в нём (`parse::ipv4` различает «обрезан»
-            // и «чужой протокол» нарочно). Молчать о нём значило бы отдать приборам окно, которое
-            // выглядит свободным от пропажи и им не является.
-            Read::Truncated => return Observation::Unread(Unread::Truncated),
-            Read::Udp(_) | Read::NotIpv4 | Read::NotOurProtocol | Read::NotOurPort => {
-                return Observation::Foreign
-            }
+    fn observe(state: &mut TcpState, read: Read<'_>) -> Option<Observed<Reading>> {
+        let Read::Tcp(wire) = read else {
+            return None;
         };
         // Личность копится; отсутствие SNI не теряется — цель по адресу.
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
@@ -315,16 +264,11 @@ impl Transport for Tcp {
             ident.naming = Naming::Spoken(sni.into());
         }
         let key = ident.key();
-        // Разбор состоялся, а наблюдения из него не вышло (`Talks` не всякий сегмент переводит в
-        // слово): кадр наш и целый — прятать нечего, потому `Foreign`, а не `Unread`.
-        match state.talks.read(&wire) {
-            Some(tcp) => Observation::Seen(Observed {
-                flow: wire.flow,
-                key,
-                wire: Reading::Tcp(tcp),
-            }),
-            None => Observation::Foreign,
-        }
+        state.talks.read(&wire).map(|tcp| Observed {
+            flow: wire.flow,
+            key,
+            wire: Reading::Tcp(tcp),
+        })
     }
 }
 
@@ -341,20 +285,11 @@ impl Transport for Udp {
     const PORT: u16 = 53;
     type State = UdpState;
 
-    fn observe(_state: &mut UdpState, read: Read<'_>) -> Observation<DnsMessage> {
-        let datagram = match read {
-            Read::Udp(datagram) => datagram,
-            // Довод тот же, что у `Tcp::observe`: обрезанный кадр мог быть нашей датаграммой.
-            Read::Truncated => return Observation::Unread(Unread::Truncated),
-            Read::Tcp(_) | Read::NotIpv4 | Read::NotOurProtocol | Read::NotOurPort => {
-                return Observation::Foreign
-            }
+    fn observe(_state: &mut UdpState, read: Read<'_>) -> Option<Observed<DnsMessage>> {
+        let Read::Udp(datagram) = read else {
+            return None;
         };
-        // Датаграмма ЦЕЛА (иначе выше был бы `Truncated`), а DNS в ней не разобрался — не наш
-        // разговор на нашем порту: скрывать ему нечего.
-        let Some(message) = DnsMessage::parse(datagram.payload) else {
-            return Observation::Foreign;
-        };
+        let message = DnsMessage::parse(datagram.payload)?;
         // Цель — имя из вопроса (оно же и отравляют); вопроса нет — цель безымянна, и ключуется
         // адресом резолвера. Тег сохраняется: `Unnamed` не притворяется именем.
         let key = message
@@ -362,7 +297,7 @@ impl Transport for Udp {
             .first()
             .map(|query| TargetKey::Named(query.name.clone().into_boxed_str()))
             .unwrap_or(TargetKey::Unnamed(datagram.dst));
-        Observation::Seen(Observed {
+        Some(Observed {
             flow: datagram.flow,
             key,
             wire: message,
@@ -434,11 +369,12 @@ pub type Wide<W, E> = (W, Option<E>);
 /// чтобы приборы разных алфавитов лежали одним списком; шаг дёшев, диспетч не на горячем счёте.
 /// Скрыт из доков: потребитель его не называет (кладёт `Silence`/`SynDrop`/… через `IntoProbe`).
 #[doc(hidden)]
-pub trait Probe<W>: Send {
-    /// Слова беды за этот шаг (пусто — прибору сказать нечего).
-    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[Distress; 2]>;
+pub trait Probe<W, S>: Send {
+    /// Слова прибора за этот шаг (пусто — сказать нечего). `S` — СЛОВАРЬ ЦЕПОЧКИ: парк говорит
+    /// `Distress`, чужой прибор — своё, и второе не обязано выражаться через первое.
+    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[S; 2]>;
     /// Свежая копия шаблона — `FlowTable` заводит прибор на каждый ключ.
-    fn clone_box(&self) -> Box<dyn Probe<W>>;
+    fn clone_box(&self) -> Box<dyn Probe<W, S>>;
 }
 
 /// Сузить широкое событие до алфавита прибора (§4, `Reads`). Пакет — по букве прибора (`None` —
@@ -464,24 +400,26 @@ struct Lift<M, N> {
     alphabet: PhantomData<fn() -> N>,
 }
 
-impl<W, N, M> Probe<W> for Lift<M, N>
+impl<W, N, M, S, P> Probe<W, S> for Lift<M, N>
 where
     W: 'static,
     N: Reads<W> + 'static,
-    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+    S: From<P> + 'static,
+    P: 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[P; 2]>> + Copy + Send + 'static,
 {
-    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[Distress; 2]> {
+    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[S; 2]> {
         match narrow::<W, N>(event) {
             Some(event) => {
                 let (machine, signals, _log) = self.machine.step(event);
                 self.machine = machine;
-                signals
+                signals.into_iter().map(S::from).collect()
             }
             None => SmallVec::new(),
         }
     }
 
-    fn clone_box(&self) -> Box<dyn Probe<W>> {
+    fn clone_box(&self) -> Box<dyn Probe<W, S>> {
         Box::new(Lift {
             machine: self.machine,
             alphabet: PhantomData,
@@ -497,8 +435,8 @@ where
 /// оставить пустым, адресовано не им (тот же довод, что развёл буквы ленты, только с выходной
 /// стороны).
 #[doc(hidden)]
-pub trait EdgeProbe<W>: Send {
-    fn observe(&mut self, event: &DetectorEvent<W>) -> (Option<Memo>, SmallVec<[Distress; 2]>);
+pub trait EdgeProbe<W, S>: Send {
+    fn observe(&mut self, event: &DetectorEvent<W>) -> (Option<Memo>, SmallVec<[S; 2]>);
 }
 
 /// ГДЕ ЖИВЁТ СОСТОЯНИЕ прибора — объявляет сам прибор, не потребитель. Потребитель пишет
@@ -510,11 +448,11 @@ pub trait EdgeProbe<W>: Send {
 /// одном экземпляре и тиков не просит вовсе — его часы приезжают величиной с пакетом (`age`
 /// conntrack), а состояние уезжает в марку.
 #[doc(hidden)]
-pub enum Placed<W> {
+pub enum Placed<W, S> {
     /// По разговору: копия шаблона на ключ, тики, состояние в юзерспейсе.
-    PerFlow(Box<dyn Probe<W>>),
+    PerFlow(Box<dyn Probe<W, S>>),
     /// На крае: один экземпляр, состояние в марке ядра, тиков не просит.
-    AtEdge(Box<dyn EdgeProbe<W>>),
+    AtEdge(Box<dyn EdgeProbe<W, S>>),
 }
 
 /// Подъём КРАЕВОЙ машины в прибор края: сужение то же (§4, [`Reads`]), но выход двойной — беда и
@@ -524,21 +462,20 @@ struct AtEdge<M, N> {
     alphabet: PhantomData<fn() -> N>,
 }
 
-impl<W, N, M> EdgeProbe<W> for AtEdge<M, N>
+impl<W, N, M, S, P> EdgeProbe<W, S> for AtEdge<M, N>
 where
     W: 'static,
     N: Reads<W> + 'static,
-    M: Mealy<In = DetectorEvent<N>, Out = (Option<Memo>, SmallVec<[Distress; 2]>)>
-        + Copy
-        + Send
-        + 'static,
+    S: From<P> + 'static,
+    P: 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = (Option<Memo>, SmallVec<[P; 2]>)> + Copy + Send + 'static,
 {
-    fn observe(&mut self, event: &DetectorEvent<W>) -> (Option<Memo>, SmallVec<[Distress; 2]>) {
+    fn observe(&mut self, event: &DetectorEvent<W>) -> (Option<Memo>, SmallVec<[S; 2]>) {
         match narrow::<W, N>(event) {
             Some(event) => {
-                let (machine, said, _log) = self.machine.step(event);
+                let (machine, (memo, said), _log) = self.machine.step(event);
                 self.machine = machine;
-                said
+                (memo, said.into_iter().map(S::from).collect())
             }
             // Буква не его — ни слова, ни памятки: молчание тут «не моё», а не «нечего помнить».
             None => (None, SmallVec::new()),
@@ -546,6 +483,8 @@ where
     }
 }
 
+/// Прибор, кладущийся в `.detect(…)` для транспорта с широким словом `W`. Реализуют конкретные
+/// детекторы; несовместимый транспорту прибор не соберётся (нет `IntoProbe<W>`).
 /// Пишет ли прибор в НАШИ биты марки. Не «краевой ли он»: краевой прибор, читающий только счётчики,
 /// памятки не пишет и соседа не затирает — предмет гейта есть число ПИСАТЕЛЕЙ в одну раскладку.
 pub trait MarkHome {}
@@ -556,9 +495,11 @@ pub struct MarkWriter;
 impl MarkHome for MarkSilent {}
 impl MarkHome for MarkWriter {}
 
-/// Прибор, кладущийся в `.detect(…)` для транспорта с широким словом `W`. Реализуют конкретные
-/// детекторы; несовместимый транспорту прибор не соберётся (нет `IntoProbe<W>`).
 pub trait IntoProbe<W> {
+    /// Слово, которым говорит ЭТОТ прибор. Парк говорит `Distress`, чужой прибор — своё; цепочка
+    /// принимает первое как свой словарь, а следующие поднимает в него через `From`.
+    type Word;
+
     /// Пишет ли прибор марку. Объявляет САМ прибор, как и дом (`place`).
     type Home: MarkHome;
 
@@ -567,7 +508,7 @@ pub trait IntoProbe<W> {
     /// прибор, а не спрашивающий: спроси фасад «краевой ли ты» отдельным методом — и ответ разошёлся
     /// бы с тем, что прибор вернул.
     #[doc(hidden)]
-    fn place(self, layout: Layout) -> Placed<W>;
+    fn place(self, layout: Layout) -> Placed<W, Self::Word>;
     /// Временно́е окно прибора (ноль у беспороговых) — по нему движок выбирает срок эвикта ключа.
     #[doc(hidden)]
     fn window(&self) -> Duration {
@@ -576,11 +517,13 @@ pub trait IntoProbe<W> {
 }
 
 /// Собрать прибор-машину в лифт над `W`.
-fn lift<W, N, M>(machine: M) -> Box<dyn Probe<W>>
+fn lift<W, N, M, S, P>(machine: M) -> Box<dyn Probe<W, S>>
 where
     W: 'static,
     N: Reads<W> + 'static,
-    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+    S: From<P> + 'static,
+    P: 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[P; 2]>> + Copy + Send + 'static,
 {
     Box::new(Lift {
         machine,
@@ -599,8 +542,9 @@ where
 /// Край — ПАРАМЕТР `E`, а не conntrack: прибор читает закон [`EdgeView`], и другой носитель ставит
 /// сюда свой край, не трогая ни строки парка.
 impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
+    type Word = Distress;
     type Home = MarkWriter;
-    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>> {
+    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
         Placed::AtEdge(Box::new(AtEdge {
             machine: EdgeSilence::<E>::new(self.after, layout),
             alphabet: PhantomData,
@@ -615,9 +559,10 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
 /// хранят. Носитель предмета НЕ видит — значит и состоянию его там не место (§9.1: носитель следует
 /// за тем, что подложка умеет видеть).
 impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Retransmit {
+    type Word = Distress;
     type Home = MarkSilent;
-    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>> {
-        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _>(
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _, Distress, Distress>(
             RetransmitInstrument::new(),
         ))
     }
@@ -631,8 +576,9 @@ impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Retransmit {
 /// ловит возраст потока. Предмет тот же — адрес молчит; ранняя реакция на быстром повторе уходит, и
 /// это цена переезда, названная вслух.
 impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
+    type Word = Distress;
     type Home = MarkWriter;
-    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>> {
+    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
         Placed::AtEdge(Box::new(AtEdge {
             machine: EdgeSilence::<E>::new(BLACKHOLE_WINDOW, layout),
             alphabet: PhantomData,
@@ -646,9 +592,10 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
 /// Отравление DNS — В ПРОВОДЕ: предмет его СОДЕРЖИМОЕ ответа (инжект `NXDOMAIN`), а край
 /// содержимого не читает вовсе.
 impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for DnsPoison {
+    type Word = Distress;
     type Home = MarkSilent;
-    fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>> {
-        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _>(
+    fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _, Distress, Distress>(
             DnsPoisonInstrument::new(),
         ))
     }
@@ -671,49 +618,9 @@ pub struct Own<M, N> {
 }
 
 /// Обернуть свою машину в прибор для `.detect(own(machine))`. `N` выведется из `M::In`.
-///
-/// КРАЕВОЙ ПРИБОР СТАВИТСЯ ТОЙ ЖЕ ДВЕРЬЮ — второго конструктора нет. Разница одна: машина читает
-/// [`Edged`] (провод и вид края разом) вместо голого слова провода, и `Reads` доводит до неё край
-/// сам. Показано ПРИМЕРОМ, а не обещано именем: прежде здесь стояла ссылка на `own_at_edge`,
-/// которой в дереве не было вовсе, и нашлась она поиском СНАРУЖИ, из чужой репы. Пример держит
-/// `cargo test --doc`.
-///
-/// ```
-/// use reflex::*;
-///
-/// /// Машина, читающая КРАЙ: у неё на входе `Edged<слово провода, вид края>`.
-/// #[derive(Clone, Copy)]
-/// struct Watching;
-///
-/// impl Mealy for Watching {
-///     type In = DetectorEvent<Edged<Option<Seen>, Option<CtEdge>>>;
-///     type Out = SmallVec<[Distress; 2]>;
-///     type Log = ();
-///
-///     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
-///         let said = match &event {
-///             // Счётчики и возраст ведёт НОСИТЕЛЬ — прибор их только читает (`EdgeView`).
-///             DetectorEvent::Packet { input, .. } => match &input.edge {
-///                 // `None` — носитель ещё не считал этот разговор: третье значение рядом с
-///                 // «ноль» и «много», и молчать на нём обязательно.
-///                 Some(edge) if edge.up_packets() == Some(0) => smallvec![Distress::NoBytes],
-///                 _ => smallvec![],
-///             },
-///             _ => smallvec![],
-///         };
-///         (self, said, ())
-///     }
-/// }
-///
-/// let _ = engine(Nfqueue::queue(200))
-///     .from(Tcp)
-///     .extract(Sni)
-///     .detect(own(Watching))
-///     .on(|target, distress| report!("{target}: {distress:?}"));
-/// ```
-pub fn own<N, M>(machine: M) -> Own<M, N>
+pub fn own<N, M, S>(machine: M) -> Own<M, N>
 where
-    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[S; 2]>> + Copy + Send + 'static,
 {
     Own {
         machine,
@@ -722,33 +629,65 @@ where
 }
 
 /// Свой прибор живёт ПО РАЗГОВОРУ: он держит состояние в себе, движок сеет копию на ключ. Кто хочет
-/// краевой дом, кладёт в ту же дверь машину, читающую [`Edged`] — пример в докблоке [`own`].
-///
-/// `Home = MarkSilent` и для краевой машины тоже: своя машина памятки НЕ ПИШЕТ (`place` отдаёт
-/// `Placed::PerFlow`, слова о марке в нём нет), а гейт считает ПИСАТЕЛЕЙ, не читателей края.
-impl<W, N, M> IntoProbe<W> for Own<M, N>
+/// краевой дом, кладёт машину, читающую [`Edged`], — для неё есть [`own_at_edge`].
+impl<W, N, M, S> IntoProbe<W> for Own<M, N>
 where
     W: 'static,
     N: Reads<W> + 'static,
-    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
+    S: 'static,
+    M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[S; 2]>> + Copy + Send + 'static,
 {
     type Home = MarkSilent;
-    fn place(self, _layout: Layout) -> Placed<W> {
-        Placed::PerFlow(lift::<W, N, M>(self.machine))
+    type Word = S;
+    fn place(self, _layout: Layout) -> Placed<W, S> {
+        Placed::PerFlow(lift::<W, N, M, S, S>(self.machine))
+    }
+}
+
+/// Поднять слово прибора в словарь цепочки. Нужна отдельная обёртка, а не `From` на месте: прибор
+/// уже упакован в `Box<dyn Probe>`, и его слово не переписать иначе как ещё одним слоем.
+struct Raise<P>(P);
+
+impl<W, S, Q> Probe<W, S> for Raise<Box<dyn Probe<W, Q>>>
+where
+    S: From<Q> + 'static,
+    Q: 'static,
+    W: 'static,
+{
+    fn observe(&mut self, event: &DetectorEvent<W>) -> SmallVec<[S; 2]> {
+        self.0.observe(event).into_iter().map(S::from).collect()
+    }
+
+    fn clone_box(&self) -> Box<dyn Probe<W, S>> {
+        Box::new(Raise::<Box<dyn Probe<W, Q>>>(self.0.clone_box()))
+    }
+}
+
+impl<W, S, Q> EdgeProbe<W, S> for Raise<Box<dyn EdgeProbe<W, Q>>>
+where
+    S: From<Q> + 'static,
+    Q: 'static,
+    W: 'static,
+{
+    fn observe(&mut self, event: &DetectorEvent<W>) -> (Option<Memo>, SmallVec<[S; 2]>) {
+        let (memo, said) = self.0.observe(event);
+        (memo, said.into_iter().map(S::from).collect())
     }
 }
 
 /// Приборы разговора, гоняемые ВМЕСТЕ над одним словом провода. Пакет и тик фанаутятся в каждый,
-/// слова беды сливаются в один алфавит [`Distress`].
-struct Probes<W>(Vec<Box<dyn Probe<W>>>);
+/// слова сливаются в ОДИН словарь цепочки `S`: парк вкладывается в него через `From`, чужой прибор
+/// говорит на нём прямо. Один словарь — потому что одна `FlowTable`, один слой целей и одна
+/// свёртка; два словаря порвали бы их надвое.
+struct Probes<W, S>(Vec<Box<dyn Probe<W, S>>>);
 
-impl<W: Clone + 'static> Mealy for Probes<W> {
+impl<W: Clone + 'static, S: Word + 'static> Mealy for Probes<W, S> {
     type In = DetectorEvent<W>;
-    type Out = SmallVec<[Distress; 2]>;
+    type Out = SmallVec<[S; 2]>;
     type Log = ();
 
     fn step(mut self, event: Self::In) -> (Self, Self::Out, ()) {
-        let mut said: SmallVec<[Distress; 2]> = SmallVec::new();
+        let mut said: SmallVec<[S; 2]> = SmallVec::new();
         for probe in self.0.iter_mut() {
             said.extend(probe.observe(&event));
         }
@@ -806,10 +745,11 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
     ///
     /// Раскладку марки спрашивают у НОСИТЕЛЯ, а не хранят копией в стадии: копия была бы вторым
     /// источником одной величины, и разошлась бы с первым молча.
-    pub fn detect<P: IntoProbe<Wide<T::Wire, C::Edge>>>(
-        self,
-        detector: P,
-    ) -> Detecting<C, T, P::Home> {
+    pub fn detect<P>(self, detector: P) -> Detecting<C, T, P::Home, P::Word>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>>,
+        P::Word: 'static,
+    {
         let mut park = Park::new();
         let longest = detector.window();
         park.add(detector.place(self.carrier.layout()));
@@ -829,53 +769,66 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
 /// описание угрозы, а не механики: фреймворк называет копредел, не угрозу.
 ///
 /// Свёртка видит МНОЖЕСТВО последних слов: порядок ей не показан, кратность сняло хранилище.
-pub type Fold = Box<dyn Fn(&[&Distress]) -> Option<Distress> + Send>;
+/// Свёртка слов разговоров в слово о цели. Словарь тот же `S`: копредел (§4) живёт над
+/// ОБЛАСТЬЮ, а не над словом, и смена словаря его не касается.
+pub type Fold<S = Distress> = Box<dyn Fn(&[&S]) -> Option<S> + Send>;
 
 /// Реакция на слово о ЦЕЛИ. Отдельна от реакции на слово о разговоре: области разные, и §5 держит
 /// их раздельно типом.
-pub type TargetVoice = Box<dyn FnMut(&str, Voiced) + Send>;
+pub type TargetVoice<S = Distress> = Box<dyn FnMut(&str, Voiced<S>) + Send>;
 
 /// Приборы цепочки, разложенные ПО ДОМУ состояния. Два списка, а не один с тегом: петля гонит их
 /// по-разному, и «род» тут не пометка, а разная механика — проводные сеются по ключу и будятся
 /// тиками, краевой живёт одним экземпляром и пишет марку.
-struct Park<W> {
-    per_flow: Vec<Box<dyn Probe<W>>>,
-    at_edge: Vec<Box<dyn EdgeProbe<W>>>,
+struct Park<W, S> {
+    per_flow: Vec<Box<dyn Probe<W, S>>>,
+    at_edge: Vec<Box<dyn EdgeProbe<W, S>>>,
 }
 
-impl<W> Park<W> {
-    fn new() -> Park<W> {
+impl<W, S> Park<W, S> {
+    fn new() -> Park<W, S> {
         Park {
             per_flow: Vec::new(),
             at_edge: Vec::new(),
         }
     }
 
-    /// Поставить прибор в его дом — тот, который он сам назвал.
-    fn add(&mut self, placed: Placed<W>) {
+    /// Поставить прибор в его дом — тот, который он сам назвал, подняв его слово в словарь
+    /// цепочки. Подъём тут, а не у прибора: прибор говорит СВОЁ, цепочка сводит сказанное к одному.
+    fn add<Q: 'static>(&mut self, placed: Placed<W, Q>)
+    where
+        S: From<Q> + 'static,
+        W: 'static,
+    {
         match placed {
-            Placed::PerFlow(probe) => self.per_flow.push(probe),
-            Placed::AtEdge(probe) => self.at_edge.push(probe),
+            Placed::PerFlow(probe) => self
+                .per_flow
+                .push(Box::new(Raise::<Box<dyn Probe<W, Q>>>(probe))),
+            Placed::AtEdge(probe) => self
+                .at_edge
+                .push(Box::new(Raise::<Box<dyn EdgeProbe<W, Q>>>(probe))),
         }
     }
 }
 
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
-pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent> {
+pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Distress> {
     home: PhantomData<fn() -> H>,
     carrier: C,
-    park: Park<Wide<T::Wire, C::Edge>>,
+    park: Park<Wide<T::Wire, C::Edge>, S>,
     longest: Duration,
-    about: Option<(Fold, TargetVoice)>,
+    about: Option<(Fold<S>, TargetVoice<S>)>,
     transport: PhantomData<fn() -> T>,
 }
 
-impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
+impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// Тело установки, общее обеим дверям: дом меняется ТИПОМ, работа одна.
-    fn add<P: IntoProbe<Wide<T::Wire, C::Edge>>, H2: MarkHome>(
-        mut self,
-        detector: P,
-    ) -> Detecting<C, T, H2> {
+    fn add<P, H2: MarkHome>(mut self, detector: P) -> Detecting<C, T, H2, S>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>>,
+        S: From<P::Word> + 'static,
+        P::Word: 'static,
+    {
         self.longest = self.longest.max(detector.window());
         let placed = detector.place(self.carrier.layout());
         self.park.add(placed);
@@ -890,18 +843,20 @@ impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
     }
 }
 
-impl<C: Bordered, T: Transport> Detecting<C, T, MarkSilent> {
+impl<C: Bordered, T: Transport, S> Detecting<C, T, MarkSilent, S> {
     /// Ещё прибор поверх — они гоняются ВМЕСТЕ над одним проводом. Писателя марки пока нет, потому
     /// принимается ЛЮБОЙ прибор; его дом становится домом цепочки.
-    pub fn detect<P: IntoProbe<Wide<T::Wire, C::Edge>>>(
-        self,
-        detector: P,
-    ) -> Detecting<C, T, P::Home> {
+    pub fn detect<P>(self, detector: P) -> Detecting<C, T, P::Home, S>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>>,
+        S: From<P::Word> + 'static,
+        P::Word: 'static,
+    {
         self.add::<P, P::Home>(detector)
     }
 }
 
-impl<C: Bordered, T: Transport> Detecting<C, T, MarkWriter> {
+impl<C: Bordered, T: Transport, S> Detecting<C, T, MarkWriter, S> {
     /// Писатель марки в цепочке УЖЕ есть, и второго она не вмещает: марка одна, состояние одно, а
     /// автоматы разные — второй читал бы фазу первого как свою и повторял бы высказывание на каждом
     /// пакете (замер 10.09: один прибор говорит однажды, два — трижды за четыре пакета, и под
@@ -937,15 +892,17 @@ impl<C: Bordered, T: Transport> Detecting<C, T, MarkWriter> {
     ///     .detect(SynDrop::unreachable())
     ///     .on(|_, _| {});
     /// ```
-    pub fn detect<P: IntoProbe<Wide<T::Wire, C::Edge>, Home = MarkSilent>>(
-        self,
-        detector: P,
-    ) -> Detecting<C, T, MarkWriter> {
+    pub fn detect<P>(self, detector: P) -> Detecting<C, T, MarkWriter, S>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>, Home = MarkSilent>,
+        S: From<P::Word> + 'static,
+        P::Word: 'static,
+    {
         self.add::<P, MarkWriter>(detector)
     }
 }
 
-impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
+impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// Слово о ЦЕЛИ поверх слов о её разговорах — копредел по слою (§4: `Target ≅ ∐ Conversation`).
     /// Свёртка приходит значением: фреймворк собирает последние слова разговоров цели и отдаёт их
     /// ей, не зная, что она из них сделает.
@@ -958,8 +915,8 @@ impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
     /// молча уронил его выход: свёл и выбросил.
     pub fn about(
         self,
-        fold: impl Fn(&[&Distress]) -> Option<Distress> + Send + 'static,
-    ) -> Folding<C, T, H> {
+        fold: impl Fn(&[&S]) -> Option<S> + Send + 'static,
+    ) -> Folding<C, T, H, S> {
         Folding {
             detecting: self,
             fold: Box::new(fold),
@@ -968,7 +925,7 @@ impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
 
     /// НАБЛЮДАТЬ: реакция на срабатывание, без вмешательства. `target` — имя цели, `distress` — что
     /// случилось. Пакет идёт как шёл.
-    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<C, T, F, H> {
+    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, F, H, S> {
         Running {
             detecting: self,
             react,
@@ -984,7 +941,7 @@ impl<C: Bordered, T: Transport, H: MarkHome> Detecting<C, T, H> {
     /// нет — им достаётся пустой срез, и строить из него нечего. Иначе слово ЧУЖОГО разговора
     /// рвало бы разговор, привёзший пакет. Тишина потому и обрывается следующим повтором клиента, а
     /// не узлом.
-    pub fn act<F: FnMut(&str, Distress) -> Act<C::Carrier>>(self, react: F) -> Acting<C, T, F, H>
+    pub fn act<F: FnMut(&str, S) -> Act<C::Carrier>>(self, react: F) -> Acting<C, T, F, H, S>
     where
         C::Carrier: CanHold,
     {
@@ -1040,12 +997,12 @@ where
 /// Затихшие разговоры снимаются ПРЕЖДЕ сведения — иначе цель говорила бы голосом разговоров,
 /// которых уже нет. Возраст берётся у слоя ([`Layer::freshest`]), а не у свёртки: свёртка видит
 /// слова и не видит часов.
-fn voiced(
-    layer: &mut Layer<Conversation, Target, Distress>,
-    fold: &Fold,
+fn voiced<S: Word + Clone>(
+    layer: &mut Layer<Conversation, Target, S>,
+    fold: &Fold<S>,
     idle: Duration,
     now: Instant,
-) -> Vec<(String, Voiced)> {
+) -> Vec<(String, Voiced<S>)> {
     layer.forget_idle(idle, now);
     layer
         .targets()
@@ -1064,19 +1021,22 @@ fn voiced(
 ///
 /// Так пара «свести → сказать о цели» держится ТИПОМ. Без неё потребитель построил бы слой,
 /// свёртку и копредел — и выбросил бы результат, не заметив: свёл и уронил.
-pub struct Folding<C: Bordered, T: Transport, H: MarkHome = MarkSilent> {
-    detecting: Detecting<C, T, H>,
-    fold: Fold,
+pub struct Folding<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Distress> {
+    detecting: Detecting<C, T, H, S>,
+    fold: Fold<S>,
 }
 
-impl<C: Bordered, T: Transport, H: MarkHome> Folding<C, T, H> {
+impl<C: Bordered, T: Transport, H: MarkHome, S> Folding<C, T, H, S> {
     /// Что делать со словом о ЦЕЛИ. Дверь отдельная от [`Detecting::on`], потому что область другая:
     /// беда разговора и беда цели — слова разных слоёв, и §5 не складывает их законом пары. Спустить
     /// слово о цели к разговору тоже нельзя — это отменило бы только что сделанную агрегацию.
-    pub fn on_target<G: FnMut(&str, Voiced) + Send + 'static>(self, react: G) -> Speaking<C, T, H> {
+    pub fn on_target<G: FnMut(&str, Voiced<S>) + Send + 'static>(
+        self,
+        react: G,
+    ) -> Speaking<C, T, H, S> {
         Speaking {
             detecting: Detecting {
-                about: Some((self.fold, Box::new(react) as TargetVoice)),
+                about: Some((self.fold, Box::new(react) as TargetVoice<S>)),
                 ..self.detecting
             },
         }
@@ -1088,37 +1048,41 @@ impl<C: Bordered, T: Transport, H: MarkHome> Folding<C, T, H> {
 /// Терминал здесь только НАБЛЮДАТЬ. `.act` у копредела нет, и это не забывчивость: слово о цели
 /// рождается на границе узла сетки, а узел носителя не имеет — рвать по нему нечем. Отказ
 /// компилятора честнее цепочки, собравшейся и молчащей.
-pub struct Speaking<C: Bordered, T: Transport, H: MarkHome = MarkSilent> {
-    detecting: Detecting<C, T, H>,
+pub struct Speaking<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Distress> {
+    detecting: Detecting<C, T, H, S>,
 }
 
-impl<C: Bordered, T: Transport> Speaking<C, T, MarkSilent> {
+impl<C: Bordered, T: Transport, S> Speaking<C, T, MarkSilent, S> {
     /// Ещё прибор поверх — как в [`Detecting::detect`]: копредел не закрывает набор приборов.
-    pub fn detect<P: IntoProbe<Wide<T::Wire, C::Edge>>>(
-        self,
-        detector: P,
-    ) -> Speaking<C, T, P::Home> {
+    pub fn detect<P>(self, detector: P) -> Speaking<C, T, P::Home, S>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>>,
+        S: From<P::Word> + 'static,
+        P::Word: 'static,
+    {
         Speaking {
             detecting: self.detecting.detect(detector),
         }
     }
 }
 
-impl<C: Bordered, T: Transport> Speaking<C, T, MarkWriter> {
+impl<C: Bordered, T: Transport, S> Speaking<C, T, MarkWriter, S> {
     /// Писатель марки уже стоит — принимается только прибор, её не пишущий (см. `Detecting`).
-    pub fn detect<P: IntoProbe<Wide<T::Wire, C::Edge>, Home = MarkSilent>>(
-        self,
-        detector: P,
-    ) -> Speaking<C, T, MarkWriter> {
+    pub fn detect<P>(self, detector: P) -> Speaking<C, T, MarkWriter, S>
+    where
+        P: IntoProbe<Wide<T::Wire, C::Edge>, Home = MarkSilent>,
+        S: From<P::Word> + 'static,
+        P::Word: 'static,
+    {
         Speaking {
             detecting: self.detecting.detect(detector),
         }
     }
 }
 
-impl<C: Bordered, T: Transport, H: MarkHome> Speaking<C, T, H> {
+impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
     /// НАБЛЮДАТЬ слова о РАЗГОВОРАХ — вторая дверь пары. Слова о цели уже адресованы `.on_target`.
-    pub fn on<F: FnMut(&str, Distress)>(self, react: F) -> Running<C, T, F, H> {
+    pub fn on<F: FnMut(&str, S)>(self, react: F) -> Running<C, T, F, H, S> {
         self.detecting.on(react)
     }
 }
@@ -1201,9 +1165,9 @@ impl<T: CanHold + CanAsk> Act<T> {
 /// решения (носитель заимствован, пакет в руках), а тронуть мир — снаружи, когда носитель
 /// свободен. Тронь мир из `hears` — второго `&mut` не нашлось бы (`E0499`), и обрыв поехал бы мимо
 /// носителя своим сокетом, как ездил до §9.4.
-trait Voice<K> {
-    /// Беда услышана — чем цепочка обещает тронуть мир. Пусто у наблюдателя.
-    fn hears(&mut self, target: &str, distress: Distress, seen: &[u8]) -> SmallVec<[Effect; 2]>;
+trait Voice<K, S> {
+    /// Слово услышано — чем цепочка обещает тронуть мир. Пусто у наблюдателя.
+    fn hears(&mut self, target: &str, distress: S, seen: &[u8]) -> SmallVec<[Effect; 2]>;
     /// Исполнить обещанное носителем. У наблюдателя обещаний не бывает — тело пусто по построению.
     fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>);
 }
@@ -1211,8 +1175,8 @@ trait Voice<K> {
 /// СМОТРЕТЬ: реакция потребителя, мира не касающаяся.
 struct Watch<F>(F);
 
-impl<K, F: FnMut(&str, Distress)> Voice<K> for Watch<F> {
-    fn hears(&mut self, target: &str, distress: Distress, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
+impl<K, S, F: FnMut(&str, S)> Voice<K, S> for Watch<F> {
+    fn hears(&mut self, target: &str, distress: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
         (self.0)(target, distress);
         SmallVec::new()
     }
@@ -1224,13 +1188,13 @@ impl<K, F: FnMut(&str, Distress)> Voice<K> for Watch<F> {
 /// исполняет их цикл — и в переигровке не исполняет, тем лента и остаётся переигрываемой (§10).
 struct Do<F>(F);
 
-impl<K, F> Voice<K> for Do<F>
+impl<K, S, F> Voice<K, S> for Do<F>
 where
     K: CanHold + CanInject,
     K::Error: std::fmt::Debug,
-    F: FnMut(&str, Distress) -> Act<K>,
+    F: FnMut(&str, S) -> Act<K>,
 {
-    fn hears(&mut self, target: &str, distress: Distress, seen: &[u8]) -> SmallVec<[Effect; 2]> {
+    fn hears(&mut self, target: &str, distress: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
         let (_word, effects) = emit::<K>((self.0)(target, distress), seen);
         effects
     }
@@ -1246,14 +1210,14 @@ where
 }
 
 /// Цепочка собрана — готова к запуску.
-pub struct Running<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent> {
-    detecting: Detecting<C, T, H>,
+pub struct Running<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = Distress> {
+    detecting: Detecting<C, T, H, S>,
     react: F,
     /// Предъявлять ли восьмой закон на живой ленте — [`Running::certifying`].
     certify: bool,
 }
 
-impl<C, T, F, H: MarkHome> Running<C, T, F, H>
+impl<C, T, F, H: MarkHome, S: Word + Clone + PartialEq + 'static> Running<C, T, F, H, S>
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember,
@@ -1262,7 +1226,7 @@ where
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
-    F: FnMut(&str, Distress),
+    F: FnMut(&str, S),
 {
     /// НАБЛЮДАТЬ. Ведущий цикл один на оба терминала — см. [`drive`]; отсюда в него едет голос
     /// [`Watch`], мира не касающийся.
@@ -1272,7 +1236,7 @@ where
             react,
             certify,
         } = self;
-        drive::<C, T, _, H>(detecting, certify, &mut Watch(react))
+        drive::<C, T, _, H, S>(detecting, certify, &mut Watch(react))
     }
 
     /// Предъявлять восьмой закон (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
@@ -1281,19 +1245,19 @@ where
     /// Дверь отдельная и по умолчанию закрытая: запись стоит клона слова провода на каждый пакет, и
     /// платить её тем, кто закона не просит, незачем. Кто просит — получает свидетельство на СВОЁМ
     /// трафике, а не на выдуманном стенде: это и отличает предъявимость от обещания.
-    pub fn certifying(mut self) -> Running<C, T, F, H> {
+    pub fn certifying(mut self) -> Running<C, T, F, H, S> {
         self.certify = true;
         self
     }
 }
 
 /// Цепочка с ДЕЙСТВИЕМ собрана — готова к запуску.
-pub struct Acting<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent> {
-    detecting: Detecting<C, T, H>,
+pub struct Acting<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = Distress> {
+    detecting: Detecting<C, T, H, S>,
     react: F,
 }
 
-impl<C, T, F, H: MarkHome> Acting<C, T, F, H>
+impl<C, T, F, H: MarkHome, S: Word + Clone + PartialEq + 'static> Acting<C, T, F, H, S>
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember + CanInject,
@@ -1303,7 +1267,7 @@ where
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     <C::Carrier as Sink>::Error: std::fmt::Debug,
     T: Transport,
-    F: FnMut(&str, Distress) -> Act<C::Carrier>,
+    F: FnMut(&str, S) -> Act<C::Carrier>,
 {
     /// ДЕЙСТВОВАТЬ. Тот же ведущий цикл, что и у `.on` ([`drive`]), — отличается только голосом
     /// [`Do`]: он переводит акт в команды и отдаёт их СТОКУ НОСИТЕЛЯ. Узлы сетки, дыра и памятка
@@ -1321,7 +1285,7 @@ where
     /// разговор, не попутная правка.
     pub fn run(self) -> Report {
         let Acting { detecting, react } = self;
-        drive::<C, T, _, H>(detecting, false, &mut Do(react))
+        drive::<C, T, _, H, S>(detecting, false, &mut Do(react))
     }
 }
 
@@ -1339,11 +1303,13 @@ pub struct Whose {
 /// разговоре пришло бы в `.on`, слово о цели — в `.on_target`. Без второго переигровка не
 /// свидетельствовала бы о копределе, а он и есть свежая постройка.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Said {
-    /// Беда разговора, названная именем цели (так её видит `.on`).
-    OfConversation(String, Distress),
+pub enum Said<S = Distress> {
+    /// Слово разговора, названное именем цели (так его видит `.on`). Словарь — цепочкин: сверка
+    /// восьмого закона требует РАВЕНСТВА слов, и потому слово остаётся словом, а не превращается в
+    /// текст. Отпечаток для сравнения и текст для человека — разные вещи.
+    OfConversation(String, S),
     /// Слово о цели — итог свёртки (так его видит `.on_target`).
-    OfTarget(String, Voiced),
+    OfTarget(String, Voiced<S>),
 }
 
 /// Лента этого движка: буквы провода с адресом разбора. Отклик пока не рождается — акт вопроса в
@@ -1369,24 +1335,25 @@ const TAPE_WINDOW: usize = 64;
 /// (§9.4). Наружу идут ИСХОДЫ — их и сверяет закон.
 ///
 /// Параметр — ШИРОКОЕ СЛОВО целиком, не транспорт: транспорт тут не при чём, лента уже разобрана.
-fn replay<W: Clone + 'static>(
-    seeds: &[Box<dyn Probe<W>>],
-    fold: Option<&Fold>,
+fn replay<W: Clone + 'static, S: Word + Clone + PartialEq + 'static>(
+    seeds: &[Box<dyn Probe<W, S>>],
+    fold: Option<&Fold<S>>,
     idle: Duration,
     mode: Mode,
     letters: &[TapeLetter<W, Whose, ()>],
-) -> Vec<Said> {
+) -> Vec<Said<S>> {
     // Живой режим сюда не приходит: пере-подача — всегда переигровка. Придёт — упадём в отладке,
     // а не соврём тихо вердиктом, добытым касанием мира.
     debug_assert_eq!(mode, Mode::Replay, "переигровка идёт только в Replay");
 
-    let templates: Vec<Box<dyn Probe<W>>> = seeds.iter().map(|probe| probe.clone_box()).collect();
-    let mut table = FlowTable::<Probes<W>, Flow>::new(idle, move |_flow| {
+    let templates: Vec<Box<dyn Probe<W, S>>> =
+        seeds.iter().map(|probe| probe.clone_box()).collect();
+    let mut table = FlowTable::<Probes<W, S>, Flow>::new(idle, move |_flow| {
         Probes(templates.iter().map(|probe| probe.clone_box()).collect())
     });
     let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
-    let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
-    let mut said: Vec<Said> = Vec::new();
+    let mut layer: Layer<Conversation, Target, S> = Layer::new();
+    let mut said: Vec<Said<S>> = Vec::new();
 
     for letter in letters {
         let Some((to, event)) = letter.seen() else {
@@ -1460,17 +1427,9 @@ const MIN_IDLE: Duration = Duration::from_secs(10);
 /// выходит больше, чем у него прошло времени. Это цена нарушителя, не цикла, и на боевой очереди её
 /// не бывает: там закон срока исполняется единственным сном внутри `serve`.
 ///
-/// ДЫРА ДОЕЗЖАЕТ ПОЗЖЕ СВОЕГО МОМЕНТА — на остаток срока, не более шага сетки. Носитель её
-/// ДОСЫПАЕТ: у боевой очереди единственный сон стоит за циклом, и `Served::Torn` уходит туда через
-/// `break`, как и всякий безответный исход (докблок `impl Serves for QueueSocket`,
-/// `linux/src/queue/terminal.rs`, — там же названо, почему второй выход дороже задержки). Прежняя
-/// редакция обещала здесь обратное — «дыра приходит с работой, раньше срока»; обещание было ложным
-/// при верном коде, и стояло оно ДВУМЯ копиями, в двух крейтах.
-///
-/// Показание при этом не искажено: момент едет в самом исходе (`МОМЕНТ У КАЖДОГО ИСХОДА ОТ
-/// НОСИТЕЛЯ` ниже), и это момент ОБНАРУЖЕНИЯ. Момента самой потери не существует нигде — ядро
-/// выбросило сообщения раньше, чем мы позвали приём, и `ENOBUFS` не несёт ни числа потерянных, ни
-/// времени.
+/// ДЫРА приходит С РАБОТОЙ, то есть раньше срока (носитель её не досыпает): момент — ниже, там, где
+/// решает `МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ`. Момента потери не существует нигде — ядро выбросило
+/// сообщения раньше, чем мы позвали приём, и `ENOBUFS` не несёт ни числа потерянных, ни времени.
 ///
 /// ОТКАЗ ТЕРМИНАЛА (`Answered(Err)`) цикл печатает и идёт дальше. Цена у этого ДВОЙНАЯ, и обе
 /// половины дорогие:
@@ -1484,7 +1443,11 @@ const MIN_IDLE: Duration = Duration::from_secs(10);
 ///
 /// Повтора вердикта здесь нет НАРОЧНО: сколько раз, с какой паузой и что при исчерпании — решение,
 /// которое принимают с замером частоты отказов, а замера нет.
-fn drive<C, T, V, H: MarkHome>(chain: Detecting<C, T, H>, certify: bool, voice: &mut V) -> Report
+fn drive<C, T, V, H: MarkHome, S>(
+    chain: Detecting<C, T, H, S>,
+    certify: bool,
+    voice: &mut V,
+) -> Report
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember,
@@ -1495,7 +1458,8 @@ where
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
-    V: Voice<C::Carrier>,
+    V: Voice<C::Carrier, S>,
+    S: Word + Clone + PartialEq + 'static,
 {
     let Detecting {
         carrier: recipe,
@@ -1515,13 +1479,13 @@ where
     let idle = longest.saturating_mul(2).max(MIN_IDLE);
     // Семя семьи: те же шаблоны, из которых движок сеет машины, нужны и переигровке — она обязана
     // начать с ТОГО ЖЕ состояния, иначе сверяла бы две разные машины.
-    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>>>> = park
+    let seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>> = park
         .per_flow
         .iter()
         .map(|probe| probe.clone_box())
         .collect();
     let templates = park.per_flow;
-    let mut alive: Alive<C, T> = Alive {
+    let mut alive: Alive<C, T, S> = Alive {
         table: FlowTable::new(idle, move |_flow| {
             Probes(templates.iter().map(|probe| probe.clone_box()).collect())
         }),
@@ -1571,22 +1535,13 @@ where
             let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
             let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
             let (moved, letters, whose) = match T::observe(&mut state, parse::read(seen, T::PORT)) {
-                Observation::Seen(observed) => {
+                Some(observed) => {
                     let (moved, letters) = grid.saw((observed.wire, edge), at);
                     (moved, letters, Some((observed.flow, observed.key)))
                 }
-                // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
-                // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
-                // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
-                // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
-                // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
-                Observation::Unread(why) => {
-                    let (moved, letters) = grid.unread(why, at);
-                    (moved, letters, None)
-                }
                 // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
                 // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
-                Observation::Foreign => {
+                None => {
                     let (moved, letters) = grid.idle(at);
                     (moved, letters, None)
                 }
@@ -1642,13 +1597,13 @@ where
 /// ЖИВОЕ СОСТОЯНИЕ ПРОГОНА — всё, чего касается буква. Отдельной вещью, а не россыпью локальных
 /// переменных: букву гоняет ОДНА функция ([`Alive::walk`]), и её девять доводов были бы девятью
 /// местами, где их можно передать не в том порядке.
-struct Alive<C: Bordered, T: Transport> {
+struct Alive<C: Bordered, T: Transport, S> {
     /// ПРОВОДНЫЕ приборы: копия семьи на ключ, состояние в юзерспейсе.
-    table: FlowTable<Probes<Wide<T::Wire, C::Edge>>, Flow>,
+    table: FlowTable<Probes<Wide<T::Wire, C::Edge>, S>, Flow>,
     /// КРАЕВЫЕ: один экземпляр на движок, состояние в марке носителя.
-    at_edge: Vec<Box<dyn EdgeProbe<Wide<T::Wire, C::Edge>>>>,
+    at_edge: Vec<Box<dyn EdgeProbe<Wide<T::Wire, C::Edge>, S>>>,
     /// Слова разговоров, разложенные по цели: из них рождается слово О ЦЕЛИ.
-    layer: Layer<Conversation, Target, Distress>,
+    layer: Layer<Conversation, Target, S>,
     /// Ключ цели на разговор — для сигналов, рождённых узлом сетки (у узла пакета с личностью нет).
     /// Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
     targets: HashMap<Flow, TargetKey<Box<str>>>,
@@ -1658,12 +1613,12 @@ struct Alive<C: Bordered, T: Transport> {
     certify: bool,
     /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
     /// что зовётся на закрытии узла — среди букв, а не после них.
-    about: Option<(Fold, TargetVoice)>,
+    about: Option<(Fold<S>, TargetVoice<S>)>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
     idle: Duration,
 }
 
-impl<C: Bordered, T: Transport> Alive<C, T> {
+impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, T, S> {
     /// ПРОГНАТЬ БУКВЫ ЧЕРЕЗ ПРИБОРЫ. Отдельной функцией, а не телом ветки: буквы приходят из
     /// ЧЕТЫРЁХ мест (пакет, узел сетки, дыра, простой), и четыре копии этого разошлись бы молча —
     /// ровно так `.act` и остался без ленты, дыры и слова о цели.
@@ -1677,7 +1632,7 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
     ///
     /// Наружу — памятка (её кладёт домой носитель тем же словом, что и вердикт) и момент
     /// ПОСЛЕДНЕГО закрытого узла, если он тут был: по нему цикл судит, пора ли говорить о цели.
-    fn walk<V: Voice<C::Carrier>>(
+    fn walk<V: Voice<C::Carrier, S>>(
         &mut self,
         letters: Vec<DetectorEvent<Wide<T::Wire, C::Edge>>>,
         whose: Option<(Flow, TargetKey<Box<str>>)>,
@@ -1695,7 +1650,7 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
             // бедствовал вовсе, а слово необратимо (§1). Прежде закон держался тем, что штатные
             // приборы на узле молчат, — то есть совпадением; `own(…)` его нарушал.
             let (said, evidence): (
-                Vec<(TargetKey<Box<str>>, Flow, SmallVec<[Distress; 2]>)>,
+                Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>)>,
                 &[u8],
             ) = match (&letter, &whose) {
                 (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
@@ -1710,19 +1665,10 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
                     for probe in self.at_edge.iter_mut() {
                         let (remembered, spoken) = probe.observe(&letter);
                         // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
-                        // слово, и при двух пишущих приборах побеждал бы сказавший последним.
-                        // ГЕЙТ НА ЭТО ПОСТРОЕН И СТОИТ ВЫШЕ: `Detecting::detect` принимает
-                        // прибор только с `Home = MarkSilent`, коль скоро писатель в цепочке
-                        // уже есть (`impl Detecting<C, T, MarkWriter>` выше), — так что второй
-                        // писатель через публичную дверь не собирается вовсе, и проверяет это
-                        // компилятор доктестом `compile_fail` там же. Прежняя редакция этого
-                        // комментария утверждала, что гейта нет; она была снимком мира до
-                        // коммита 85c559b той же ветки.
-                        //
-                        // `.or` остаётся не «на всякий случай», а потому, что слово о памятке
-                        // здесь СОБИРАЕТСЯ по всем приборам узла: писателей самое большее один,
-                        // молчащих краевых — сколько угодно, и первый заговоривший обязан
-                        // пережить молчание остальных.
+                        // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
+                        // их просто копит) — тогда побеждает сказавший последним. Цена
+                        // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
+                        // не ставит, а гейт на это — отдельное решение, не попутное.
                         memo = remembered.or(memo);
                         signals.extend(spoken);
                     }
@@ -1806,14 +1752,14 @@ impl<C: Bordered, T: Transport> Alive<C, T> {
     /// ВОСЬМОЙ ЗАКОН на живой ленте (§10, §12.3): окно набралось — пере-подаём его свежей семье
     /// дважды и сверяем сказанное. Свидетель предъявляется тут же: молча держать закон значит не
     /// держать его вовсе.
-    fn certified(&mut self, seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>>>]) {
+    fn certified(&mut self, seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>]) {
         if !self.certify || self.tape.len() < TAPE_WINDOW {
             return;
         }
         let fold = self.about.as_ref().map(|(fold, _say)| fold);
         let idle = self.idle;
         let verdict = replays(&self.tape, |mode, letters| {
-            replay::<Wide<T::Wire, C::Edge>>(seeds, fold, idle, mode, letters)
+            replay::<Wide<T::Wire, C::Edge>, S>(seeds, fold, idle, mode, letters)
         });
         match verdict {
             Replayed::Reproduced => {
@@ -2054,7 +2000,7 @@ mod tests {
     #[derive(Clone)]
     struct Steady;
 
-    impl Probe<Word> for Steady {
+    impl Probe<Word, Distress> for Steady {
         fn observe(&mut self, event: &DetectorEvent<Word>) -> SmallVec<[Distress; 2]> {
             match event {
                 DetectorEvent::Packet { .. } => smallvec![Distress::NoBytes],
@@ -2062,7 +2008,7 @@ mod tests {
             }
         }
 
-        fn clone_box(&self) -> Box<dyn Probe<Word>> {
+        fn clone_box(&self) -> Box<dyn Probe<Word, Distress>> {
             Box::new(self.clone())
         }
     }
@@ -2074,7 +2020,7 @@ mod tests {
 
     static PEEKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-    impl Probe<Word> for Peeking {
+    impl Probe<Word, Distress> for Peeking {
         fn observe(&mut self, event: &DetectorEvent<Word>) -> SmallVec<[Distress; 2]> {
             match event {
                 DetectorEvent::Packet { .. } => {
@@ -2085,7 +2031,7 @@ mod tests {
             }
         }
 
-        fn clone_box(&self) -> Box<dyn Probe<Word>> {
+        fn clone_box(&self) -> Box<dyn Probe<Word, Distress>> {
             Box::new(self.clone())
         }
     }
@@ -2126,10 +2072,10 @@ mod tests {
     fn окно_ленты_воспроизводится() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Steady)];
+        let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Steady)];
 
         let verdict = replays(&tape, |mode, letters| {
-            replay::<Word>(&seeds, None, Duration::from_secs(10), mode, letters)
+            replay::<Word, Distress>(&seeds, None, Duration::from_secs(10), mode, letters)
         });
         assert_eq!(verdict, Replayed::Reproduced);
     }
@@ -2141,10 +2087,10 @@ mod tests {
     fn скрытый_вход_разводит_прогоны() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Peeking)];
+        let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Peeking)];
 
         let verdict = replays(&tape, |mode, letters| {
-            replay::<Word>(&seeds, None, Duration::from_secs(10), mode, letters)
+            replay::<Word, Distress>(&seeds, None, Duration::from_secs(10), mode, letters)
         });
         assert_eq!(
             verdict,
@@ -2159,7 +2105,7 @@ mod tests {
     fn слово_о_цели_входит_в_сказанное() {
         let start = Instant::now();
         let tape = window(start);
-        let seeds: Vec<Box<dyn Probe<Word>>> = vec![Box::new(Steady)];
+        let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Steady)];
         let fold: Fold = Box::new(|words: &[&Distress]| {
             words
                 .iter()
@@ -2167,7 +2113,7 @@ mod tests {
                 .then_some(Distress::NoBytes)
         });
 
-        let said = replay::<Word>(
+        let said = replay::<Word, Distress>(
             &seeds,
             Some(&fold),
             Duration::from_secs(10),
@@ -2180,7 +2126,7 @@ mod tests {
             "слово о цели в сказанном: {said:?}"
         );
         assert_eq!(
-            replays(&tape, |mode, letters| replay::<Word>(
+            replays(&tape, |mode, letters| replay::<Word, Distress>(
                 &seeds,
                 Some(&fold),
                 Duration::from_secs(10),
