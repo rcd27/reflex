@@ -45,6 +45,19 @@ impl reflex_core::mealy::Mealy for RetransmitInstrument {
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        // Закон буквы, а не прибора: `DetectorEvent::hides_observation` называет, какие буквы
+        // прячут наблюдения разговора. Обрезанный кадр (`Unread::Truncated`) прячет их наравне с
+        // дырой — он БЫЛ и мог нести байты цели; чужой протокол не прячет ничего.
+        if event.hides_observation() {
+            return (
+                Self {
+                    blinded: true,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+                (),
+            );
+        }
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => match input {
                 // Просьба открывает отсчёт, повторная не сдвигает: величина — ожидание человека с
@@ -112,20 +125,14 @@ impl reflex_core::mealy::Mealy for RetransmitInstrument {
             // законами — вместо одного `LIES` завести два разных источника недосчёта.
             reflex_core::DetectorEvent::Tick { .. }
             | reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
-            // Дыра — не «ничего не произошло», а «произошло и до нас не дошло». Прибор судит по
+            // Прячущие буквы ушли выше. Дыра — не «ничего не произошло», а «произошло и до нас не дошло». Прибор судит по
             // ОТСУТСТВИЮ байт вниз, и после объявленной потери отсутствие перестаёт быть
             // наблюдением: ответившая цель выглядит молчащей, а улика ведёт к `Act::sever()` —
             // ложный RST по живому разговору, и ровно под нагрузкой, когда очередь и рвётся.
             // Замер 10.09: тот же мир, ответ 1400 байт, дыра вместо него — `Retransmit{480мс}`
             // на пустом месте. Ослепнуть значит пропустить беду; выдумать её значит оборвать
             // человека, и цена этих ошибок не равна.
-            reflex_core::DetectorEvent::Torn { .. } => (
-                Self {
-                    blinded: true,
-                    ..self
-                },
-                smallvec::SmallVec::new(),
-            ),
+            reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
         };
         (state, signals, ())
     }

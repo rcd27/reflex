@@ -82,6 +82,9 @@ impl reflex_core::mealy::Mealy for TrustInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => self.saw(input),
+            // Прибор утверждает только по НАЛИЧИЮ записи: `ApplicationData` даёт `Established`,
+            // `Alert` — отказ. Прячущая буква способна отнять утверждение, но не создать его:
+            // ошибка идёт в сторону пропуска, а не выдумки, и ослеплять тут нечего (§7, Д7).
             reflex_core::DetectorEvent::Tick { .. }
             | reflex_core::DetectorEvent::Opaque { .. }
             | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),

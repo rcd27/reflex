@@ -60,6 +60,9 @@ impl<S: SeveredByPerson + TargetDelivered> reflex_core::mealy::Mealy for Departu
                 let reading = self.read(&input, 0);
                 (self, reading.into_iter().collect(), ())
             }
+            // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от
+            // полноты входа не зависит вовсе. Прячущей букве тут нечего исказить — тождество
+            // доказано ТИПОМ, а не рассуждением (§7, Д7).
             reflex_core::DetectorEvent::Tick { .. }
             | reflex_core::DetectorEvent::Opaque { .. }
             | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new(), ()),

@@ -18,6 +18,10 @@ pub struct RstInstrument {
     fired: bool,
     /// Отдала ли цель хоть байт до сброса.
     answered: bool,
+    /// Буква спрятала наблюдения этого разговора — отсутствие перестало быть свидетельством.
+    /// Снимать нечем: утверждение прибора историческое, а положительное наблюдение и так снимает
+    /// подозрение своей веткой (§7, Д7).
+    blinded: bool,
 }
 
 impl RstInstrument {
@@ -37,9 +41,23 @@ impl reflex_core::mealy::Mealy for RstInstrument {
     /// 29.08: 23 сброса — 17 наших, 6 от цели после байтов, бед ноль, движок объявил 12. Цена:
     /// сброс посреди живой сессии пропускается (от штатного закрытия неотличим).
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        // Дыра и обрезанный кадр прячут ответ цели, а прибор судит по его ОТСУТСТВИЮ. Закон буквы,
+        // не прибора: `DetectorEvent::hides_observation`.
+        if event.hides_observation() {
+            return (
+                Self {
+                    blinded: true,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+                (),
+            );
+        }
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                match (&input, self.fired, self.answered) {
+                // Ослепший о перехвате не судит: подпись перехвата есть ОТСУТСТВИЕ байтов цели до
+                // сброса, а дыра могла их забрать — сброс после ответа есть прощание.
+                match (&input, self.fired, self.answered || self.blinded) {
                     (
                         SeenTcp::Rst {
                             by: ResetBy::TargetSide,
@@ -80,7 +98,8 @@ impl reflex_core::mealy::Mealy for RstInstrument {
                     }
                 }
             }
-            // Сброс сам есть момент: часы не нужны. Непонятое и дыра — не улика TCP.
+            // Сброс сам есть момент: часы не нужны. Непонятое чужого протокола — не улика TCP;
+            // прячущие буквы ушли выше.
             reflex_core::DetectorEvent::Tick { .. }
             | reflex_core::DetectorEvent::Opaque { .. }
             | reflex_core::DetectorEvent::Torn { .. } => (self, smallvec::SmallVec::new()),
@@ -156,6 +175,13 @@ pub struct SilenceInstrument {
     /// его кто-то ждёт (замер 29.08: `vk.com` за 296 мс получал `Silence` от простаивающего
     /// keep-alive).
     awaiting: bool,
+    /// Достоверен ли счёт байтов цели. Прячущая буква снимает достоверность НАВСЕГДА: `NoBytes`
+    /// утверждает обо ВСЕЙ истории разговора («не отвечала вовсе»), а свидетелем истории прибор
+    /// после пропажи наблюдений больше не является.
+    bytes_certain: bool,
+    /// Достоверно ли известно, ждёт ли человек. В отличие от счёта байтов — восстановимо: любое
+    /// следующее наблюдение заново устанавливает эту ось, и прибор снова видит.
+    awaiting_certain: bool,
 }
 
 /// Что делает наблюдение за разговором. Вариант типа, не два флага (четвёртая комбинация
@@ -176,6 +202,8 @@ impl SilenceInstrument {
         Self {
             after,
             last: None,
+            bytes_certain: true,
+            awaiting_certain: true,
             bytes: 0,
             watch: Watch::Open,
             awaiting: false,
@@ -253,6 +281,8 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                         bytes,
                         watch,
                         awaiting,
+                        // Наблюдение заново установило, ждёт ли человек: ось достоверна опять.
+                        awaiting_certain: true,
                         ..self
                     },
                     smallvec::SmallVec::new(),
@@ -262,11 +292,14 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                 // Цель, не ответившая вовсе, уличается и без просьбы: соединение открыто, байтов нет.
                 (Some(last), Watch::Open)
                     if at.duration_since(last) >= self.after
-                        && (self.awaiting || self.bytes == 0) =>
+                        && ((self.awaiting && self.awaiting_certain)
+                            || (self.bytes == 0 && self.bytes_certain)) =>
                 {
-                    let distress = match self.bytes {
-                        0 => Distress::NoBytes,
-                        _seen => Distress::Silence {
+                    // `NoBytes` говорит об истории, `Silence` — об окне. После прячущей буквы окно
+                    // ещё наблюдаемо (часы заведены от неё), история — уже нет.
+                    let distress = match (self.bytes, self.bytes_certain) {
+                        (0, true) => Distress::NoBytes,
+                        (_seen, _certain) => Distress::Silence {
                             ms: at.duration_since(last).as_millis() as u32,
                         },
                     };
@@ -294,10 +327,21 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                 | (None, Watch::Fired)
                 | (None, Watch::Ended) => (self, smallvec::SmallVec::new()),
             },
-            // Непонятое не есть ответ цели; часы заводит тик, Opaque состояние не трогает. Дыра —
-            // тем более не ответ: она объявлена носителем целиком, не этим разговором, и приписать
-            // её байты цели значило бы приписать носителю чужую вину. Часы всё равно тикают
-            // независимо от дыры и оценят срок по факту.
+            // Прячущая буква (дыра, обрезанный кадр) не ослепляет прибор тишины навсегда и часов
+            // не трогает: окно перезаводит следующее НАБЛЮДЕНИЕ, и делает это само (мутация
+            // `last = at` на дыре не покрасила ни одного теста — механизм, потреблённый ноль раз).
+            // Падают ОСИ ДОСТОВЕРНОСТИ: судить по окну, внутри которого пропали наблюдения,
+            // нельзя — ответ цели мог быть среди них. Ожидание восстановит первое же наблюдение,
+            // историю байтов — ничто: `NoBytes` говорит обо ВСЁМ разговоре.
+            _hiding if event.hides_observation() => (
+                Self {
+                    bytes_certain: false,
+                    awaiting_certain: false,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+            ),
+            // Непонятое чужого протокола ответом цели быть не могло; часы заводит тик.
             reflex_core::DetectorEvent::Opaque { .. } | reflex_core::DetectorEvent::Torn { .. } => {
                 (self, smallvec::SmallVec::new())
             }
@@ -579,6 +623,10 @@ pub struct ChokedInstrument {
     /// Доказанная планка: сколько цель уже умела отдавать. Ноль — не доказывала.
     proven_ceiling: u64,
     fired: bool,
+    /// Буква спрятала наблюдения этого разговора — отсутствие перестало быть свидетельством.
+    /// Снимать нечем: утверждение прибора историческое, а положительное наблюдение и так снимает
+    /// подозрение своей веткой (§7, Д7).
+    blinded: bool,
 }
 
 impl ChokedInstrument {
@@ -591,6 +639,7 @@ impl ChokedInstrument {
             received: 0,
             proven_ceiling,
             fired: false,
+            blinded: false,
         }
     }
 
@@ -611,6 +660,18 @@ impl reflex_core::mealy::Mealy for ChokedInstrument {
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        // Дыра и обрезанный кадр прячут ответ цели, а прибор судит по его ОТСУТСТВИЮ. Закон буквы,
+        // не прибора: `DetectorEvent::hides_observation`.
+        if event.hides_observation() {
+            return (
+                Self {
+                    blinded: true,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+                (),
+            );
+        }
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => {
                 // Момент первой просьбы — начало отсчёта; повторная не сдвигает.
@@ -650,10 +711,12 @@ impl reflex_core::mealy::Mealy for ChokedInstrument {
                 (next, smallvec::SmallVec::new())
             }
             // Терпение входит в условие: улика не раньше, чем истечёт срок.
+            // Ослепший читается как «байты шли»: обвинение здесь бьёт по цели ИМЕНЕМ, и ноль
+            // внизу после прячущей буквы — наша слепота, а не её вина.
             reflex_core::DetectorEvent::Tick { at, .. } => match (
                 self.fired,
                 self.sent > 0 && self.patience_over(at),
-                self.received > 0,
+                self.received > 0 || self.blinded,
             ) {
                 // Байты идут — лечить нечего.
                 (_fired, _waited, true) => (self, smallvec::SmallVec::new()),
@@ -1141,6 +1204,10 @@ pub struct SynDropInstrument {
     /// `SYN+ACK` пришёл — путь жив, подозрение снято навсегда.
     handshaken: bool,
     fired: bool,
+    /// Буква спрятала наблюдения этого разговора — отсутствие перестало быть свидетельством.
+    /// Снимать нечем: утверждение прибора историческое, а положительное наблюдение и так снимает
+    /// подозрение своей веткой (§7, Д7).
+    blinded: bool,
 }
 
 impl SynDropInstrument {
@@ -1156,10 +1223,23 @@ impl reflex_core::mealy::Mealy for SynDropInstrument {
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+        // Дыра и обрезанный кадр прячут ответ цели, а прибор судит по его ОТСУТСТВИЮ. Закон буквы,
+        // не прибора: `DetectorEvent::hides_observation`.
+        if event.hides_observation() {
+            return (
+                Self {
+                    blinded: true,
+                    ..self
+                },
+                smallvec::SmallVec::new(),
+                (),
+            );
+        }
         let (state, signals) = match event {
             reflex_core::DetectorEvent::Packet { input, at } => match input {
-                // Стук открывает отсчёт; повтор стука без рукопожатия — предмет.
-                SeenTcp::Syn => match (self.asked, self.handshaken || self.fired) {
+                // Стук открывает отсчёт; повтор стука без рукопожатия — предмет. Ослепший молчит:
+                // рукопожатие могло быть съедено, и тогда путь жив.
+                SeenTcp::Syn => match (self.asked, self.handshaken || self.fired || self.blinded) {
                     (None, _) => (
                         Self {
                             asked: Some(at),
@@ -1305,5 +1385,177 @@ mod syn_drop_tests {
     fn a_single_syn_is_not_yet_a_blackhole() {
         let said = run(vec![(Some(SeenTcp::Syn), 0), (None, 5_000)]);
         assert!(said.is_empty());
+    }
+}
+
+/// Дыра и обрезанный кадр прячут ответ цели. Все четыре прибора здесь судят по ОТСУТСТВИЮ этого
+/// ответа, и свидетеля непрерывности входа ни у одного нет: их вердикт обязан умолкнуть, а не
+/// достроиться (§7, Д7). Свидетельство того, что молчание прибора — не вырождение, даёт вторая
+/// половина каждой пары: без дыры на том же скрипте прибор обвиняет.
+#[cfg(test)]
+mod torn_blinds_tests {
+    use super::*;
+    use reflex_core::mealy::Mealy;
+    use reflex_core::{parse::Unread, DetectorEvent};
+
+    fn torn(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    /// Стук, дыра вместо рукопожатия, повтор стука. Путь ЖИВ — `SYN+ACK` пришёл и пропал у нас.
+    #[test]
+    fn дыра_не_делает_из_живого_пути_блэкхол() {
+        let start = Instant::now();
+        let i = SynDropInstrument::new();
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: SeenTcp::Syn,
+            at: start,
+        });
+        let (i, _, _) = i.step(DetectorEvent::Torn {
+            at: torn(start, 100),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::Packet {
+            input: SeenTcp::Syn,
+            at: torn(start, 400),
+        });
+
+        assert!(
+            said.is_empty(),
+            "рукопожатие могло быть съедено дырой — своя слепота не улика против адреса"
+        );
+    }
+
+    /// Сброс от цели ПОСЛЕ её байтов — прощание, не перехват. Дыра съела эти байты.
+    #[test]
+    fn дыра_не_делает_из_прощания_перехват() {
+        let start = Instant::now();
+        let i = RstInstrument::new();
+        let (i, _, _) = i.step(DetectorEvent::packet_now(SeenTcp::Handshaken));
+        let (i, _, _) = i.step(DetectorEvent::Torn {
+            at: torn(start, 100),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::packet_now(SeenTcp::Rst {
+            by: ResetBy::TargetSide,
+        }));
+
+        assert!(
+            said.is_empty(),
+            "ответ цели мог быть съеден дырой — сброс после него неотличим от конца разговора"
+        );
+    }
+
+    /// Цель отдавала байты, дыра их съела, терпение истекло. Задушенной она не является.
+    #[test]
+    fn дыра_не_делает_из_отвечавшей_цели_задушенную() {
+        let start = Instant::now();
+        let i = ChokedInstrument::after(0, Duration::from_millis(500));
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: Seen::Sent { count: 517 },
+            at: start,
+        });
+        let (i, _, _) = i.step(DetectorEvent::Torn {
+            at: torn(start, 50),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::Tick {
+            node: 5,
+            at: torn(start, 5_000),
+        });
+
+        assert!(
+            said.is_empty(),
+            "ноль внизу после дыры — не наблюдение, а его отсутствие"
+        );
+    }
+
+    /// Обрезанный кадр — та же дыра предметом: `Unread::Truncated` есть ПОТЕРЯ (так и назван в
+    /// `core::parse::unread`), и он мог нести ответ цели.
+    #[test]
+    fn обрезанный_кадр_ослепляет_наравне_с_дырой() {
+        let start = Instant::now();
+        let i = ChokedInstrument::after(0, Duration::from_millis(500));
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: Seen::Sent { count: 517 },
+            at: start,
+        });
+        let (i, _, _) = i.step(DetectorEvent::Opaque {
+            why: Unread::Truncated,
+            at: torn(start, 50),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::Tick {
+            node: 5,
+            at: torn(start, 5_000),
+        });
+
+        assert!(
+            said.is_empty(),
+            "обрезанный кадр мог быть ответом цели: заголовок не прочли, кадр БЫЛ"
+        );
+    }
+
+    /// Вторая половина: чужой протокол ответом цели быть не мог — способность обвинять цела.
+    #[test]
+    fn чужой_протокол_способности_обвинять_не_отнимает() {
+        let start = Instant::now();
+        let i = ChokedInstrument::after(0, Duration::from_millis(500));
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: Seen::Sent { count: 517 },
+            at: start,
+        });
+        let (i, _, _) = i.step(DetectorEvent::Opaque {
+            why: Unread::NotOurProtocol,
+            at: torn(start, 50),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::Tick {
+            node: 5,
+            at: torn(start, 5_000),
+        });
+
+        assert_eq!(
+            said.as_slice(),
+            [Distress::NoBytes],
+            "не IP-нашего-разговора — не свидетельство о нём; ослепнуть тут значило бы онеметь зря"
+        );
+    }
+
+    /// Прибор тишины после дыры не умирает: окно с дырой непригодно, но следующее наблюдение
+    /// возвращает ему зрение. `NoBytes` при этом невозможен навсегда — он утверждает обо ВСЕЙ
+    /// истории разговора, а её свидетелем прибор быть перестал.
+    #[test]
+    fn после_дыры_прибор_снова_видит_но_об_истории_больше_не_свидетель() {
+        let start = Instant::now();
+        let i = SilenceInstrument::after(Duration::from_millis(1_000));
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: Seen::Sent { count: 517 },
+            at: start,
+        });
+        let (i, _, _) = i.step(DetectorEvent::Torn {
+            at: torn(start, 100),
+        });
+        // окно [0, 1500] содержит дыру — судить по нему нельзя
+        let (i, said, _) = i.step(DetectorEvent::Tick {
+            node: 1,
+            at: torn(start, 1_500),
+        });
+        assert!(
+            said.is_empty(),
+            "окно с дырой непригодно: ответ цели мог быть съеден"
+        );
+
+        // человек просит заново — оси установлены достоверно, часы идут от этой просьбы
+        let (i, _, _) = i.step(DetectorEvent::Packet {
+            input: Seen::Sent { count: 517 },
+            at: torn(start, 2_000),
+        });
+        let (_i, said, _) = i.step(DetectorEvent::Tick {
+            node: 4,
+            at: torn(start, 4_000),
+        });
+
+        assert_eq!(
+            said.as_slice(),
+            [Distress::Silence { ms: 2_000 }],
+            "новое окно свободно от дыры — прибор обязан снова видеть; но не `NoBytes`: об истории \
+             он больше не свидетель"
+        );
     }
 }
