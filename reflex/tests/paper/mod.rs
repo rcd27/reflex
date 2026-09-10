@@ -502,7 +502,10 @@ impl Mealy for Recorder {
         let name = match &event {
             DetectorEvent::Packet { .. } => "packet",
             DetectorEvent::Tick { .. } => "tick",
-            DetectorEvent::Opaque { .. } => "opaque",
+            // Причина едет В ИМЕНИ: буквы `Opaque` различаются ровно ею (`Truncated` прячет
+            // наблюдение, `NotOurProtocol` — нет), и тест, проверяющий одно лишь «пришло непонятое»,
+            // не отличил бы потерю от чужого трафика.
+            DetectorEvent::Opaque { why, .. } => &format!("opaque:{why:?}"),
             DetectorEvent::Torn { .. } => "torn",
         };
         self.seen.lock().expect("журнал не отравлен").push(Letter {
@@ -597,7 +600,20 @@ pub fn request(src_port: u16) -> Vec<u8> {
     frame(src_port, 443, 0x18, &[0x16, 0x03, 0x01, 0x00, 0x40])
 }
 
-/// ЧУЖОЙ кадр: не наш порт, транспорт его не опознает (`observe → None`).
+/// ЧУЖОЙ кадр: не наш порт, транспорт его не опознает (`observe → Observation::Foreign`).
 pub fn alien() -> Vec<u8> {
     frame(40000, 80, 0x18, &[0x41; 8])
+}
+
+/// ОБРЕЗАННЫЙ кадр: заголовок IPv4 объявляет TCP, а тела под него нет. `parse::ipv4` различает
+/// «обрезан» и «чужой протокол» нарочно (докблок там), и транспорт обязан донести эту разницу до
+/// цикла — кадр БЫЛ и мог нести ответ цели.
+pub fn truncated() -> Vec<u8> {
+    let mut packet = vec![0u8; 24];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&24u16.to_be_bytes());
+    packet[9] = 6;
+    packet[12..16].copy_from_slice(&[10, 0, 0, 1]);
+    packet[16..20].copy_from_slice(&[93, 184, 216, 34]);
+    packet
 }

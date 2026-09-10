@@ -13,7 +13,8 @@ mod paper;
 use std::time::Duration;
 
 use paper::{
-    alien, log, names, request, syn, taken, Crier, Letter, Paper, PaperAnswer, Recorder, Ticker,
+    alien, log, names, request, syn, taken, truncated, Crier, Letter, Paper, PaperAnswer, Recorder,
+    Ticker,
 };
 use reflex::*;
 
@@ -199,6 +200,51 @@ fn чужой_кадр_двигает_сетку_но_до_приборов_не
         names(seen),
         ["packet", "tick", "tick", "tick", "tick", "tick"],
         "чужой кадр до прибора не дошёл, а узлы — дошли"
+    );
+}
+
+/// B2½. ОБРЕЗАННЫЙ КАДР ДОХОДИТ ДО ПРИБОРОВ БУКВОЙ, А НЕ ТИШИНОЙ.
+///
+/// Половина закона Д7 была недостижима с БОЕВОГО пути: `Transport::observe` отдавал `Option` и
+/// схлопывал «не мой транспорт» с «кадр обрезан» в один `None`, а цикл отвечал на `None` вызовом
+/// `Interleave::idle`. Следствия были два и оба тихие: буква `Opaque { why: Truncated }` через
+/// фасад не рождалась НИ РАЗУ (работа пяти приборов по прячущей букве не срабатывала никогда), а
+/// сам обрезанный кадр ДВИГАЛ часы тишины — то есть кадр, спрятавший ответ цели, работал
+/// свидетельством её молчания.
+///
+/// Здесь оба следствия и проверяются: буква приходит, и приходит С ПРИЧИНОЙ. Пара этому тесту —
+/// B2 (`чужой_кадр_двигает_сетку_но_до_приборов_не_доходит`): без неё правка прошла бы и на «всякий
+/// неразобранный кадр объявлять потерей», а тогда прибор слеп бы на чужом трафике — онемел зря.
+///
+/// Мутация: вернуть в `Tcp::observe` для `Read::Truncated` ответ `Observation::Foreign` — тест
+/// краснеет, `opaque:Truncated` пропадает и остаётся один узел сетки на его месте.
+#[test]
+fn обрезанный_кадр_доходит_буквой_с_причиной_а_не_тишиной() {
+    let seen = log::<Letter>();
+    let paper = Paper::new()
+        .then_packet(request(40001))
+        .then_packet_after(Duration::from_secs(1), truncated())
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Recorder::into(seen))
+        .on(|_, _| {})
+        .run();
+
+    assert_eq!(
+        names(seen),
+        [
+            "packet",
+            "tick",
+            "tick",
+            "tick",
+            "tick",
+            "tick",
+            "opaque:Truncated"
+        ],
+        "узлы вышли ПЕРЕД буквой потери, а сама потеря дошла до прибора названной"
     );
 }
 
