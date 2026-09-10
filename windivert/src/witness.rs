@@ -48,7 +48,7 @@ impl CanRefuse for GateWitness {
     fn refuse() {}
 }
 
-/// Форма гейта `Act::<T>::ask` (`reflex/src/lib.rs:1059`) — ГРАНИЦА (bound `T: CanHold + CanAsk`),
+/// Форма гейта `reflex::Act::<T>::ask` — ГРАНИЦА (bound `T: CanHold + CanAsk`),
 /// не его код. С задачи 12¾ этот крейт ЗАВИСИТ от `reflex` (под `cfg(windows)`, `Cargo.toml`) —
 /// но этот модуль НЕ гейтится `cfg(windows)` (докблок модуля выше) и обязан собираться на Linux
 /// тоже, где `reflex` недостижим. Граница воспроизведена ЗДЕСЬ, СВОИМ кодом, а не переиспользованием

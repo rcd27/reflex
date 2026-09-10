@@ -52,7 +52,6 @@ use reflex_core::certify::replays::{replays, Replayed};
 use reflex_core::colimit::Layer;
 use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
-use reflex_core::edge::EdgeView;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::held::{Held, Terminal};
@@ -93,7 +92,19 @@ pub use smallvec::{smallvec, SmallVec};
 #[cfg(unix)]
 mod nfqueue;
 #[cfg(unix)]
-pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
+pub use nfqueue::{CtEdge, LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
+
+/// ЧТО НУЖНО КРАЕВОМУ ПРИБОРУ — через фасад, без второй зависимости у потребителя. `EdgeView` —
+/// закон края (счётчики и возраст, которые ведёт носитель), `Edged` — слово, в котором прибор видит
+/// провод и край разом, `ResetBy` — автор сброса. Все три БЕЗУСЛОВНЫ: краевой прибор пишется над
+/// законом, а не над носителем, и на Windows он тот же. Носительский `CtEdge` уезжает отдельно и
+/// только под `cfg(unix)` (см. `mod nfqueue`).
+///
+/// Пределом это было замерено снаружи: первое употребление фреймворка из чужой репы искало эти
+/// имена в `reflex` и не нашло — краевой прибор через фасад написать было нельзя.
+pub use reflex_core::edge::EdgeView;
+pub use reflex_instrument::edge_word::Edged;
+pub use reflex_instrument::wire::ResetBy;
 
 /// Причина, по которой кадр не прочитан. Реэкспорт, а не внутреннее имя: она стоит в подписи
 /// [`Transport::observe`], и без неё свой транспорт снаружи не написать — а `Truncated` из неё
@@ -535,8 +546,6 @@ where
     }
 }
 
-/// Прибор, кладущийся в `.detect(…)` для транспорта с широким словом `W`. Реализуют конкретные
-/// детекторы; несовместимый транспорту прибор не соберётся (нет `IntoProbe<W>`).
 /// Пишет ли прибор в НАШИ биты марки. Не «краевой ли он»: краевой прибор, читающий только счётчики,
 /// памятки не пишет и соседа не затирает — предмет гейта есть число ПИСАТЕЛЕЙ в одну раскладку.
 pub trait MarkHome {}
@@ -547,6 +556,8 @@ pub struct MarkWriter;
 impl MarkHome for MarkSilent {}
 impl MarkHome for MarkWriter {}
 
+/// Прибор, кладущийся в `.detect(…)` для транспорта с широким словом `W`. Реализуют конкретные
+/// детекторы; несовместимый транспорту прибор не соберётся (нет `IntoProbe<W>`).
 pub trait IntoProbe<W> {
     /// Пишет ли прибор марку. Объявляет САМ прибор, как и дом (`place`).
     type Home: MarkHome;
@@ -660,6 +671,46 @@ pub struct Own<M, N> {
 }
 
 /// Обернуть свою машину в прибор для `.detect(own(machine))`. `N` выведется из `M::In`.
+///
+/// КРАЕВОЙ ПРИБОР СТАВИТСЯ ТОЙ ЖЕ ДВЕРЬЮ — второго конструктора нет. Разница одна: машина читает
+/// [`Edged`] (провод и вид края разом) вместо голого слова провода, и `Reads` доводит до неё край
+/// сам. Показано ПРИМЕРОМ, а не обещано именем: прежде здесь стояла ссылка на `own_at_edge`,
+/// которой в дереве не было вовсе, и нашлась она поиском СНАРУЖИ, из чужой репы. Пример держит
+/// `cargo test --doc`.
+///
+/// ```
+/// use reflex::*;
+///
+/// /// Машина, читающая КРАЙ: у неё на входе `Edged<слово провода, вид края>`.
+/// #[derive(Clone, Copy)]
+/// struct Watching;
+///
+/// impl Mealy for Watching {
+///     type In = DetectorEvent<Edged<Option<Seen>, Option<CtEdge>>>;
+///     type Out = SmallVec<[Distress; 2]>;
+///     type Log = ();
+///
+///     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+///         let said = match &event {
+///             // Счётчики и возраст ведёт НОСИТЕЛЬ — прибор их только читает (`EdgeView`).
+///             DetectorEvent::Packet { input, .. } => match &input.edge {
+///                 // `None` — носитель ещё не считал этот разговор: третье значение рядом с
+///                 // «ноль» и «много», и молчать на нём обязательно.
+///                 Some(edge) if edge.up_packets() == Some(0) => smallvec![Distress::NoBytes],
+///                 _ => smallvec![],
+///             },
+///             _ => smallvec![],
+///         };
+///         (self, said, ())
+///     }
+/// }
+///
+/// let _ = engine(Nfqueue::queue(200))
+///     .from(Tcp)
+///     .extract(Sni)
+///     .detect(own(Watching))
+///     .on(|target, distress| report!("{target}: {distress:?}"));
+/// ```
 pub fn own<N, M>(machine: M) -> Own<M, N>
 where
     M: Mealy<In = DetectorEvent<N>, Out = SmallVec<[Distress; 2]>> + Copy + Send + 'static,
@@ -671,7 +722,10 @@ where
 }
 
 /// Свой прибор живёт ПО РАЗГОВОРУ: он держит состояние в себе, движок сеет копию на ключ. Кто хочет
-/// краевой дом, кладёт машину, читающую [`Edged`], — для неё есть [`own_at_edge`].
+/// краевой дом, кладёт в ту же дверь машину, читающую [`Edged`] — пример в докблоке [`own`].
+///
+/// `Home = MarkSilent` и для краевой машины тоже: своя машина памятки НЕ ПИШЕТ (`place` отдаёт
+/// `Placed::PerFlow`, слова о марке в нём нет), а гейт считает ПИСАТЕЛЕЙ, не читателей края.
 impl<W, N, M> IntoProbe<W> for Own<M, N>
 where
     W: 'static,

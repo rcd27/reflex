@@ -85,8 +85,9 @@ fn два_писателя_над_одной_маркой_ломают_гейт_
         // Оба видят ОДНУ марку — как в цикле: `edge` едет с пакетом, не перечитывается.
         let (_m, (memo_b, spoken_b), ()) = blackhole.step(packet(mark, age));
         let (_m, (memo_s, spoken_s), ()) = silence.step(packet(mark, age));
-        // `reflex/src/lib.rs:1457`: memo = remembered.or(memo) по порядку приборов — побеждает
-        // сказавший последним.
+        // `Alive::walk` (`reflex/src/lib.rs`, арм пакета): `memo = remembered.or(memo)` по
+        // порядку приборов — побеждает сказавший последним. Ссылка ИМЕНЕМ, не строкой: номер
+        // протух дважды за одну ветку.
         if let Some(memo) = memo_s.or(memo_b) {
             mark = memo.apply_to(mark);
         }

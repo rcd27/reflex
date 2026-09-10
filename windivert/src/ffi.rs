@@ -20,8 +20,9 @@
 //!   который здесь единственно и смотрим);
 //! * коды ошибок `ERROR_INSUFFICIENT_BUFFER`(122)/`ERROR_NO_DATA`(232) — из `doc/windivert.html`
 //!   того же снимка (документация `WinDivertRecv`/`WinDivertShutdown`);
-//! * `OVERLAPPED`, `CreateEventW`, `WaitForSingleObject` (и коды `WAIT_OBJECT_0`=0,
-//!   `WAIT_TIMEOUT`=258), `GetOverlappedResult`, `CloseHandle`, `CancelIoEx`, `GetLastError`,
+//! * `OVERLAPPED`, `CreateEventW`, `WaitForSingleObject` (код `WAIT_OBJECT_0`=0; `WAIT_TIMEOUT`=258
+//!   сверен там же, но в объявлениях его нет — почему, сказано у `WAIT_OBJECT_0`),
+//!   `GetOverlappedResult`, `CloseHandle`, `CancelIoEx`, `GetLastError`,
 //!   `ERROR_IO_PENDING`=997 — из learn.microsoft.com (статьи Win32 API соответствующих функций и
 //!   `debug/system-error-codes--500-999-`), не по памяти.
 //!
@@ -52,7 +53,11 @@ pub const FALSE: Bool = 0;
 pub const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
 
 pub const WAIT_OBJECT_0: u32 = 0;
-pub const WAIT_TIMEOUT: u32 = 258;
+/// `WAIT_TIMEOUT`=258 объявления ЗДЕСЬ НЕТ НАРОЧНО. Ждущий (`carrier.rs`) разбирает по имени один
+/// исход — `WAIT_OBJECT_0`; честный выход срока и отказ самого ожидания он обрабатывает ОДИНАКОВО
+/// (отменить свой запрос и дождаться его завершения), и арм `ffi::WAIT_TIMEOUT | _` обещал бы
+/// различение, которого нет: имя из арма прочтёт тот, кто станет их различать, и решит, что работа
+/// уже сделана. Понадобится различить — константа вернётся вместе с разной работой, а не раньше.
 pub const ERROR_IO_PENDING: u32 = 997;
 
 // ─── WinDivert (include/windivert.h) ──────────────────────────────────────────────────────────

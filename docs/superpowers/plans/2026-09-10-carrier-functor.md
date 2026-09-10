@@ -1,5 +1,11 @@
 # Функтор носителя — план реализации
 
+> **ПЛАН УСТАРЕЛ — ЧИТАТЬ КАК ЗАМЫСЕЛ, НЕ КАК КАРТУ ДЕРЕВА.** По ходу исполнения замеры
+> пересматривались трижды, задачи T7½, T7¾, T12½ и T12¾ заведены сверх плана и в нём отсутствуют, а
+> дельт вышло девять вместо заявленных. Что и почему разошлось — в журнале решений
+> `.superpowers/sdd/2026-09-10-carrier-functor/progress.md`; он же старше этого файла по правоте.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** фасад `reflex` перестаёт знать типы `reflex-linux`; носитель становится параметром, и WinDivert встаёт в ту же дверь, что NFQ.

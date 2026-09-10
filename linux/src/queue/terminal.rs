@@ -110,7 +110,7 @@ pub(crate) enum Taken {
 }
 
 /// `Failed(code)` — НЕ дыра: это `NLMSG_ERROR` с ненулевым `code`, отказ ядра на НАШУ ЖЕ команду
-/// (bind/params/conntrack-flag — см. `wire.rs:195-201`), а не свидетельство потери пакетов. Прежний
+/// (bind/params/conntrack-flag — см. `wire::incoming_of`), а не свидетельство потери пакетов. Прежний
 /// фасад его пропускал (`let Incoming::Packet(packet) = incoming else { continue }`), тем же словом
 /// отвечаем и здесь: пропуск, не дыра. Дыра о потере — отдельный предмет, живёт в `after_recv`, где
 /// ей и место (`QueueError::Overrun`). `Done` — конец пачки, тоже пропуск, не потеря.

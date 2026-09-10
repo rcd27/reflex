@@ -46,8 +46,8 @@
 //!
 //! # Связано: `IntoCarrier` реализован буквально (задача 12¾)
 //!
-//! Задача 12 совпала форму (`open`/`layout`/`name` ТОЙ ЖЕ ФОРМОЙ, что и `reflex::IntoCarrier`,
-//! `reflex/src/lib.rs:120`) вручную, но `impl IntoCarrier for WinDivert` не писала — назвав причину
+//! Задача 12 совпала форму (`open`/`layout`/`name` ТОЙ ЖЕ ФОРМОЙ, что и трейт
+//! `reflex::IntoCarrier`) вручную, но `impl IntoCarrier for WinDivert` не писала — назвав причину
 //! дословно: дом трейта (крейт `reflex`) сам не проходил кросс-сборку под Windows, 23 ошибки в
 //! `nfq-0.2.5` (внешний крейт, тянет его `reflex-linux` под фичей `nfqueue`, которую `reflex`
 //! включал безусловно), к WinDivert отношения не имеющие.
