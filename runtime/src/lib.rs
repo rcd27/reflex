@@ -1,3 +1,7 @@
+// Обещание имени в докблоке ([`Name`]) держит компилятор, не читатель: битая ссылка — ошибка сборки
+// документации, а не молчаливое предупреждение, которое ловят люди постфактум.
+#![deny(rustdoc::broken_intra_doc_links)]
+
 //! Runtime adapters for reflex-core.
 //!
 //! This crate holds everything that depends on a concrete async runtime (tokio),

@@ -37,6 +37,8 @@ impl Interleave {
     /// Наблюдён пакет — что обязан увидеть потребитель. Сперва узлы, которые пакет перешагнул, потом
     /// он сам: детектор, увидевший пакет раньше закрытия окна, в которое пакет не попал, отнёс бы его
     /// байты не к тому окну.
+    ///
+    /// Сторож: `the_nodes_a_packet_stepped_over_come_out_before_it` (`core/tests/interleave.rs`).
     pub fn saw<T>(self, input: T, at: Instant) -> (Self, Vec<DetectorEvent<T>>) {
         let at = at.max(self.last);
         let events = self

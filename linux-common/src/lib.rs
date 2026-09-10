@@ -9,6 +9,9 @@
 //! Разбор — вместе с крылом.
 
 #![no_std]
+// Обещание имени в докблоке ([`Name`]) держит компилятор, не читатель: битая ссылка — ошибка сборки
+// документации, а не молчаливое предупреждение, которое ловят люди постфактум.
+#![deny(rustdoc::broken_intra_doc_links)]
 
 /// Action that XDP program should take for a given flow.
 /// Stored in BPF hash map, written by userspace, read by XDP.
