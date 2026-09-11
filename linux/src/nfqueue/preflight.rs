@@ -21,6 +21,14 @@ pub enum PreflightError {
     NoAccounting,
     /// Штампы времени conntrack выключены — возраста потока нет.
     NoTimestamps,
+    /// Ключа `nf_conntrack_acct` нет ВОВСЕ: ядро собрано без `CONFIG_NF_CONNTRACK_ACCT`. Отдельно
+    /// от [`NoAccounting`](Self::NoAccounting), потому что лечение РАЗНОЕ: там строка в sysctl,
+    /// здесь другое ядро, и `sysctl -w` ответит «unknown key».
+    NoAccountingKey,
+    /// Ключа `nf_conntrack_timestamp` нет ВОВСЕ — та же развилка, что у
+    /// [`NoAccountingKey`](Self::NoAccountingKey). Замерено на типичном роутере: учёт есть и
+    /// включён, а этого ключа нет — ядро собрано без `CONFIG_NF_CONNTRACK_TIMESTAMP`.
+    NoTimestampsKey,
     /// Ядро собрано БЕЗ `CONFIG_NETFILTER_NETLINK_GLUE_CT`: очередь не приложит `NFQA_CT` к пакету,
     /// и вид края не приедет НИКОГДА — сколько бы conntrack ни был загружен и настроен.
     ///
@@ -83,6 +91,23 @@ impl fmt::Display for PreflightError {
                      настраивай. \
                      Починка: загрузиться с ядром, где эта опция есть (перезагрузка модуля НЕ \
                      поможет)"
+                )
+            }
+            Self::NoAccountingKey => {
+                write!(
+                    f,
+                    "ядро собрано без CONFIG_NF_CONNTRACK_ACCT — ключа nf_conntrack_acct нет \
+                     ВОВСЕ, счётчики края читаются нулями, и тихий дроп неотличим от «не считали». \
+                     Починка: ядро с этой опцией (sysctl -w ответит «unknown key» и НЕ поможет)"
+                )
+            }
+            Self::NoTimestampsKey => {
+                write!(
+                    f,
+                    "ядро собрано без CONFIG_NF_CONNTRACK_TIMESTAMP — ключа \
+                     nf_conntrack_timestamp нет ВОВСЕ, возраста потока не будет. \
+                     Починка: ядро с этой опцией (sysctl -w ответит «unknown key» и НЕ поможет). \
+                     Замерено на типичном роутере: ключа нет, хотя учёт (acct) есть и включён"
                 )
             }
             Self::NoTimestamps => {
@@ -181,23 +206,47 @@ fn check_glue(glue: Glue) -> Result<(), PreflightError> {
 
 /// Sysctl включён (`1`). Отсутствие файла — тоже отказ: считать «включено по умолчанию» нельзя,
 /// оба по умолчанию ВЫКЛЮЧЕНЫ.
-fn sysctl_on(leaf: &str) -> bool {
-    fs::read_to_string(format!("/proc/sys/net/netfilter/{leaf}"))
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false)
+/// ЧТО СКАЗАЛ КЛЮЧ. Три состояния, не два, и это тот же §7, что у приборов: «выключено» и «ключа
+/// НЕТ ВОВСЕ» лечатся РАЗНЫМ, и слить их значит послать человека выполнять невыполнимое.
+///
+/// Замер, которым это оплачено (роутер разработчика, ядро 6.6 aarch64): `nf_conntrack_acct` есть и
+/// включён, а ключа `nf_conntrack_timestamp` НЕТ — ядро собрано без `CONFIG_NF_CONNTRACK_TIMESTAMP`.
+/// Прежний код схлопывал `Err(ENOENT)` и `Ok("0")` в один `false`, и лечение предлагалось одно:
+/// `sysctl -w …=1`. На этой машине оно отвечает «unknown key», и человек остаётся без движка и без
+/// понимания почему.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Knob {
+    /// Ключ есть и включён.
+    On,
+    /// Ключ есть и выключен — чинится одной строкой.
+    Off,
+    /// Ключа нет: ядро собрано без него. `sysctl -w` не поможет, нужна пересборка либо другое ядро.
+    Absent,
+}
+
+fn sysctl(leaf: &str) -> Knob {
+    match fs::read_to_string(format!("/proc/sys/net/netfilter/{leaf}")) {
+        Err(_no_key) => Knob::Absent,
+        Ok(value) => match value.trim() == "1" {
+            true => Knob::On,
+            false => Knob::Off,
+        },
+    }
 }
 
 fn check_accounting() -> Result<(), PreflightError> {
-    match sysctl_on("nf_conntrack_acct") {
-        true => Ok(()),
-        false => Err(PreflightError::NoAccounting),
+    match sysctl("nf_conntrack_acct") {
+        Knob::On => Ok(()),
+        Knob::Off => Err(PreflightError::NoAccounting),
+        Knob::Absent => Err(PreflightError::NoAccountingKey),
     }
 }
 
 fn check_timestamps() -> Result<(), PreflightError> {
-    match sysctl_on("nf_conntrack_timestamp") {
-        true => Ok(()),
-        false => Err(PreflightError::NoTimestamps),
+    match sysctl("nf_conntrack_timestamp") {
+        Knob::On => Ok(()),
+        Knob::Off => Err(PreflightError::NoTimestamps),
+        Knob::Absent => Err(PreflightError::NoTimestampsKey),
     }
 }
 
@@ -286,6 +335,44 @@ mod tests {
         assert!(format!("{}", PreflightError::NoTimestamps).contains("nf_conntrack_timestamp"));
     }
 
+    /// ПРЕДМЕТ: «ВЫКЛЮЧЕНО» И «КЛЮЧА НЕТ» — РАЗНЫЕ БЕДЫ, И ЛЕЧЕНИЕ У НИХ РАЗНОЕ.
+    ///
+    /// Прежде `Err(ENOENT)` и `Ok("0")` схлопывались в один `false`, и человеку предлагалось одно
+    /// лечение — `sysctl -w …=1`. На ядре, собранном без опции, оно отвечает «unknown key»: человек
+    /// остаётся без движка и без понимания почему. Замер потребителя на роутере: `acct` есть и
+    /// включён, ключа `timestamp` нет вовсе.
+    ///
+    /// Тот же §7, что у приборов: «выключено» — наблюдение, «ключа нет» — другое наблюдение, и
+    /// слить их значит выдать одно за другое.
+    #[test]
+    fn выключенное_и_несобранное_лечатся_разным() {
+        let off = format!("{}", PreflightError::NoTimestamps);
+        let absent = format!("{}", PreflightError::NoTimestampsKey);
+
+        assert!(off.contains("sysctl -w"), "выключенное чинится строкой: {off}");
+        assert!(
+            absent.contains("CONFIG_NF_CONNTRACK_TIMESTAMP"),
+            "несобранное называет ОПЦИЮ ЯДРА: {absent}"
+        );
+        assert!(
+            absent.contains("НЕ поможет"),
+            "и прямо говорит, что sysctl тут бесполезен: {absent}"
+        );
+        assert_ne!(off, absent, "два лечения — два текста");
+
+        // Та же пара у учёта: развилка одна на оба ключа, и разойтись они не должны.
+        let absent_acct = format!("{}", PreflightError::NoAccountingKey);
+        assert!(absent_acct.contains("CONFIG_NF_CONNTRACK_ACCT"));
+        assert!(absent_acct.contains("НЕ поможет"));
+    }
+
+    /// Тройка состояний ключа снимается ОДНИМ законом — иначе два чтения разошлись бы в том, что
+    /// считать выключенным. Файла с таким именем не существует ни на одной машине, потому
+    /// `Absent` здесь проверяется настоящим чтением, а не подделкой.
+    #[test]
+    fn ключа_которого_нет_читается_как_отсутствие() {
+        assert_eq!(sysctl("nf_conntrack_нет_такого_ключа"), Knob::Absent);
+    }
 }
 
 #[cfg(test)]
