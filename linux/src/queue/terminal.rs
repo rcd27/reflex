@@ -66,6 +66,18 @@ pub enum Answer {
     Pass,
     Stop,
     Remembered { accept: bool, state: u32 },
+    /// Отпустить С МЕТКОЙ ПАКЕТА: `NFQA_MARK` живёт до конца пути пакета по ядру и читается
+    /// правилами маршрутизации (`ip rule fwmark`). Предмет [`CanMark`].
+    ///
+    /// НЕ ТО ЖЕ, ЧТО `Remembered`, и путать их дорого. `Remembered` кладёт состояние в conntrack:
+    /// оно переживает пакет и читается на СЛЕДУЮЩЕМ пакете разговора — дом автомата. `Marked`
+    /// кладёт метку на САМ пакет: разговора она не переживает, зато её видит маршрутизатор.
+    /// Первая ПОМНИТ, вторая ПРИКАЗЫВАЕТ. Перепутав, получишь либо состояние, стёртое следующим
+    /// пакетом, либо приказ, не дошедший до того, кому адресован.
+    ///
+    /// Способность была у прежнего бэкенда (`nfqueue::Answer::Marked`) и при переезде на свой
+    /// сокет не переехала — как и `Rewritten` рядом.
+    Marked(u32),
     /// Отпустить НЕ ТО, что взяли: ядро выпустит эти байты вместо исходного пакета
     /// (`NFQA_PAYLOAD` в том же сообщении вердикта). Предмет [`CanRewrite`].
     ///
@@ -84,14 +96,52 @@ pub enum Answer {
 /// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре.
 /// Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод слова в байты вердикта свидетельствовало
 /// бы только живое ядро (§9: выше значения, ниже мир). `apply` лишь исполняет это решение сокетом.
-pub(crate) fn asked(answer: &Answer) -> (bool, Option<u32>, Option<&[u8]>) {
+pub(crate) fn asked(answer: &Answer) -> Told<'_> {
     match answer {
-        Answer::Pass => (true, None, None),
-        Answer::Stop => (false, None, None),
-        Answer::Remembered { accept, state } => (*accept, Some(*state), None),
+        Answer::Pass => Told::passing(true),
+        Answer::Stop => Told::passing(false),
+        Answer::Remembered { accept, state } => Told {
+            state: Some(*state),
+            ..Told::passing(*accept)
+        },
+        // Помеченный пакет ОТПУСКАЕТСЯ: метка есть приказ маршрутизатору, а дропнутому пакету
+        // маршрут не нужен. Как и у подмены ниже, `accept` здесь следствие слова, не выбор.
+        Answer::Marked(mark) => Told {
+            skb_mark: Some(*mark),
+            ..Told::passing(true)
+        },
         // Подменённый пакет ОТПУСКАЕТСЯ: дропнуть его и одновременно подменить бессмысленно —
-        // выпускать было бы нечего. Потому `accept` здесь не выбор вызывающего, а следствие слова.
-        Answer::Rewritten(bytes) => (true, None, Some(bytes)),
+        // выпускать было бы нечего.
+        Answer::Rewritten(bytes) => Told {
+            payload: Some(bytes),
+            ..Told::passing(true)
+        },
+    }
+}
+
+/// Что уйдёт ядру одним сообщением вердикта. СТРУКТУРА, а не кортеж: доводов стало четыре, и
+/// безымянная четвёрка `(bool, Option<u32>, Option<&[u8]>, Option<u32>)` держалась бы только
+/// порядком — две метки в ней отличались бы лишь местом, а путают их именно потому, что обе `u32`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Told<'a> {
+    pub accept: bool,
+    /// Состояние разговора — в conntrack, переживает пакет.
+    pub state: Option<u32>,
+    /// Новые байты вместо взятых.
+    pub payload: Option<&'a [u8]>,
+    /// Метка пакета — для маршрутизации, разговора не переживает.
+    pub skb_mark: Option<u32>,
+}
+
+impl Told<'_> {
+    /// Голый вердикт: ни памяти, ни подмены, ни метки.
+    fn passing(accept: bool) -> Told<'static> {
+        Told {
+            accept,
+            state: None,
+            payload: None,
+            skb_mark: None,
+        }
     }
 }
 
@@ -105,8 +155,8 @@ impl Terminal for QueueSocket {
         answered: Answered<Held, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
         let id = answered.carrier.packet.id;
-        let (accept, state, payload) = asked(&answered.answer);
-        match self.verdict(id, accept, state, payload) {
+        let told = asked(&answered.answer);
+        match self.verdict(id, told.accept, told.state, told.payload, told.skb_mark) {
             Ok(()) => Ok(Delivered {
                 at: answered.at,
                 answer: answered.answer,
@@ -266,10 +316,40 @@ mod tests {
                 accept: true,
                 state: 0x1234
             }),
-            (true, Some(0x1234), None)
+            Told {
+                accept: true,
+                state: Some(0x1234),
+                payload: None,
+                skb_mark: None
+            }
         );
-        assert_eq!(asked(&Answer::Pass), (true, None, None));
-        assert_eq!(asked(&Answer::Stop), (false, None, None));
+        assert_eq!(asked(&Answer::Pass).accept, true);
+        assert_eq!(asked(&Answer::Pass).state, None);
+        assert_eq!(asked(&Answer::Stop).accept, false);
+    }
+
+    /// МЕТКА ПАКЕТА ДОЕЗЖАЕТ ДО ВЕРДИКТА И НЕ ПУТАЕТСЯ С ПАМЯТЬЮ.
+    ///
+    /// Обе `u32`, и различает их только место — потому проверяется не «метка доехала», а что
+    /// доехала она в СВОЁ поле, оставив чужое пустым. Перепутав, получишь состояние, стёртое
+    /// следующим пакетом, вместо приказа маршрутизатору — и ни одна сборка об этом не скажет.
+    #[test]
+    fn marking_reaches_the_verdict() {
+        let told = asked(&Answer::Marked(0x00FF_0001));
+
+        assert!(told.accept, "помеченный пакет отпускается: дропнутому маршрут не нужен");
+        assert_eq!(told.skb_mark, Some(0x00FF_0001), "метка едет в поле метки");
+        assert_eq!(
+            told.state, None,
+            "и НЕ едет в поле памяти: `Marked` приказывает маршрутизатору, а не помнит о разговоре"
+        );
+
+        // Обратная сторона того же закона: память не притворяется меткой.
+        let remembered = asked(&Answer::Remembered {
+            accept: true,
+            state: 0x00FF_0001,
+        });
+        assert_eq!(remembered.skb_mark, None, "память не едет в поле метки");
     }
 
     /// ПОДМЕНА ДОЕЗЖАЕТ ДО ВЕРДИКТА, и доезжает ОТПУЩЕННОЙ. Дропнуть подменённый пакет
@@ -279,12 +359,12 @@ mod tests {
     fn rewriting_reaches_the_verdict() {
         let fresh = vec![0x45u8, 0x00, 0xAB, 0xCD];
         let answer = Answer::Rewritten(fresh.clone());
-        let (accept, state, payload) = asked(&answer);
+        let told = asked(&answer);
 
-        assert!(accept, "подменённый пакет отпускается: дропать нечего");
-        assert_eq!(payload, Some(&fresh[..]), "новые байты доезжают до вердикта");
+        assert!(told.accept, "подменённый пакет отпускается: дропать нечего");
+        assert_eq!(told.payload, Some(&fresh[..]), "новые байты доезжают до вердикта");
         assert_eq!(
-            state, None,
+            told.state, None,
             "«переписать И запомнить» одним словом сегодня не выразимо — подпись `CanRewrite::rewrite` \
              состояния не принимает; предел назван в докблоке `Answer::Rewritten`, а не обойдён молча"
         );
@@ -346,11 +426,24 @@ impl CanRemember for QueueSocket {
 /// Замер 11.09.2026 нашёл это не прогоном, а счётом «объявлено каноном / реализовано в дереве»:
 /// `CanRewrite` числилась за движком и жила только на пути, переставшем быть боевым.
 ///
-/// Сторож: `verdict_carries_new_payload`, `rewriting_reaches_the_verdict` (`linux/tests/queue_wire.rs`,
+/// Сторож: `verdict_carries_new_payload`, `verdict_without_rewrite_carries_no_payload`,
+/// `rewriting_reaches_the_verdict` (`linux/tests/queue_wire.rs`,
 /// `linux/src/queue/terminal.rs`).
 impl reflex_core::CanRewrite for QueueSocket {
     fn rewrite(bytes: Vec<u8>) -> Answer {
         Answer::Rewritten(bytes)
+    }
+}
+
+/// ПОМЕТИТЬ ПАКЕТ: метка уезжает `NFQA_MARK` и живёт до конца его пути по ядру — её читают правила
+/// маршрутизации. Потерялась при том же переезде, что и [`CanRewrite`](reflex_core::CanRewrite),
+/// и по той же причине: новый носитель не научили тому, что умел старый.
+///
+/// Сторож: `verdict_carries_skb_mark_apart_from_conntrack_mark`, `verdict_without_mark_carries_no_skb_mark`,
+/// `marking_reaches_the_verdict`.
+impl reflex_core::CanMark for QueueSocket {
+    fn mark(mark: u32) -> Answer {
+        Answer::Marked(mark)
     }
 }
 

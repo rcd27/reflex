@@ -171,6 +171,7 @@ pub fn verdict_message(
     accept: bool,
     ct_mark: Option<u32>,
     payload: Option<&[u8]>,
+    skb_mark: Option<u32>,
 ) -> Vec<u8> {
     let verdict = if accept { NF_ACCEPT } else { NF_DROP };
     let head = tlv(NFQA_VERDICT_HDR, &verdict_body(verdict, id));
@@ -178,9 +179,13 @@ pub fn verdict_message(
         Some(mark) => [head, nested(NFQA_CT, &tlv(CTA_MARK, &mark.to_be_bytes()))].concat(),
         None => head,
     };
-    let body = match payload {
+    let with_bytes = match payload {
         Some(bytes) => [with_state, tlv(NFQA_PAYLOAD, bytes)].concat(),
         None => with_state,
+    };
+    let body = match skb_mark {
+        Some(mark) => [with_bytes, tlv(NFQA_MARK, &mark.to_be_bytes())].concat(),
+        None => with_bytes,
     };
     message(NFQNL_MSG_VERDICT, queue, seq, &body)
 }

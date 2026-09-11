@@ -75,7 +75,7 @@ pub fn main() {
             };
             // Без ядерного вида судить не о чем — пропускаем пакет как есть.
             let Some(view) = packet.ct else {
-                let _ = socket.verdict(packet.id, true, None, None);
+                let _ = socket.verdict(packet.id, true, None, None, None);
                 continue;
             };
 
@@ -115,7 +115,7 @@ pub fn main() {
                 println!("[край] {distress}");
             }
             // Памятка (если есть) уезжает в марку RMW — чужие биты целы; иначе марку не трогаем.
-            let _ = socket.verdict(packet.id, true, memo.map(|memo| memo.apply_to(view.mark)), None);
+            let _ = socket.verdict(packet.id, true, memo.map(|memo| memo.apply_to(view.mark)), None, None);
         }
     }
 }

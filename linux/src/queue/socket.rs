@@ -166,16 +166,27 @@ impl QueueSocket {
         }
     }
 
-    /// Вердикт пакету `id`. `ct_mark` при `Some` уезжает вложенным `NFQA_CT{CTA_MARK}`, `payload`
-    /// при `Some` — атрибутом `NFQA_PAYLOAD`: ядро отпустит ЭТИ байты вместо взятых.
+    /// Вердикт пакету `id`. Три необязательных довода — три РАЗНЫХ предмета, и сливать их нельзя:
+    /// * `ct_mark` — состояние разговора (`NFQA_CT{CTA_MARK}`), переживает пакет и читается на
+    ///   следующем пакете того же разговора: это дом автомата Мили;
+    /// * `payload` — новые байты (`NFQA_PAYLOAD`): ядро отпустит их вместо взятых;
+    /// * `skb_mark` — метка ПАКЕТА (`NFQA_MARK`), живёт до конца его пути по ядру и читается
+    ///   правилами маршрутизации (`ip rule fwmark`). Разговора она не переживает.
+    ///
+    /// Две метки — не дубль. Первая помнит, вторая ПРИКАЗЫВАЕТ, и разговор с ядром у них разный:
+    /// перепутав их, получишь либо состояние, стёртое следующим пакетом, либо приказ, не дошедший
+    /// до маршрутизатора.
     pub fn verdict(
         &self,
         id: u32,
         accept: bool,
         ct_mark: Option<u32>,
         payload: Option<&[u8]>,
+        skb_mark: Option<u32>,
     ) -> Result<(), QueueError> {
-        self.send(&verdict_message(self.queue, id, id, accept, ct_mark, payload))
+        self.send(&verdict_message(
+            self.queue, id, id, accept, ct_mark, payload, skb_mark,
+        ))
     }
 }
 

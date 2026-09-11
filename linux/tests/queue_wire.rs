@@ -143,7 +143,7 @@ fn conntrack_flag_request_sets_flag_and_mask() {
 /// Состояние уезжает вложенным NFQA_CT{CTA_MARK} — именно этого не умеет крейт nfq.
 #[test]
 fn verdict_carries_conntrack_mark() {
-    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234), None);
+    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234), None, None);
     // NFQA_CT = 11 (вложенный), внутри CTA_MARK = 8, be32.
     let ct = nested_attr(&built, 11).expect("NFQA_CT в вердикте");
     assert_eq!(be32_attr(&ct, 8), Some(0x0000_1234));
@@ -159,7 +159,7 @@ fn verdict_carries_conntrack_mark() {
 /// Вердикт без смены состояния не несёт NFQA_CT вовсе: не трогать — не то же, что записать своё.
 #[test]
 fn verdict_without_state_carries_no_conntrack_attribute() {
-    let built = verdict_message(200, 7, 42, true, None, None);
+    let built = verdict_message(200, 7, 42, true, None, None, None);
     assert!(nested_attr(&built, 11).is_none());
 }
 
@@ -193,7 +193,7 @@ fn several_messages_in_one_buffer_are_all_read() {
 #[test]
 fn verdict_carries_new_payload() {
     let fresh = [0x45u8, 0x00, 0x00, 0x28, 0xAB, 0xCD];
-    let built = verdict_message(200, 7, 42, true, None, Some(&fresh));
+    let built = verdict_message(200, 7, 42, true, None, Some(&fresh), None);
 
     assert_eq!(
         attrs_of(&built)
@@ -214,6 +214,40 @@ fn verdict_carries_new_payload() {
 /// же». Держит предыдущий тест честным: атрибут, стоящий всегда, не доказывал бы ничего.
 #[test]
 fn verdict_without_rewrite_carries_no_payload() {
-    let built = verdict_message(200, 7, 42, true, Some(0x1234), None);
+    let built = verdict_message(200, 7, 42, true, Some(0x1234), None, None);
     assert!(attrs_of(&built).iter().all(|(kind, _)| *kind != 10));
+}
+
+/// МЕТКА ПАКЕТА УЕЗЖАЕТ В `NFQA_MARK` (3), А НЕ В `CTA_MARK` — и это главный закон обеих меток.
+///
+/// Соседние пространства имён с почти одинаковым смыслом: `NFQA_MARK` = 3 в словаре очереди,
+/// `CTA_MARK` = 8 в словаре ctnetlink. Обе `u32`, и различает их только место. Потому проверяется
+/// не «метка доехала», а что при ОБЕИХ заданных каждая легла в своё поле: перепутав, получишь
+/// состояние, стёртое следующим пакетом, вместо приказа маршрутизатору — молча.
+#[test]
+fn verdict_carries_skb_mark_apart_from_conntrack_mark() {
+    let built = verdict_message(200, 7, 42, true, Some(0xAAAA_0000), None, Some(0x0000_BBBB));
+
+    assert_eq!(
+        attrs_of(&built)
+            .into_iter()
+            .find_map(|(kind, value)| (kind == 3).then(|| be32(&value)))
+            .flatten(),
+        Some(0x0000_BBBB),
+        "метка ПАКЕТА — в NFQA_MARK очереди"
+    );
+    let ct = nested_attr(&built, 11).expect("NFQA_CT на месте");
+    assert_eq!(
+        be32_attr(&ct, 8),
+        Some(0xAAAA_0000),
+        "память разговора — в CTA_MARK ctnetlink, и это ДРУГОЕ поле"
+    );
+}
+
+/// Вердикт без метки не несёт `NFQA_MARK` вовсе: не трогать метку пакета ≠ поставить нулевую.
+/// Нулевая метка есть решение («никакого особого маршрута»), отсутствие — отказ от решения.
+#[test]
+fn verdict_without_mark_carries_no_skb_mark() {
+    let built = verdict_message(200, 7, 42, true, None, None, None);
+    assert!(attrs_of(&built).iter().all(|(kind, _)| *kind != 3));
 }
