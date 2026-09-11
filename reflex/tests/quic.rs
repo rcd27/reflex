@@ -184,3 +184,81 @@ fn после_ответа_цели_повтор_уликой_не_являет�
         "после ответа цели повтор открытия улики не несёт"
     );
 }
+
+
+// ─── КРАЙ НА ДАТАГРАММАХ: возраст разговора ────────────────────────────────────────────────────
+
+/// Собрать запись из `(мкс от начала, кадр)` — та же оснастка, что у `recording.rs`, с разведёнными
+/// полями секунд и долей (доля клампится сотней тысяч).
+fn recording(frames: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let head: Vec<u8> = [0xd4u8, 0xc3, 0xb2, 0xa1]
+        .into_iter()
+        .chain([2, 0, 4, 0])
+        .chain([0; 8])
+        .chain(65535u32.to_le_bytes())
+        .chain(1u32.to_le_bytes())
+        .collect();
+
+    frames.iter().fold(head, |acc, (micros, body)| {
+        acc.into_iter()
+            .chain((1_756_000_000 + micros / 1_000_000).to_le_bytes())
+            .chain((micros % 1_000_000).to_le_bytes())
+            .chain((body.len() as u32).to_le_bytes())
+            .chain((body.len() as u32).to_le_bytes())
+            .chain(body.iter().copied())
+            .collect()
+    })
+}
+
+/// ПРЕДМЕТ: краевой прибор высказывается на ДАТАГРАММАХ. Пока открытие разговора у UDP не
+/// опознавалось, возраст не считался вовсе, и приборы, судящие ПО ВОЗРАСТУ, были на QUIC немы
+/// НАВСЕГДА — замер потребителя: цель не ответила 6,999 секунды при пороге 1,5, прибор промолчал.
+///
+/// Признак открытия у QUIC — клиентский `Initial`, ровно как `SYN` у TCP. Здесь он настоящий:
+/// байты взяты из снятого рукопожатия.
+#[test]
+fn краевой_прибор_говорит_и_на_датаграммах() {
+    use reflex_core::builder::UdpBuilder;
+    use reflex_core::types::Protocol;
+
+    let flow = reflex_core::types::Flow {
+        src: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:443".parse::<std::net::SocketAddr>().unwrap(),
+        protocol: Protocol::Udp,
+    };
+    let initial = real_initial();
+    let datagram = || {
+        UdpBuilder::new()
+            .flow(&flow)
+            .ttl(64)
+            .payload(&initial)
+            .build()
+            .serialize()
+    };
+
+    // Клиент открыл разговор и через семь секунд повторил открытие. Цель не ответила ни разу —
+    // это блэкхол, и порог тут возрастной, а не счётный.
+    let path = std::env::temp_dir().join(format!("reflex-quic-drop-{}.pcap", std::process::id()));
+    std::fs::write(
+        &path,
+        recording(&[(0, datagram()), (7_000_000, datagram())]),
+    )
+    .expect("временный файл записан");
+
+    let heard = std::sync::Mutex::new(Vec::new());
+    pcap(&path)
+        .from(Quic)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .on(|_target: &str, distress| heard.lock().expect("журнал не отравлен").push(distress))
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard
+            .iter()
+            .any(|distress| matches!(distress, Distress::Blackhole { .. } | Distress::NoBytes)),
+        "цель не ответила за семь секунд при пороге пять — прибор обязан высказаться; \
+         услышано: {heard:?}"
+    );
+}

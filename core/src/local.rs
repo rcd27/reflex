@@ -211,14 +211,27 @@ fn parse_five_tuple(frame: &[u8]) -> Option<Parsed> {
                 syn: seg.flags.contains(TcpFlags::SYN),
             })
         }
-        // UDP не несёт `SYN` — начало разговора им не отмечено никак, и `opened` для UDP-потока
-        // остаётся `None` навсегда. Тот же предел, что и у пропущенного TCP-`SYN`, только вечный:
-        // назван здесь, а не скрыт нулём.
+        // У ДАТАГРАММ ОТКРЫТИЕ ТОЖЕ БЫВАЕТ ВИДНО, и не видеть его дорого: пока `opened` у UDP
+        // оставался `None` навсегда, возраст разговора не считался, а краевые приборы судят ИМЕННО
+        // по возрасту — то есть на QUIC они были немы НАВСЕГДА. Замер потребителя: цель не
+        // ответила 6,999 секунды при пороге 1,5, и прибор тишины промолчал.
+        //
+        // Признак открытия у QUIC — клиентский `Initial`: он и есть начало рукопожатия, ровно как
+        // `SYN` у TCP. Читается открытым текстом (`quic::initial_dcid`), расшифровки не требует.
+        // Протокольная осведомлённость здесь не новость: этот край и так читает флаги TCP — он
+        // выводит своими руками то, что очереди ядра даёт conntrack.
+        //
+        // Без фичи `quic` признака нет, и `opened` остаётся `None` — прежний предел, названный
+        // вслух, а не скрытый нулём.
         IpProtocol::Udp => {
             let dgram = UdpDatagram::parse(&ip.payload, ip.src, ip.dst, ip.ttl)?;
+            #[cfg(feature = "quic")]
+            let opens = crate::quic::initial_dcid(&dgram.payload).is_some();
+            #[cfg(not(feature = "quic"))]
+            let opens = false;
             Some(Parsed {
                 flow: dgram.flow,
-                syn: false,
+                syn: opens,
             })
         }
         IpProtocol::Icmp | IpProtocol::Other(_) => None,

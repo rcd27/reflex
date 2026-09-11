@@ -47,46 +47,49 @@ impl fmt::Display for PreflightError {
                 }
                 write!(
                     f,
-                    "insufficient privileges: missing {}. is_root={is_root}. \
-                     Fix: run as root, or: sudo setcap 'cap_net_admin,cap_net_raw+ep' <binary>",
+                    "не хватает прав: нет {}. root={is_root}. \
+                     Починка: запустить от root либо выдать право двоичному файлу: \
+                     sudo setcap 'cap_net_admin,cap_net_raw+ep' <файл>",
                     missing.join(", ")
                 )
             }
             Self::NoKernelModule => {
                 write!(
                     f,
-                    "kernel module nfnetlink_queue not loaded. \
-                     Fix: sudo modprobe nfnetlink_queue"
+                    "модуль ядра nfnetlink_queue не загружен. \
+                     Починка: sudo modprobe nfnetlink_queue"
                 )
             }
             Self::NoConntrack => {
                 write!(
                     f,
-                    "kernel module nf_conntrack not loaded — no edge view. \
-                     Fix: sudo modprobe nf_conntrack"
+                    "модуль ядра nf_conntrack не загружен — края не видно вовсе. \
+                     Починка: sudo modprobe nf_conntrack"
                 )
             }
             Self::NoAccounting => {
                 write!(
                     f,
-                    "conntrack accounting off — edge counters read zero, a silent drop is \
-                     indistinguishable from 'not counted'. \
-                     Fix: sudo sysctl -w net.netfilter.nf_conntrack_acct=1"
+                    "учёт conntrack выключен — счётчики края читаются нулями, и тихий дроп \
+                     становится неотличим от «не считали». \
+                     Починка: sudo sysctl -w net.netfilter.nf_conntrack_acct=1"
                 )
             }
             Self::NoConntrackGlue => {
                 write!(
                     f,
-                    "kernel built without CONFIG_NETFILTER_NETLINK_GLUE_CT — NFQUEUE will never \
-                     attach NFQA_CT, so edge probes stay blind no matter how conntrack is tuned. \
-                     Fix: boot a kernel with that option (module reload will NOT help)"
+                    "ядро собрано без CONFIG_NETFILTER_NETLINK_GLUE_CT — NFQUEUE никогда не \
+                     приложит NFQA_CT, и краевые приборы останутся слепы, как conntrack ни \
+                     настраивай. \
+                     Починка: загрузиться с ядром, где эта опция есть (перезагрузка модуля НЕ \
+                     поможет)"
                 )
             }
             Self::NoTimestamps => {
                 write!(
                     f,
-                    "conntrack timestamps off — no flow age. \
-                     Fix: sudo sysctl -w net.netfilter.nf_conntrack_timestamp=1"
+                    "отметки времени conntrack выключены — возраста потока нет. \
+                     Починка: sudo sysctl -w net.netfilter.nf_conntrack_timestamp=1"
                 )
             }
         }
@@ -99,7 +102,7 @@ impl std::error::Error for PreflightError {}
 ///
 /// Зовётся носителем при открытии (`IntoCarrier::open`), а не циклом: предпосылка проверяется до
 /// первого пакета, иначе потребитель узнаёт о ней голым `errno` из `socket(2)`. Каждая ветка
-/// ошибки несёт ЛЕЧЕНИЕ, а не только диагноз («Fix: sudo modprobe …»): первый запуск у нового
+/// ошибки несёт ЛЕЧЕНИЕ, а не только диагноз («Починка: sudo modprobe …»): первый запуск у нового
 /// человека проваливается чаще всего именно здесь, и «Operation not permitted» ему не говорит
 /// ничего.
 pub fn check() -> Result<(), PreflightError> {
@@ -316,7 +319,10 @@ mod glue_tests {
     fn отказ_по_glue_называет_своё_лечение_а_не_чужое() {
         let said = format!("{}", PreflightError::NoConntrackGlue);
         assert!(said.contains("CONFIG_NETFILTER_NETLINK_GLUE_CT"), "названа опция: {said}");
-        assert!(said.contains("module reload will NOT help"), "названо, чего делать НЕ надо: {said}");
+        assert!(
+            said.contains("перезагрузка модуля НЕ поможет"),
+            "названо, чего делать НЕ надо: {said}"
+        );
         assert!(
             !format!("{}", PreflightError::NoConntrack).contains("GLUE"),
             "и соседний отказ этой опции не поминает — иначе лечения слились бы"
