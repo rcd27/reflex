@@ -1866,6 +1866,155 @@ impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
     }
 }
 
+/// ОДИН ОБОРОТ ЛЮБОЙ ЦЕПОЧКИ, СКОЛЬКО БЫ ИХ НИ БЫЛО. Тип цепочки стёрт, оборот остался.
+///
+/// Цепочки набора РАЗНЫЕ по типу: у каждой свой носитель, свой транспорт, свой словарь провода —
+/// одну очередь двум не поделить, и словарь TCP не словарь датаграмм. Общее у них ровно одно: они
+/// умеют провернуться и сказать, жив ли источник. Этого и довольно, чтобы крутить их вместе.
+trait Turn<S> {
+    /// Провернуть раз, сложив сказанное в общую очередь. `false` — носитель сказал, что работы
+    /// больше не будет НИКОГДА.
+    fn turn(&mut self, said: &mut VecDeque<Note<S>>) -> bool;
+}
+
+impl<C, T, S> Turn<S> for Heard<C, T, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    fn turn(&mut self, said: &mut VecDeque<Note<S>>) -> bool {
+        self.turning.pump(&mut Collecting {
+            said,
+            rule: self.rule.as_mut(),
+        })
+    }
+}
+
+/// НЕСКОЛЬКО ЦЕПОЧЕК РЯДОМ — объявление, которое читается как одно целое.
+///
+/// ```no_run
+/// # fn main() -> Result<(), reflex::Report> {
+/// use reflex::*;
+///
+/// let together = together()
+///     .chain(engine(Nfqueue::queue(250)).from(Tcp).extract(Sni).detect(Silence::after(secs(5))))
+///     .chain(engine(Nfqueue::queue(252)).from(Udp).extract(Sni).detect(DnsPoison::injected()));
+///
+/// for refused in together.refused() {
+///     report!("цепочка не поднялась: {}", refused.why().unwrap_or("без причины"));
+/// }
+/// for note in together.heard() {
+///     report!("{}: {:?}", note.target, note.word);
+/// }
+/// # Ok(()) }
+/// ```
+///
+/// # Почему набор, а не нить на цепочку
+///
+/// Потому что у знания ОДИН владелец. Две цепочки, отданные двум нитям, дают два порядка событий, и
+/// потребитель, сводящий их в одно знание, обязан завести замок — то есть вернуть ровно то, от чего
+/// уходили дверью показаний (замер: 15 замков до переезда, ноль в боевом пути после). Набор
+/// крутится в ОДНОЙ нити и отдаёт показания всех цепочек одним потоком.
+///
+/// # Почему это не блокируется
+///
+/// Оборот цепочки ограничен СРОКОМ (`Serves::serve(until, …)`): носитель обязан не возвращаться
+/// раньше срока, кроме как с работой, — значит и не позже. Молчащая цепочка отдаёт управление через
+/// узел сетки, и набор идёт к следующей. Цена честная и названа числом: показание может задержаться
+/// на оборот ПРОЧИХ цепочек, то есть на сумму их сроков.
+///
+/// # Отказ одной — значение, а не падение набора
+///
+/// Цепочка, чей носитель не открылся (выключенные счётчики conntrack, чужая очередь), даёт
+/// [`Report`] и НЕ отменяет остальных: набор запомнит её отказ и покажет в [`Together::refused`].
+/// Проглотить отказ значило бы тихо уменьшить продукт; уронить набор — потерять работающие
+/// цепочки из-за одной.
+pub struct Together<S = Distress> {
+    live: Vec<Box<dyn Turn<S>>>,
+    refused: Vec<Report>,
+}
+
+/// Открыть набор цепочек.
+pub fn together<S>() -> Together<S> {
+    Together {
+        live: Vec::new(),
+        refused: Vec::new(),
+    }
+}
+
+impl<S: Word + Clone + PartialEq + 'static> Together<S> {
+    /// Добавить цепочку. Носитель открывается ЗДЕСЬ: отказ обязан стать значением сразу, а не на
+    /// первом обороте, — иначе он приехал бы посреди чужих показаний.
+    pub fn chain<C, T, H>(mut self, chain: Detecting<C, T, H, S>) -> Together<S>
+    where
+        C: Bordered + 'static,
+        C::Carrier: CanHold + CanRemember,
+        C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+        <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+        T: Transport + 'static,
+        H: MarkHome,
+    {
+        match chain.heard() {
+            Ok(heard) => self.live.push(Box::new(heard)),
+            Err(report) => self.refused.push(report),
+        }
+        self
+    }
+
+    /// Цепочки, чьи носители не открылись. Смотреть до прогона — иначе продукт молча уменьшился.
+    pub fn refused(&self) -> &[Report] {
+        &self.refused
+    }
+
+    /// Показания ВСЕХ цепочек одним потоком.
+    pub fn heard(self) -> Chorus<S> {
+        Chorus {
+            live: self.live,
+            said: VecDeque::new(),
+            next: 0,
+        }
+    }
+}
+
+/// ПОКАЗАНИЯ НАБОРА — по кругу, по одному.
+pub struct Chorus<S = Distress> {
+    live: Vec<Box<dyn Turn<S>>>,
+    said: VecDeque<Note<S>>,
+    /// С какой цепочки продолжать круг. Круг, а не «сначала»: иначе первая цепочка съедала бы всё
+    /// внимание, а последняя говорила бы только в её тишине.
+    next: usize,
+}
+
+impl<S> Iterator for Chorus<S> {
+    type Item = Note<S>;
+
+    fn next(&mut self) -> Option<Note<S>> {
+        loop {
+            if let Some(note) = self.said.pop_front() {
+                return Some(note);
+            }
+            if self.live.is_empty() {
+                return None;
+            }
+            // Оборот ОДНОЙ цепочки за раз: так молчащая не держит говорящую дольше своего срока.
+            let at = self.next % self.live.len();
+            match self.live[at].turn(&mut self.said) {
+                true => self.next = at + 1,
+                // Источник кончился — цепочка уходит из круга, прочие продолжают. Набор кончается,
+                // когда кончились ВСЕ: иначе запись, дочитанная первой, обрывала бы живую очередь.
+                false => {
+                    self.live.remove(at);
+                    self.next = at;
+                }
+            }
+        }
+    }
+}
+
 /// ПРОГОН КАК ЗНАЧЕНИЕ: показания идут вбок, наружу, по одному.
 ///
 /// ```no_run
