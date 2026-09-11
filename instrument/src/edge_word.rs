@@ -48,16 +48,6 @@ impl<V> Reads<(Reading, V)> for Seen {
     }
 }
 
-/// ТРАНСПОРТ, ЧЕЙ СЛОВАРЬ ПРОВОДА УЖЕ ЕСТЬ ОБЩИЙ СЛОВАРЬ (QUIC), даёт широкое слово `(Seen, V)` —
-/// и сужение здесь вырожденное: переводить нечего, словарь тот же. Не «лишний impl ради одного
-/// транспорта»: без него прибор, читающий `Seen`, в такую цепочку не собирается ВООБЩЕ, и это
-/// читалось бы как «прибор не годится для QUIC», хотя предмет у него транспортно-независимый.
-impl<V> Reads<(Seen, V)> for Seen {
-    fn read(wide: &(Seen, V)) -> Option<Seen> {
-        Some(wide.0.clone())
-    }
-}
-
 impl<V> Reads<(Reading, V)> for SeenTcp {
     fn read(wide: &(Reading, V)) -> Option<SeenTcp> {
         <SeenTcp as Reads<Reading>>::read(&wide.0)

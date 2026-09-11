@@ -43,6 +43,12 @@ fn имя_цели_достаётся_из_настоящего_quic_рукоп�
     let report = pcap("tests/fixtures/quic-handshake.pcap")
         .from(Quic)
         .extract(Sni)
+        // ПРИБОРЫ ПАРКА СТОЯТ ЗДЕСЬ НАРОЧНО. Первая редакция обещала докблоком, что они встают на
+        // QUIC «как есть», и обещание было неверным: компилятор потребителя его не подтвердил, а
+        // мой собственный тест не мог — в нём стоял только `own(...)`. Теперь обещание держит
+        // сборка ЭТОГО теста: разъедься словарь транспорта с парком, и он не соберётся.
+        .detect(Retransmit::unanswered())
+        .detect(Silence::after(secs(5)))
         .detect(own(Always))
         .on(|target: &str, _distress: Distress| {
             heard
@@ -120,7 +126,9 @@ fn seen(state: &mut QuicState, payload: &[u8], dir: Dir) -> Seen {
         payload,
     };
     match Quic::observe(state, Read::Udp(datagram)) {
-        Observation::Seen(observed) => observed.wire,
+        // Сужаем до общего словаря тем же законом, что и цепочка (`Reading::anywhere`): второй
+        // способ сужения в тесте разошёлся бы с боевым молча.
+        Observation::Seen(observed) => observed.wire.anywhere().expect("датаграмма даёт общее слово"),
         other => panic!("наблюдение обязано состояться, а вышло другое: {:?}", other.кратко()),
     }
 }
