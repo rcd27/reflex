@@ -53,7 +53,20 @@ use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use reflex_core::backend::Sink;
-use reflex_core::capability::{CanAsk, CanHold, CanInject, CanRemember};
+/// СЛОВА ГЕЙТА §9.1 — публичны, потому что публичен сам гейт.
+///
+/// Реэкспорт, а не `use`: `IntoCarrier` — открытая дверь (её реализует `reflex-windivert` из
+/// чужого крейта), и всякий, кто пишет СВОЙ носитель, обязан объявить его способности. Назвать их
+/// ему было нечем: фасад не отдавал ни одного слова, и автор носителя брал вторую зависимость на
+/// `reflex-core` — ровно то нарушение закона «потребитель зависит от ОДНОГО крейта», что уже
+/// чинилось реэкспортом `Flow`.
+///
+/// Тому, кто просто строит цепочку, они не нужны и не мешают: способность требует `Act` в точке
+/// создания, а не потребитель в своей подписи.
+pub use reflex_core::capability::{
+    CanAsk, CanDrop, CanHold, CanInject, CanMark, CanModify, CanObserve, CanRefuse, CanRemember,
+    CanRewrite, CanSever,
+};
 use reflex_core::certify::replays::replays;
 /// Вердикт восьмого закона (§10) — публичен, а не внутреннее имя: он стоит в подписи
 /// [`Report::certified`], и без него исход прогона нельзя ни назвать, ни разобрать, не притащив
@@ -77,7 +90,7 @@ use reflex_core::word::{Conversation, Target};
 pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::Serves;
-use reflex_core::{CanSever, Toward};
+use reflex_core::Toward;
 use reflex_engine::parse::{self};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::talk::Talks;

@@ -12,7 +12,9 @@
 use std::time::Duration;
 
 use reflex_core::backend::Sink;
-use reflex_core::capability::{CanHold, CanInject, CanRefuse, CanRemember, CanSever, Toward};
+use reflex_core::capability::{
+    CanHold, CanInject, CanMark, CanRefuse, CanRemember, CanRewrite, CanSever, Toward,
+};
 use reflex_core::command::InjectablePacket;
 use reflex_core::held::{Answered, Delivered, Refused, Terminal};
 use reflex_core::local::Local;
@@ -171,6 +173,28 @@ impl CanHold for NfqueueCarrier {
 impl CanRemember for NfqueueCarrier {
     fn remember(state: u32, accept: bool) -> Answer {
         <QueueSocket as CanRemember>::remember(state, accept)
+    }
+}
+
+/// МЕТИТЬ ПАКЕТ и ПЕРЕПИСАТЬ ПАКЕТ — те же слова, что у сокета, тем же делегированием.
+///
+/// Обе вернулись носителю 11.09.2026 (`3e7438f`, `8dfa694`) после того, как потерялись при
+/// переезде на свой сокет, — а до фасада в тот заход не дошли. Способность, которую держит
+/// носитель и не предъявляет носитель фасада, недостижима ровно так же, как несуществующая: гейт
+/// §9.1 сторожит доступ к тому, чего в цепочке нет.
+///
+/// Слова НЕ перепутаны, и это стоит сказать здесь, где они стоят рядом: `mark` кладёт метку на
+/// ПАКЕТ (`NFQA_MARK`, читают правила маршрутизации, разговора не переживает), `remember` выше —
+/// состояние в conntrack (переживает пакет, читается следующим). Первая приказывает, вторая помнит.
+impl CanMark for NfqueueCarrier {
+    fn mark(mark: u32) -> Answer {
+        <QueueSocket as CanMark>::mark(mark)
+    }
+}
+
+impl CanRewrite for NfqueueCarrier {
+    fn rewrite(bytes: Vec<u8>) -> Answer {
+        <QueueSocket as CanRewrite>::rewrite(bytes)
     }
 }
 
