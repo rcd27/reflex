@@ -64,6 +64,7 @@ pub fn here() -> Vec<Passport> {
         of::<crate::resolve::ResolutionInstrument>(),
         of::<crate::sag::SagInstrument>(),
         of::<crate::trust::TrustInstrument>(),
+        of::<crate::dismiss::DismissInstrument>(),
         of::<crate::unreached::UnreachedInstrument>(),
         // Параметризован РОДОМ КРАЯ, а не доменным типом: константы паспорта от него не зависят, и
         // прочесть их можно, подставив любой край — берём тот, что и так есть в фундаменте.

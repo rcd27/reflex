@@ -44,6 +44,16 @@ pub enum Distress {
     /// не проходит, клиент повторяет его шесть раз. Для человека — глухой таймаут; для батареи до
     /// этой буквы — здоровый разговор, и каждый прибор молчал законно.
     Swallowed { after_ms: u32 },
+    /// ЦЕЛЬ ЗАКРЫЛА РАЗГОВОР, НЕ СКАЗАВ НИ БАЙТА ДАННЫХ: приветствие принято, ответа нет, `FIN`.
+    ///
+    /// Отдельно от `Rst`, и различие не в вежливости: сброс бывает НАШИМ собственным (у него есть
+    /// автор), а прощание при нуле сказанного всегда чужое. Отдельно от `Silence` и `NoBytes` —
+    /// там цель молчит и разговор жив, здесь она ответила немедленно и ушла. Для человека это
+    /// вечная крутилка: браузер переоткрывает и получает то же самое по кругу.
+    ///
+    /// `after_ms` — от просьбы клиента до прощания. Замер потребителя: три сотых секунды, то есть
+    /// не таймаут, а решение.
+    Dismissed { after_ms: u32 },
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
@@ -65,6 +75,7 @@ impl Distress {
             Distress::Blackhole { .. } => "blackhole",
             Distress::Unreached { .. } => "unreached",
             Distress::Swallowed { .. } => "swallowed",
+            Distress::Dismissed { .. } => "dismissed",
             Distress::Poisoned => "poisoned",
             Distress::Diverged { .. } => "diverged",
         }
@@ -91,6 +102,9 @@ impl Distress {
             }
             Distress::Swallowed { after_ms } => {
                 format!("сегмент не проходит {after_ms} мс, цель при этом отвечает")
+            }
+            Distress::Dismissed { after_ms } => {
+                format!("закрыла разговор через {after_ms} мс, не отдав данных")
             }
             Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
@@ -164,6 +178,7 @@ impl core::fmt::Display for Distress {
             Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
             Distress::Unreached { retries } => write!(f, "unreached retries={retries}"),
             Distress::Swallowed { after_ms } => write!(f, "swallowed after_ms={after_ms}"),
+            Distress::Dismissed { after_ms } => write!(f, "dismissed after_ms={after_ms}"),
             Distress::Poisoned => f.write_str("poisoned"),
             Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
         }

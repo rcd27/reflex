@@ -7,7 +7,7 @@
 
 mod paper;
 
-use paper::{log, reply, reply_at, request, syn, taken, Paper};
+use paper::{fin, log, reply, reply_at, request, syn, taken, Paper};
 use reflex::*;
 
 /// ПРЕДМЕТ: цель повторяет ответ, прогресса нет — цепочка обязана это назвать.
@@ -68,5 +68,66 @@ fn продвигающаяся_цель_беды_не_даёт() {
             .iter()
             .any(|distress| matches!(distress, Distress::Unreached { .. })),
         "растущий номер есть продвижение — беды здесь нет; сказано: {said:?}"
+    );
+}
+
+/// ПРЕДМЕТ: цель приняла приветствие и ЗАКРЫЛА разговор, не отдав ни байта данных.
+///
+/// Замер потребителя: `RST` во всей записи ноль, байтов данных от цели ноль, клиент падает за три
+/// сотых секунды — то есть не таймаут, а решение. Батарея из пяти приборов молчала вся, и каждый
+/// законно: сброса нет, цель не молчит, повтор клиента есть, но и ответ есть, сегмент не проглочен.
+/// Продукт не сказал об этой цели ни слова за весь день.
+#[test]
+fn цель_закрывшая_разговор_без_единого_байта_названа() {
+    let heard = log::<Distress>();
+
+    let paper = Paper::new()
+        .then_packet(syn(40010))
+        .then_packet(request(40010))
+        // Цель прощается, не сказав ничего: FIN без единого байта данных.
+        .then_packet(fin(40010))
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Dismissed::without_a_word())
+        .on(move |_target, distress| heard.lock().expect("слышно").push(distress))
+        .run();
+
+    let said = taken(heard);
+    assert!(
+        said.iter()
+            .any(|distress| matches!(distress, Distress::Dismissed { .. })),
+        "вежливый отказ обязан быть назван; сказано: {said:?}"
+    );
+}
+
+/// Вторая половина: цель СКАЗАЛА и закрылась — обычное завершение. Без неё первая зелена и на
+/// приборе, который кричит на каждом закрытом соединении.
+#[test]
+fn цель_сказавшая_и_закрывшаяся_беды_не_даёт() {
+    let heard = log::<Distress>();
+
+    let paper = Paper::new()
+        .then_packet(syn(40011))
+        .then_packet(request(40011))
+        .then_packet(reply_at(40011, 1, 1400))
+        .then_packet(fin(40011))
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Dismissed::without_a_word())
+        .on(move |_target, distress| heard.lock().expect("слышно").push(distress))
+        .run();
+
+    let said = taken(heard);
+    assert!(
+        !said
+            .iter()
+            .any(|distress| matches!(distress, Distress::Dismissed { .. })),
+        "сказала и ушла — это не отказ; сказано: {said:?}"
     );
 }

@@ -703,6 +703,16 @@ fn from_target_at(dst_port: u16, flags: u8, seq: u32, payload: &[u8]) -> Vec<u8>
     packet
 }
 
+/// ПРОЩАНИЕ ОТ ЦЕЛИ: `FIN+ACK` без данных — штатное закрытие, не сброс.
+///
+/// Отдельно от [`rst`], и различие не косметическое: сброс есть беда и бывает НАШИМ собственным, а
+/// прощание — норма, и уликой становится лишь в паре с «ничего не сказано»
+/// ([`reflex::Dismissed`](crate::Dismissed)). Пока прощания в оснастке не было, этот класс нельзя
+/// было и сочинить.
+pub fn fin(client_port: u16) -> Vec<u8> {
+    from_target(client_port, 0x11, &[])
+}
+
 /// СБРОС ОТ ЦЕЛИ: `RST` в ответ на разговор — улика прибора [`reflex::Rst`](crate::Rst).
 pub fn rst(client_port: u16) -> Vec<u8> {
     from_target(client_port, 0x04, &[])

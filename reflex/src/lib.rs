@@ -528,6 +528,31 @@ impl Silence {
     }
 }
 
+/// Детектор ВЕЖЛИВОГО ОТКАЗА: цель приняла приветствие и закрыла разговор, не отдав ни байта
+/// данных. Не сброс (`RST` нет вовсе) и не тишина (ответ есть, и он немедленный) — потому и был
+/// невидим всей батарее разом.
+///
+/// Буквы под него не понадобилось: прощание (`Seen::Closed`) в алфавите было с самого начала, не
+/// было ТОГО, КТО ЗАМЕТИТ. Предмет не в букве, а в паре «прощание · ничего не сказано».
+pub struct Dismissed;
+
+impl Dismissed {
+    /// Цель ушла, не сказав ни байта.
+    pub fn without_a_word() -> Dismissed {
+        Dismissed
+    }
+}
+
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Dismissed {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _, Distress, Distress>(
+            reflex_instrument::dismiss::DismissInstrument::new(),
+        ))
+    }
+}
+
 /// Детектор ВЫБОРОЧНОГО ДРОПА внутри живого разговора: клиент повторяет один и тот же сегмент, а
 /// цель при этом ПОДТВЕРЖДАЕТ предыдущие байты — то есть жива и отвечает.
 ///
