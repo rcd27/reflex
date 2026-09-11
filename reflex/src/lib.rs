@@ -108,6 +108,10 @@ use reflex_instrument::edge::{Layout, Memo};
 use reflex_instrument::edge_word::Edged;
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
+use reflex_instrument::resolve::ResolutionInstrument;
+/// Слово о разрешении имени — оно и есть словарь цепочки, стоящей на [`Resolve`]; потребителю без
+/// него нечем разобрать сказанное.
+pub use reflex_instrument::resolve::{Erasure, Resolved};
 use reflex_instrument::detect::{ChokedInstrument, RstInstrument, ThrottledInstrument};
 use reflex_instrument::retransmit::RetransmitInstrument;
 pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
@@ -693,6 +697,31 @@ impl DnsPoison {
     }
 }
 
+/// ЧЕМ РАЗРЕШИЛОСЬ ИМЯ — прибор о самом первом шаге разговора, том, который бывает и последним.
+///
+/// Отдельная дверь от [`DnsPoison`], и различие в ПРЕДМЕТЕ: отравление судит пару «запрос · ответ»
+/// (пришёл ли на просьбу инжект), разрешение судит САМ ОТВЕТ — какие адреса в нём и есть ли они
+/// вовсе. Слово у прибора своё ([`Resolved`]), не `Distress`: «имя разрешилось честно» бедой не
+/// является, а выразить его через алфавит бед нечем — цепочка берёт словарём то, чем говорит
+/// прибор.
+///
+/// # Почему дверь понадобилась отдельным заходом
+///
+/// Прибор существовал с парком, разбор `DnsMessage` — с фундаментом, транспорт `Udp` — с фасадом.
+/// Двери не было, и на живом стенде цепочка о стёртом имени молчала ЦЕЛЫЙ ДЕНЬ: клиент, получив
+/// «такого имени нет», до транспорта не доходит вовсе, и транспортным приборам сказать нечего —
+/// разговора не было. Человек видит «сайта не существует», продукт не видит ничего. Механизм без
+/// двери неотличим от отсутствующего механизма — это тот же закон, что уже стоил нам `pcap`,
+/// `Interleave::answered` и трёх приборов парка.
+pub struct Resolve;
+
+impl Resolve {
+    /// Смотреть, чем разрешаются имена.
+    pub fn names() -> Resolve {
+        Resolve
+    }
+}
+
 /// ШИРОКОЕ слово фасада: провод транспорта И вид края о том же разговоре. Пара, а не два входа:
 /// область у них ОДНА (`Of = Conversation`) — провод говорит о разговоре с провода, край несёт о
 /// НЁМ ЖЕ добавочные величины (счётчики, возраст). Одна область — одна дверь; §5 разводит области,
@@ -979,6 +1008,17 @@ impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for DnsPoison {
     fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>, Distress> {
         Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _, Distress, Distress>(
             DnsPoisonInstrument::new(),
+        ))
+    }
+}
+
+/// Разрешение имени — В ПРОВОДЕ: улика есть содержимое ответа, край его не читает.
+impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for Resolve {
+    type Word = Resolved;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>, Resolved> {
+        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _, Resolved, Resolved>(
+            ResolutionInstrument,
         ))
     }
 }

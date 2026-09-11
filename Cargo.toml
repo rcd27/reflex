@@ -63,6 +63,7 @@ members = [
     "examples/detect-silent-drop",
     "examples/detect-syn-drop",
     "examples/detect-dns-poisoning",
+    "examples/detect-name-erasure",
     "examples/sever-silent-drop",
     "examples/bring-your-own-detector",
     "examples/certify-replays",

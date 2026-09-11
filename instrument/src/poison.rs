@@ -136,6 +136,7 @@ mod tests {
         DnsMessage {
             id: 0x1234,
             direction,
+            authoritative: false,
             rcode,
             queries: vec![reflex_core::dns::DnsQuery {
                 name: "nnmclub.to".into(),

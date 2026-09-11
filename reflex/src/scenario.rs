@@ -739,6 +739,75 @@ pub fn reply_at(client_port: u16, seq: u32, bytes: usize) -> Vec<u8> {
     from_target_at(client_port, 0x18, seq, &vec![0x41; bytes])
 }
 
+/// Имя, записанное метками DNS: `<длина><байты>…<0>`.
+fn labelled(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name.split('.') {
+        out.push(label.len() as u8);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
+}
+
+/// Датаграмма: тот же кадр, но семнадцатым протоколом. Без неё сочинённый провод умел ровно TCP,
+/// то есть ни одного разговора, который кончается ДО транспорта, — а именно так кончаются
+/// разговоры со стёртым именем.
+fn datagram(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, payload: &[u8]) -> Vec<u8> {
+    let total = 20 + 8 + payload.len();
+    let mut packet = vec![0u8; total];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+    packet[9] = 17;
+    packet[12..16].copy_from_slice(&src);
+    packet[16..20].copy_from_slice(&dst);
+    packet[20..22].copy_from_slice(&src_port.to_be_bytes());
+    packet[22..24].copy_from_slice(&dst_port.to_be_bytes());
+    packet[24..26].copy_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    packet[28..].copy_from_slice(payload);
+    packet
+}
+
+/// Адрес резолвера в сочинённом мире.
+const RESOLVER: [u8; 4] = [10, 0, 0, 53];
+
+/// ВОПРОС КЛИЕНТА об адресе имени. Флаги `RD=1`: спрашивают того, кто ходит за ответом сам, —
+/// именно эта деталь и делает присвоенную авторитетность в ответе уликой.
+pub fn dns_query(client_port: u16, name: &str) -> Vec<u8> {
+    let mut message = vec![0xAA, 0xBB, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+    message.extend_from_slice(&labelled(name));
+    message.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    datagram([10, 0, 0, 1], client_port, RESOLVER, 53, &message)
+}
+
+/// ОТКАЗ РЕЗОЛВЕРА: «такого имени нет». `authoritative` — присвоил ли отвечающий себе
+/// авторитетность; в ней вся разница между поиском по суффиксам и стиранием имени на пути.
+pub fn dns_denial(client_port: u16, name: &str, authoritative: bool) -> Vec<u8> {
+    let flags: u16 = match authoritative {
+        true => 0x8583,
+        false => 0x8183,
+    };
+    let mut message = vec![0xAA, 0xBB];
+    message.extend_from_slice(&flags.to_be_bytes());
+    message.extend_from_slice(&[0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    message.extend_from_slice(&labelled(name));
+    message.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    datagram(RESOLVER, 53, [10, 0, 0, 1], client_port, &message)
+}
+
+/// ЧЕСТНЫЙ ОТВЕТ РЕЗОЛВЕРА: имя разрешилось в адрес.
+pub fn dns_answer(client_port: u16, name: &str, addr: [u8; 4]) -> Vec<u8> {
+    let mut message = vec![0xAA, 0xBB, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0, 0, 0, 0];
+    message.extend_from_slice(&labelled(name));
+    message.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    message.extend_from_slice(&labelled(name));
+    message.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    message.extend_from_slice(&300u32.to_be_bytes());
+    message.extend_from_slice(&[0x00, 0x04]);
+    message.extend_from_slice(&addr);
+    datagram(RESOLVER, 53, [10, 0, 0, 1], client_port, &message)
+}
+
 /// ЧУЖОЙ кадр: не наш порт, транспорт его не опознает (`observe → Observation::Foreign`).
 pub fn alien() -> Vec<u8> {
     frame(40000, 80, 0x18, &[0x41; 8])

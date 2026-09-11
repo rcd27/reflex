@@ -1,0 +1,13 @@
+[package]
+name = "detect-name-erasure"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: поймать СТИРАНИЕ имени — NXDOMAIN с присвоенной авторитетностью"
+
+[dependencies]
+reflex = { path = "../../reflex" }
+
+[[bin]]
+name = "detect-name-erasure"
+path = "src/main.rs"
