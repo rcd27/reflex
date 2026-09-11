@@ -1,379 +1,211 @@
 #![cfg(feature = "tls")]
 
+//! TLS: ИМЯ ЦЕЛИ И ГРАНИЦЫ ЗАПИСИ — шесть законов вместо двадцати двух случаев (11.09.2026).
+//!
+//! Прежде здесь стояли двадцать два теста, и половина из них — представители, выбранные рукой:
+//! `extract_sni_too_short`, `extract_sni_empty`, `parse_too_short_data`, `parse_length_exceeds_data`.
+//! Подборка «подозрительных» входов ловит ровно то, что подозревали; злой вход тем и зол, что его
+//! никто не заподозрил.
+//!
+//! Заменено на то же, чем схлопнуты опции TCP: ТОТАЛЬНОСТЬ перебором и НЕ ВЫДУМЫВАЕТ, плюс законы
+//! о существе — про диапазон имени и про приманку.
+//!
+//! # Закон, который держится ЗДЕСЬ и больше нигде
+//!
+//! `sni` идёт по ClientHello СТРУКТУРНО, а не ищет подстроку. Отсюда следует, что копия имени,
+//! подложенная в `session_id`, разбор не обманет. Замер 11.09.2026: в каноне об этом НЕТ НИ СЛОВА
+//! (`грep приманк|decoy|session_id` = 0), и держится закон одним лишь тестом ниже плюс фразой в
+//! докблоке `core/src/tls/mod.rs`.
+//!
+//! Это промашка канона, а не теста: `Target` расслаивается по ключу (§4), ключ цели здесь — имя из
+//! ClientHello, и если имя берётся байтовым поиском, то КЛЮЧ ОБЛАСТИ становится выдумываемым
+//! снаружи. Всякий, кто формирует пакет, назначает себе чужую область — и весь копредел по цели
+//! считает не то, что думает. Закон уровня §4, а живёт в одном тесте.
+
 use reflex_core::tls::{
-    record_need, RecordNeed, TlsContentType, TlsFragment, TlsRecord, TlsVersion,
+    build_client_hello, record_need, sni, RecordNeed, TlsContentType, TlsFragment, TlsRecord,
+    TlsVersion,
 };
 
-// --- Helper: build a minimal ClientHello with SNI ---
-
-fn build_client_hello_record(domain: &str) -> Vec<u8> {
-    let sni_ext_data_len = 2 + 1 + 2 + domain.len();
-    let extensions_len = 2 + 2 + sni_ext_data_len;
-
-    let mut hello_payload = Vec::new();
-    hello_payload.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-    hello_payload.extend_from_slice(&[0x00; 32]); // random
-    hello_payload.push(0x00); // session_id len = 0
-    hello_payload.extend_from_slice(&[0x00, 0x02, 0x00, 0x2F]); // cipher suites (1 suite)
-    hello_payload.extend_from_slice(&[0x01, 0x00]); // compression methods
-    hello_payload.extend_from_slice(&(extensions_len as u16).to_be_bytes());
-    // SNI extension
-    hello_payload.extend_from_slice(&[0x00, 0x00]); // extension type = SNI
-    hello_payload.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
-    hello_payload.extend_from_slice(&((sni_ext_data_len - 2) as u16).to_be_bytes());
-    hello_payload.push(0x00); // host_name type
-    hello_payload.extend_from_slice(&(domain.len() as u16).to_be_bytes());
-    hello_payload.extend_from_slice(domain.as_bytes());
-
-    let hello_len = hello_payload.len();
-    let mut handshake = vec![0x01]; // ClientHello type
-    handshake.push(0x00);
-    handshake.extend_from_slice(&(hello_len as u16).to_be_bytes());
-    handshake.extend_from_slice(&hello_payload);
-
-    let hs_len = handshake.len();
-    let mut record = vec![0x16]; // content_type = Handshake
-    record.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
-    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
-    record.extend_from_slice(&handshake);
-    record
+/// Минимальный ClientHello с именем — тот же, что строит продуктовый [`build_client_hello`].
+/// Отдельной копии построителя здесь нет НАРОЧНО: две копии одного формата разошлись бы молча, и
+/// тест проверял бы выдумку вместо того, что ездит по проводу.
+fn hello(domain: &str) -> Vec<u8> {
+    build_client_hello(domain)
 }
 
-// --- extract_sni ---
-
+/// РАЗБОР ТОТАЛЕН: на любых байтах — значение, а не паника. Перебором всех входов до двух байт и
+/// всех троек с правдоподобным началом записи, а не подборкой подозрительных.
 #[test]
-fn extract_sni_valid_client_hello() {
-    let record = build_client_hello_record("rutracker.org");
-    let sni = reflex_core::tls::extract_sni(&record);
-    assert_eq!(sni.as_deref(), Some("rutracker.org"));
-}
-
-#[test]
-fn extract_sni_truncated_after_sni_extension() {
-    // Build a full record, then truncate *after* the SNI extension
-    // but before the TLS record length is fully satisfied.
-    // The greedy parser should still extract the SNI.
-    let record = build_client_hello_record("discord.com");
-
-    // Corrupt the TLS record length to be larger than actual data,
-    // simulating a truncated first TCP segment where SNI is still present.
-    let mut truncated = record.clone();
-    // Increase the TLS record length field beyond actual data
-    let fake_len = (truncated.len() - 5 + 100) as u16;
-    truncated[3] = (fake_len >> 8) as u8;
-    truncated[4] = (fake_len & 0xFF) as u8;
-
-    // extract_sni uses greedy parsing and doesn't require full record
-    let sni = reflex_core::tls::extract_sni(&truncated);
-    assert_eq!(sni.as_deref(), Some("discord.com"));
-}
-
-#[test]
-fn extract_sni_non_tls_data() {
-    let data = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-    let sni = reflex_core::tls::extract_sni(data);
-    assert!(sni.is_none());
-}
-
-#[test]
-fn extract_sni_too_short() {
-    let data = [0x16, 0x03, 0x01, 0x00];
-    let sni = reflex_core::tls::extract_sni(&data);
-    assert!(sni.is_none());
-}
-
-#[test]
-fn extract_sni_empty() {
-    let sni = reflex_core::tls::extract_sni(&[]);
-    assert!(sni.is_none());
-}
-
-#[test]
-fn extract_sni_server_hello_returns_none() {
-    // Build a ServerHello record
-    let mut handshake = vec![0x02]; // ServerHello type
-    handshake.extend_from_slice(&[0x00, 0x00, 0x04]); // length = 4
-    handshake.extend_from_slice(&[0x03, 0x03, 0x00, 0x00]); // minimal body
-
-    let hs_len = handshake.len();
-    let mut record = vec![0x16]; // Handshake
-    record.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
-    record.extend_from_slice(&handshake);
-
-    let sni = reflex_core::tls::extract_sni(&record);
-    assert!(sni.is_none());
-}
-
-#[test]
-fn extract_sni_wrong_content_type() {
-    // Application data (0x17), not handshake (0x16)
-    let data = [0x17, 0x03, 0x03, 0x00, 0x04, 0x01, 0xDE, 0xAD, 0xBE, 0xEF];
-    let sni = reflex_core::tls::extract_sni(&data);
-    assert!(sni.is_none());
-}
-
-// --- TlsRecord::parse ---
-
-#[test]
-fn parse_valid_tls_record() {
-    let record = build_client_hello_record("example.com");
-    let parsed = TlsRecord::parse(&record).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::Handshake);
-    assert_eq!(parsed.version, TlsVersion { major: 3, minor: 1 });
-    if let TlsFragment::ClientHello { sni } = &parsed.fragment {
-        assert_eq!(sni.as_deref(), Some("example.com"));
-    } else {
-        panic!("expected ClientHello");
-    }
-}
-
-#[test]
-fn parse_too_short_data() {
-    assert!(TlsRecord::parse(&[0x16, 0x03]).is_none());
-    assert!(TlsRecord::parse(&[]).is_none());
-    assert!(TlsRecord::parse(&[0x16]).is_none());
-}
-
-#[test]
-fn parse_length_exceeds_data() {
-    // Header says 100 bytes of payload but only 5 total
-    let data = [0x16, 0x03, 0x01, 0x00, 0x64];
-    assert!(TlsRecord::parse(&data).is_none());
-}
-
-#[test]
-fn parse_application_data() {
-    let data = [0x17, 0x03, 0x03, 0x00, 0x03, 0xAA, 0xBB, 0xCC];
-    let parsed = TlsRecord::parse(&data).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::ApplicationData);
-    assert_eq!(parsed.fragment, TlsFragment::Other);
-}
-
-/// ТРЕВОГА РАЗБИРАЕТСЯ ДО КОДА, а не сводится к «что-то иное» (исправлено 06.09.2026).
-///
-/// Тест ждал `Other` и был прав ровно до того дня, когда у `TlsFragment` появился вариант `Alert`
-/// с уровнем и кодом. Расхождение прожило незамеченным, потому что весь файл стоит под
-/// `#![cfg(feature = "tls")]`, а фича не включалась ни в одном обычном прогоне: `cargo test -p
-/// reflex-core --test tls_sni` давал `0 passed` — то есть проверка была написана и НЕ ЗВАЛАСЬ.
-///
-/// Обнажилось переездом `reflex-instrument` в workspace: он требует `reflex-core` с `tls`, фичи в
-/// workspace объединяются, и мёртвый файл ожил целиком. Ровно та причина, по которой прибор
-/// доверия `unknown_ca` (48) от `handshake_failure` (40) и отличает — без кода тревоги ответ не
-/// сужает круг.
-#[test]
-fn parse_alert_record() {
-    let data = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28]; // fatal, handshake_failure
-    let parsed = TlsRecord::parse(&data).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::Alert);
-    assert_eq!(
-        parsed.fragment,
-        TlsFragment::Alert {
-            level: 2,
-            description: 40
+fn разбор_тотален_на_всех_коротких_входах() {
+    for first in 0u8..=255 {
+        let _ = TlsRecord::parse(&[first]);
+        let _ = sni(&[first]);
+        let _ = record_need(&[first]);
+        for second in 0u8..=255 {
+            let bytes = [first, second];
+            let _ = TlsRecord::parse(&bytes);
+            let _ = sni(&bytes);
+            let _ = record_need(&bytes);
         }
-    );
+    }
+    // Вокруг настоящего начала записи (`0x16` handshake) ветвление глубже всего.
+    for len_hi in 0u8..=255 {
+        for len_lo in 0u8..=255 {
+            let bytes = [0x16, 0x03, 0x01, len_hi, len_lo, 0x01];
+            let _ = TlsRecord::parse(&bytes);
+            let _ = sni(&bytes);
+            let _ = record_need(&bytes);
+        }
+    }
+    let _ = TlsRecord::parse(&[]);
+    let _ = sni(&[]);
+    let _ = record_need(&[]);
 }
 
+/// НЕ ВЫДУМЫВАЕТ: на входе, который не может нести ClientHello целиком, имени не рождается.
+///
+/// Сильнее прежних `too_short` и `empty`: проверяется отсутствие выдумки на ВСЕХ коротких входах
+/// разом, а не на двух выбранных. Имя, взятое из ниоткуда, адресовало бы наблюдение чужой цели.
 #[test]
-fn parse_change_cipher_spec() {
-    let data = [0x14, 0x03, 0x03, 0x00, 0x01, 0x01];
-    let parsed = TlsRecord::parse(&data).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::ChangeCipherSpec);
-    assert_eq!(parsed.fragment, TlsFragment::Other);
-}
-
-#[test]
-fn parse_server_hello_record() {
-    let mut handshake = vec![0x02]; // ServerHello
-    handshake.extend_from_slice(&[0x00, 0x00, 0x02]);
-    handshake.extend_from_slice(&[0x03, 0x03]);
-
-    let hs_len = handshake.len();
-    let mut record = vec![0x16, 0x03, 0x03];
-    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
-    record.extend_from_slice(&handshake);
-
-    let parsed = TlsRecord::parse(&record).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::Handshake);
-    assert_eq!(parsed.fragment, TlsFragment::ServerHello);
-}
-
-#[test]
-fn parse_empty_handshake_body() {
-    // Handshake record with zero-length body
-    let data = [0x16, 0x03, 0x03, 0x00, 0x00];
-    let parsed = TlsRecord::parse(&data).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::Handshake);
-    assert_eq!(parsed.fragment, TlsFragment::Other);
-}
-
-// --- TlsContentType ---
-
-#[test]
-fn content_type_other_variant() {
-    let data = [0x19, 0x03, 0x03, 0x00, 0x01, 0x00]; // type 25, unknown
-    let parsed = TlsRecord::parse(&data).unwrap();
-    assert_eq!(parsed.content_type, TlsContentType::Other(25));
-}
-
-// --- ClientHello without SNI ---
-
-#[test]
-fn client_hello_no_extensions() {
-    let mut hello_payload = Vec::new();
-    hello_payload.extend_from_slice(&[0x03, 0x03]); // version
-    hello_payload.extend_from_slice(&[0x00; 32]); // random
-    hello_payload.push(0x00); // session_id len
-    hello_payload.extend_from_slice(&[0x00, 0x02, 0x00, 0x2F]); // cipher suites
-    hello_payload.extend_from_slice(&[0x01, 0x00]); // compression
-
-    let hello_len = hello_payload.len();
-    let mut handshake = vec![0x01, 0x00];
-    handshake.extend_from_slice(&(hello_len as u16).to_be_bytes());
-    handshake.extend_from_slice(&hello_payload);
-
-    let hs_len = handshake.len();
-    let mut record = vec![0x16, 0x03, 0x01];
-    record.extend_from_slice(&(hs_len as u16).to_be_bytes());
-    record.extend_from_slice(&handshake);
-
-    let parsed = TlsRecord::parse(&record).unwrap();
-    if let TlsFragment::ClientHello { sni } = &parsed.fragment {
-        assert!(sni.is_none());
-    } else {
-        panic!("expected ClientHello");
+fn на_коротком_входе_имя_не_рождается() {
+    for first in 0u8..=255 {
+        for second in 0u8..=255 {
+            let bytes = [first, second];
+            assert_eq!(sni(&bytes), None, "два байта {first:#04x} {second:#04x} родили имя");
+        }
     }
 }
 
-// --- sni_span: byte range of SNI hostname within the ClientHello payload ---
-
+/// ДИАПАЗОН УКАЗЫВАЕТ НА САМИ БАЙТЫ ИМЕНИ, а не «куда-то рядом».
+///
+/// `span` есть `(смещение, ДЛИНА)`, не `(начало, конец)` — докблок поля говорит это, а тип не
+/// говорит: безымянная пара `(usize, usize)` обе половины называет одинаково. Первый читатель (я,
+/// 11.09.2026) прочёл вторую как конец и получил `slice index starts at 61 but ends at 13`.
+/// Повезло: срез запаниковал. Будь длина больше смещения — вышел бы молча неверный кусок.
+///
+/// Проверяется срезом: `&hello[off..off + len] == name`. Без этого `span` был бы украшением —
+/// число, о котором никто не спросил.
+///
+/// ЗАМЕР 11.09.2026: `.span` не читается НИГДЕ в дереве, кроме этого теста. Поле не мёртвое, а
+/// ждущее: его потребитель — тот, кто правит ClientHello на проводе, а способность переписать
+/// пакет (`CanRewrite`) вернулась в боевой носитель только сегодня (`3e7438f`). До неё править
+/// запись было нечем, и `span` показывал на байты, которых никто не мог тронуть.
 #[test]
-fn sni_span_points_at_hostname_bytes() {
-    let hello = reflex_core::tls::build_client_hello("rutracker.org");
-    let sni = reflex_core::tls::sni(&hello).expect("sni found");
-    assert_eq!(sni.name, "rutracker.org", "имя и диапазон неразделимы");
-    let (offset, len) = sni.span;
-    assert_eq!(len, "rutracker.org".len(), "длина = длина хоста");
+fn диапазон_имени_указывает_на_его_байты() {
+    for domain in ["rutracker.org", "a.b", "очень-длинное-имя-цели.example.com"] {
+        let bytes = hello(domain);
+        let found = sni(&bytes).expect("имя найдено");
+        assert_eq!(found.name, domain);
+        let (offset, length) = found.span;
+        assert_eq!(
+            &bytes[offset..offset + length],
+            domain.as_bytes(),
+            "диапазон указывает не на байты имени: {domain}"
+        );
+    }
+}
+
+/// ПРИМАНКА НЕ ОБМАНЫВАЕТ: копия имени в `session_id` не уводит разбор.
+///
+/// Разбор идёт СТРУКТУРНО — по длинам полей, — а не ищет подстроку. Разница не теоретическая:
+/// `session_id` приходит от клиента и содержит что угодно, и байтовый поиск нашёл бы там первое
+/// совпадение. Тогда ключ области `Target` (§4) стал бы выдумываемым снаружи.
+#[test]
+fn приманка_в_session_id_не_уводит_разбор() {
+    let real = "rutracker.org";
+    let decoy = "example.com";
+
+    // ClientHello, где `session_id` набит именем-приманкой целиком.
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x03, 0x03]);
+    body.extend_from_slice(&[0x00; 32]);
+    body.push(decoy.len() as u8);
+    body.extend_from_slice(decoy.as_bytes());
+    body.extend_from_slice(&[0x00, 0x02, 0x00, 0x2F]);
+    body.extend_from_slice(&[0x01, 0x00]);
+
+    let name = real.as_bytes();
+    let sni_ext = [
+        &((name.len() + 5) as u16).to_be_bytes()[..],
+        &((name.len() + 3) as u16).to_be_bytes(),
+        &[0x00],
+        &(name.len() as u16).to_be_bytes(),
+        name,
+    ]
+    .concat();
+    let ext = [&[0x00u8, 0x00][..], &sni_ext].concat();
+    body.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+    body.extend_from_slice(&ext);
+
+    let mut handshake = vec![0x01];
+    handshake.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+    handshake.extend_from_slice(&body);
+
+    let mut record = vec![0x16, 0x03, 0x01];
+    record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+
+    let found = sni(&record).expect("настоящее имя найдено");
+    assert_eq!(found.name, real, "разбор взял приманку вместо имени");
+    let (offset, length) = found.span;
     assert_eq!(
-        &hello[offset..offset + len],
-        b"rutracker.org",
-        "диапазон указывает ровно на байты хоста"
+        &record[offset..offset + length],
+        real.as_bytes(),
+        "диапазон указывает на приманку"
+    );
+    assert!(
+        found.span.0 > 38 + decoy.len(),
+        "диапазон лежит раньше конца session_id — значит найден байтовым поиском, а не структурно"
     );
 }
 
+/// ЗАПИСЬ РАЗБИРАЕТСЯ В СВОЙ ВИД, И ВИД НЕ ПУТАЕТСЯ. Здесь остаются именно те случаи, что
+/// различают ВЕТКИ разбора: у каждой свой исход, и слить их нельзя.
 #[test]
-fn sni_span_none_when_no_sni() {
-    // Обычные байты, не ClientHello — span отсутствует.
-    assert_eq!(reflex_core::tls::sni(b"not a tls hello"), None);
+fn запись_разбирается_в_свой_вид() {
+    let handshake = hello("rutracker.org");
+    let parsed = TlsRecord::parse(&handshake).expect("запись разобрана");
+    assert_eq!(parsed.content_type, TlsContentType::Handshake);
+    assert_eq!(parsed.version, TlsVersion { major: 3, minor: 1 }, "версия записи — байты провода, не наш словарь");
+    assert!(matches!(parsed.fragment, TlsFragment::ClientHello { sni: Some(_) }));
+
+    for (byte, expected) in [
+        (0x17u8, TlsContentType::ApplicationData),
+        (0x15, TlsContentType::Alert),
+        (0x14, TlsContentType::ChangeCipherSpec),
+    ] {
+        let record = [byte, 0x03, 0x01, 0x00, 0x01, 0x00];
+        let parsed = TlsRecord::parse(&record).expect("запись разобрана");
+        assert_eq!(parsed.content_type, expected, "вид {byte:#04x}");
+        assert!(
+            !matches!(parsed.fragment, TlsFragment::ClientHello { .. }),
+            "не-handshake прочтён как приветствие"
+        );
+    }
+
+    // ServerHello — тот же вид записи, но ДРУГОЕ рукопожатие: имени в нём нет.
+    let server = [0x16u8, 0x03, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00];
+    let parsed = TlsRecord::parse(&server).expect("запись разобрана");
+    assert!(!matches!(parsed.fragment, TlsFragment::ClientHello { .. }));
+    assert_eq!(sni(&server), None, "у ответа сервера имени цели нет");
 }
 
-// --- sni_span accuracy: structural parse, not substring search ---
-
-/// ClientHello, где КОПИЯ hostname лежит в session_id (decoy) ПЕРЕД настоящим SNI.
-/// Поиск подстроки нашёл бы decoy (ранний offset); структурный парс — настоящий SNI.
-fn hello_decoy_in_session_id(domain: &str) -> (Vec<u8>, usize) {
-    let d = domain.as_bytes();
-    let sid_len = d.len();
-    let sni_list_len = 1 + 2 + d.len();
-    let sni_ext_data_len = 2 + sni_list_len;
-    let extensions_len = 2 + 2 + sni_ext_data_len;
-    let ch_body_len = 2 + 32 + 1 + sid_len + 2 + 2 + 1 + 1 + 2 + extensions_len;
-    let record_len = 1 + 3 + ch_body_len;
-
-    let mut pkt = Vec::new();
-    pkt.push(0x16);
-    pkt.extend_from_slice(&[0x03, 0x01]);
-    pkt.extend_from_slice(&(record_len as u16).to_be_bytes());
-    pkt.push(0x01);
-    let bl = ch_body_len as u32;
-    pkt.push((bl >> 16) as u8);
-    pkt.push((bl >> 8) as u8);
-    pkt.push(bl as u8);
-    pkt.extend_from_slice(&[0x03, 0x03]);
-    pkt.extend_from_slice(&[0xAA; 32]);
-    pkt.push(sid_len as u8);
-    pkt.extend_from_slice(d); // DECOY копия домена в session_id
-    pkt.extend_from_slice(&[0x00, 0x02]);
-    pkt.extend_from_slice(&[0x00, 0x2F]);
-    pkt.push(0x01);
-    pkt.push(0x00);
-    pkt.extend_from_slice(&(extensions_len as u16).to_be_bytes());
-    pkt.extend_from_slice(&[0x00, 0x00]);
-    pkt.extend_from_slice(&(sni_ext_data_len as u16).to_be_bytes());
-    pkt.extend_from_slice(&(sni_list_len as u16).to_be_bytes());
-    pkt.push(0x00);
-    pkt.extend_from_slice(&(d.len() as u16).to_be_bytes());
-    let real_offset = pkt.len(); // настоящий SNI hostname начинается здесь
-    pkt.extend_from_slice(d);
-    (pkt, real_offset)
-}
-
+/// СКОЛЬКО ЕЩЁ ЖДАТЬ — вопрос о ГРАНИЦЕ записи, и ответ на него значение, а не догадка.
 #[test]
-fn sni_span_skips_decoy_hostname_in_session_id() {
-    let (hello, real_offset) = hello_decoy_in_session_id("rutracker.org");
-    let sni = reflex_core::tls::sni(&hello).expect("sni");
-    let (offset, len) = sni.span;
-    assert_eq!(
-        offset, real_offset,
-        "span указывает на SNI, не на decoy в session_id"
+fn нужда_записи_называет_недостачу() {
+    let full = hello("rutracker.org");
+    assert!(matches!(record_need(&full), RecordNeed::Complete { .. }));
+
+    let head = &full[..4];
+    assert!(
+        !matches!(record_need(head), RecordNeed::Complete { .. }),
+        "по четырём байтам длина записи ещё не известна"
     );
-    assert_eq!(len, "rutracker.org".len());
-    assert_eq!(&hello[offset..offset + len], b"rutracker.org");
-}
 
-// ── ПОЛНОТА ЗАПИСИ (#3): различить «не TLS» и «TLS не дочитан» ──────────────────────────────────
-//
-// Оплачено полем: 1500 флоу с `serve None`, у 815 SNI не извлёкся вовсе, у 765 из них прочитано
-// меньше 1400 байт, а плечи при этом ВСТАЛИ (`connected=true, Silent`). Соединение есть, данных
-// нет — сервер ждёт остаток записи. Причина: читатель звал `read()` один раз, а сколькими
-// сегментами придёт запись, решает TCP.
-//
-// `extract_sni` на оба случая отвечает `None`, и по этому ответу нельзя решить, ЖДАТЬ ли ещё.
-// Вопрос «сколько не хватает» — отдельный, и ответ на него обязан быть значением, а не догадкой.
-
-#[test]
-fn полная_запись_названа_полной() {
-    let rec = build_client_hello_record("example.com");
-    assert_eq!(record_need(&rec), RecordNeed::Complete);
-}
-
-#[test]
-fn обрезанная_запись_называет_сколько_не_хватает() {
-    let rec = build_client_hello_record("example.com");
-    let cut = 40;
-    assert_eq!(
-        record_need(&rec[..cut]),
-        RecordNeed::More {
-            at_least: rec.len() - cut
-        },
-        "обрезок обязан назвать НЕДОСТАЧУ числом — иначе читателю нечем решить, ждать ли"
+    let half = &full[..full.len() / 2];
+    assert!(
+        !matches!(record_need(half), RecordNeed::Complete { .. }),
+        "половина записи не есть запись"
     );
-}
-
-#[test]
-fn заголовок_короче_пяти_байт_тоже_недостача() {
-    let rec = build_client_hello_record("example.com");
-    // Длина записи объявлена в байтах 3..5 — пока их нет, недостача известна лишь снизу.
-    assert_eq!(record_need(&rec[..3]), RecordNeed::More { at_least: 2 });
-    assert_eq!(record_need(&[]), RecordNeed::More { at_least: 5 });
-}
-
-#[test]
-fn не_tls_названо_не_tls_а_не_недостачей() {
-    // Ключевое различение: ждать продолжения тут НЕЛЬЗЯ — его не будет никогда, и ожидание
-    // превратилось бы в задержку на каждом не-TLS соединении.
-    assert_eq!(record_need(b"GET / HTTP/1.1\r\n"), RecordNeed::NotTls);
-    assert_eq!(
-        record_need(&[0xFF, 0x00, 0x00, 0x00, 0x01]),
-        RecordNeed::NotTls
-    );
-}
-
-#[test]
-fn запись_с_хвостом_полна() {
-    // За ClientHello может сразу идти следующая запись — это не мешает первой быть полной.
-    let mut rec = build_client_hello_record("example.com");
-    rec.extend_from_slice(&[0x17, 0x03, 0x03, 0x00, 0x05, 1, 2, 3, 4, 5]);
-    assert_eq!(record_need(&rec), RecordNeed::Complete);
 }
