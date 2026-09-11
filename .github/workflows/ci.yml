@@ -49,6 +49,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p reflex --target x86_64-pc-windows-msvc
 
+  library:
+    name: парк годен без носителя
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      # ПАРК ПРИБОРОВ ГОДЕН КАК ЧИСТАЯ БИБЛИОТЕКА — без носителя, без ядра, без прав. На это
+      # свойство УЖЕ опирается поставка: потребитель собрал приборы под девять целей, включая
+      # mips64 и riscv64, и гоняет их над наблюдениями из обычного сокета. Свойство держится
+      # РАЗРЕЗОМ (крейт зависит ровно от `reflex-core`), а разрез ничем не охранялся: одна строка в
+      # манифесте — и поставка ломается молча, у чужих людей, на чужом железе.
+      - name: в парке нет ни носителя, ни платформы
+        run: |
+          if cargo tree -p reflex-instrument --edges normal \
+             | grep -E '(nfq|ring|tokio|reflex-linux|reflex-engine|reflex-runtime) v'; then
+            echo "в дереве парка появился носитель или рантайм — разрез сломан" >&2
+            exit 1
+          fi
+      # Сборка под чужую архитектуру: `check` не линкует, потому тулчейна C не нужно. Грепом это
+      # мерить нельзя — он мерит отсутствие ИМЕНИ, а предмет есть отсутствие ЗАВИСИМОСТИ.
+      - run: cargo check -p reflex-instrument --target riscv64gc-unknown-linux-gnu
+
   docs:
     name: документация собирается
     runs-on: ubuntu-latest
