@@ -64,6 +64,7 @@ pub fn here() -> Vec<Passport> {
         of::<crate::resolve::ResolutionInstrument>(),
         of::<crate::sag::SagInstrument>(),
         of::<crate::trust::TrustInstrument>(),
+        of::<crate::unreached::UnreachedInstrument>(),
     ]
 }
 
