@@ -21,6 +21,13 @@ pub enum PreflightError {
     NoAccounting,
     /// Штампы времени conntrack выключены — возраста потока нет.
     NoTimestamps,
+    /// Ядро собрано БЕЗ `CONFIG_NETFILTER_NETLINK_GLUE_CT`: очередь не приложит `NFQA_CT` к пакету,
+    /// и вид края не приедет НИКОГДА — сколько бы conntrack ни был загружен и настроен.
+    ///
+    /// Отдельная буква от [`NoConntrack`](Self::NoConntrack), потому что лечение другое и дороже:
+    /// модуль догружается одной командой, а glue — опция СБОРКИ ядра, и чинится сменой ядра.
+    /// Слить их значило бы отправить человека грузить модуль, который уже загружен.
+    NoConntrackGlue,
 }
 
 impl fmt::Display for PreflightError {
@@ -67,6 +74,14 @@ impl fmt::Display for PreflightError {
                      Fix: sudo sysctl -w net.netfilter.nf_conntrack_acct=1"
                 )
             }
+            Self::NoConntrackGlue => {
+                write!(
+                    f,
+                    "kernel built without CONFIG_NETFILTER_NETLINK_GLUE_CT — NFQUEUE will never \
+                     attach NFQA_CT, so edge probes stay blind no matter how conntrack is tuned. \
+                     Fix: boot a kernel with that option (module reload will NOT help)"
+                )
+            }
             Self::NoTimestamps => {
                 write!(
                     f,
@@ -91,6 +106,7 @@ pub fn check() -> Result<(), PreflightError> {
     check_capabilities()?;
     check_kernel_module()?;
     check_conntrack()?;
+    check_conntrack_glue()?;
     check_accounting()?;
     check_timestamps()?;
     info!("NFQUEUE preflight checks passed");
@@ -103,6 +119,60 @@ fn check_conntrack() -> Result<(), PreflightError> {
     match modules.lines().any(|line| line.starts_with("nf_conntrack ")) {
         true => Ok(()),
         false => Err(PreflightError::NoConntrack),
+    }
+}
+
+/// ЧТО ЯДРО ГОВОРИТ О `CONFIG_NETFILTER_NETLINK_GLUE_CT` — три клетки, не две (§7).
+///
+/// Опция это СБОРОЧНАЯ, не sysctl: спросить работающее ядро о ней нечем, читается она из копии
+/// конфига. Копии может не быть вовсе (контейнер, урезанный образ), и вот тогда честный ответ —
+/// `Unknown`, а не «плохо»: «не смотрели» и «смотрели и нет» имеют разную цену, и отказывать по
+/// первому значило бы не пускать на машины, где всё в порядке.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glue {
+    /// Конфиг прочитан, опция включена.
+    On,
+    /// Конфиг прочитан, опции нет или она `n` — край не приедет, и это доказано.
+    Off,
+    /// Конфига не нашлось. Судить не о чем; молчать об этом нельзя, потому клетка своя.
+    Unknown,
+}
+
+/// Спросить ядро о glue. Публично НАРОЧНО: вызывающий вправе узнать `Unknown` и решить сам —
+/// `check` на неизвестности не отказывает, а тот, кто ставит краевые приборы, может захотеть знать.
+pub fn glue_ct() -> Glue {
+    let release = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let config = fs::read_to_string("/proc/config.gz")
+        .ok()
+        .or_else(|| fs::read_to_string(format!("/boot/config-{}", release.trim())).ok());
+    match config {
+        None => Glue::Unknown,
+        Some(text) => match text
+            .lines()
+            .any(|line| line.trim() == "CONFIG_NETFILTER_NETLINK_GLUE_CT=y")
+        {
+            true => Glue::On,
+            false => Glue::Off,
+        },
+    }
+}
+
+/// Отказ ТОЛЬКО при доказанном отсутствии. `Unknown` пропускается — и это не мягкость, а §7:
+/// наказывать за то, что мы не смогли посмотреть, значит судить о подопытном по беде стенда.
+///
+/// Цена пропуска названа: на ядре без glue краевые приборы будут читать марку нулём и молчать, а
+/// молчание читается как «беды нет». Ловится это первым же прогоном (`NFQA_CT` не приедет ни
+/// разу), но не здесь.
+fn check_conntrack_glue() -> Result<(), PreflightError> {
+    check_glue(glue_ct())
+}
+
+/// Решение ОТДЕЛЬНО от чтения мира: так его можно предъявить всеми тремя клетками, не собирая
+/// ядер без glue. Тот же приём, что у `asked` в терминале очереди (§9: выше значения, ниже мир).
+fn check_glue(glue: Glue) -> Result<(), PreflightError> {
+    match glue {
+        Glue::Off => Err(PreflightError::NoConntrackGlue),
+        Glue::On | Glue::Unknown => Ok(()),
     }
 }
 
@@ -213,4 +283,55 @@ mod tests {
         assert!(format!("{}", PreflightError::NoTimestamps).contains("nf_conntrack_timestamp"));
     }
 
+}
+
+#[cfg(test)]
+mod glue_tests {
+    use super::*;
+
+    /// ТРИ КЛЕТКИ, НЕ ДВЕ, И ТРЕТЬЯ НЕ ОТКАЗ.
+    ///
+    /// `Unknown` обязан пропускать: конфига ядра может не быть вовсе (контейнер, урезанный образ),
+    /// и отказывать по нечитаемому файлу значило бы не пускать на машины, где всё в порядке, —
+    /// судить о подопытном по беде стенда (§7).
+    #[test]
+    fn неизвестность_не_есть_отказ() {
+        assert!(
+            matches!(check_glue(Glue::Unknown), Ok(())),
+            "не смогли посмотреть — не повод не пустить"
+        );
+        assert!(matches!(check_glue(Glue::On), Ok(())));
+        assert!(
+            matches!(check_glue(Glue::Off), Err(PreflightError::NoConntrackGlue)),
+            "доказанное отсутствие — отказ, и отказ со СВОИМ именем"
+        );
+    }
+
+    /// ЛЕЧЕНИЕ У ДВУХ БЕД РАЗНОЕ, И ТЕКСТ ОБЯЗАН ЭТО СКАЗАТЬ.
+    ///
+    /// `NoConntrack` чинится `modprobe`, `NoConntrackGlue` — только сменой ядра. Отправить
+    /// человека грузить уже загруженный модуль значит потратить его вечер; потому сообщение
+    /// прямо говорит, что перезагрузка модуля НЕ поможет.
+    #[test]
+    fn отказ_по_glue_называет_своё_лечение_а_не_чужое() {
+        let said = format!("{}", PreflightError::NoConntrackGlue);
+        assert!(said.contains("CONFIG_NETFILTER_NETLINK_GLUE_CT"), "названа опция: {said}");
+        assert!(said.contains("module reload will NOT help"), "названо, чего делать НЕ надо: {said}");
+        assert!(
+            !format!("{}", PreflightError::NoConntrack).contains("GLUE"),
+            "и соседний отказ этой опции не поминает — иначе лечения слились бы"
+        );
+    }
+
+    /// На ЭТОЙ машине конфиг читается (ядро Ubuntu кладёт `/boot/config-*`), и glue включён.
+    /// Тест держит не свойство мира, а то, что ЧТЕНИЕ РАБОТАЕТ: сломай путь — и `glue_ct` начнёт
+    /// всегда отвечать `Unknown`, то есть проверка станет вечно зелёной и бесполезной.
+    #[test]
+    fn чтение_конфига_ядра_живо_а_не_всегда_unknown() {
+        assert_ne!(
+            glue_ct(),
+            Glue::Unknown,
+            "конфиг ядра не прочёлся ни по одному пути — проверка выродилась в вечное «не знаю»"
+        );
+    }
 }
