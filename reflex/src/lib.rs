@@ -105,6 +105,7 @@ use reflex_engine::Addr;
 /// от ОДНОГО крейта» тише всего: цепочка собирается, а `let _: ??? = whom.flow` написать нечем.
 pub use reflex_engine::Flow;
 use reflex_instrument::edge::{Layout, Memo};
+use reflex_instrument::edge_word::Edged;
 use reflex_instrument::edge_detect::EdgeSilence;
 use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::detect::{ChokedInstrument, RstInstrument, ThrottledInstrument};
@@ -524,6 +525,38 @@ impl Silence {
     /// Сколько молчания терпим, прежде чем назвать это тихим дропом.
     pub fn after(after: Duration) -> Silence {
         Silence { after }
+    }
+}
+
+/// Детектор ВЫБОРОЧНОГО ДРОПА внутри живого разговора: клиент повторяет один и тот же сегмент, а
+/// цель при этом ПОДТВЕРЖДАЕТ предыдущие байты — то есть жива и отвечает.
+///
+/// Первый прибор, которому нужны ОБЕ половины широкого слова: «клиент повторяет» знает провод,
+/// «цель жива» знает край (подтверждения без данных события не рождают, а край считает их
+/// пакетами). Ни одна половина этого класса не видит, и до него `Edged` стоял в дереве без
+/// предмета, который был бы им НЕВЫРАЗИМ иначе.
+pub struct Swallowed;
+
+impl Swallowed {
+    /// Сегмент не проходит, хотя цель отвечает.
+    pub fn segment() -> Swallowed {
+        Swallowed
+    }
+}
+
+impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Swallowed {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<
+            Wide<Reading, E>,
+            Edged<Option<Seen>, Option<E>>,
+            _,
+            Distress,
+            Distress,
+        >(
+            reflex_instrument::swallow::SwallowInstrument::<E>::new(),
+        ))
     }
 }
 

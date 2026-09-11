@@ -34,6 +34,7 @@ pub mod poison;
 pub mod resolve;
 pub mod retransmit;
 pub mod sag;
+pub mod swallow;
 pub mod trust;
 pub mod unreached;
 pub mod wire;

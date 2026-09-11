@@ -30,6 +30,20 @@ pub enum Distress {
     /// `retries` — сколько раз цель повторила, не продвинувшись. Величина, а не флаг: одиночный
     /// повтор бывает от обычной потери, ряд повторов — уже заявление стороны.
     Unreached { retries: u32 },
+    /// СЕГМЕНТ ПРОГЛОЧЕН В ЖИВОМ РАЗГОВОРЕ: клиент повторяет один и тот же кусок, а цель при этом
+    /// ПОДТВЕРЖДАЕТ предыдущие байты — то есть жива и отвечает. Выборочный дроп внутри живого
+    /// разговора.
+    ///
+    /// Отдельно от `Retransmit`, и разница в СИЛЕ утверждения: там подозрение («просили, вниз
+    /// ничего»), которое обычная потеря даёт тоже; здесь цель доказанно жива, и потому «не проходит
+    /// именно этот сегмент». Обычная потеря так себя не ведёт — она бьёт по любому сегменту, а не
+    /// по одному и тому же раз за разом. Слей их — потеряешь либо раннее подозрение, либо точный
+    /// диагноз, а лечение у них разное.
+    ///
+    /// Замер, которым буква оплачена: голова приветствия дошла и подтверждена, хвост с концом имени
+    /// не проходит, клиент повторяет его шесть раз. Для человека — глухой таймаут; для батареи до
+    /// этой буквы — здоровый разговор, и каждый прибор молчал законно.
+    Swallowed { after_ms: u32 },
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
@@ -50,6 +64,7 @@ impl Distress {
             Distress::Retransmit { .. } => "retransmit",
             Distress::Blackhole { .. } => "blackhole",
             Distress::Unreached { .. } => "unreached",
+            Distress::Swallowed { .. } => "swallowed",
             Distress::Poisoned => "poisoned",
             Distress::Diverged { .. } => "diverged",
         }
@@ -73,6 +88,9 @@ impl Distress {
             Distress::Blackhole { after_ms } => format!("SYN без ответа через {after_ms} мс"),
             Distress::Unreached { retries } => {
                 format!("цель повторила ответ {retries} раза — до клиента не дошло")
+            }
+            Distress::Swallowed { after_ms } => {
+                format!("сегмент не проходит {after_ms} мс, цель при этом отвечает")
             }
             Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
@@ -145,6 +163,7 @@ impl core::fmt::Display for Distress {
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
             Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
             Distress::Unreached { retries } => write!(f, "unreached retries={retries}"),
+            Distress::Swallowed { after_ms } => write!(f, "swallowed after_ms={after_ms}"),
             Distress::Poisoned => f.write_str("poisoned"),
             Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
         }
