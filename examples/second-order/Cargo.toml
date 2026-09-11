@@ -1,0 +1,17 @@
+[package]
+name = "second-order"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: приборы ВТОРОГО порядка — ряд строит потребитель, прибор судит"
+
+# Две зависимости, и вторая названа предметом. `reflex` — цепочка; `reflex-instrument` — приборы,
+# которые в цепочку НЕ ВСТАЮТ, потому что едят не провод, а производную от провода. Пример и есть
+# ответ на вопрос «где живёт ступень агрегации»: сегодня у потребителя, и вот сколько она стоит.
+[dependencies]
+reflex = { path = "../../reflex" }
+reflex-instrument = { path = "../../instrument" }
+
+[[bin]]
+name = "second-order"
+path = "src/main.rs"
