@@ -185,3 +185,51 @@ fn словарь_расширений_браузера_умещается_в_п
         "имя из приветствия настоящего браузера обязано подняться; названо: {heard:?}"
     );
 }
+
+
+/// ПРЕДМЕТ: приветствие, разрезанное ИМЕННО ТАК, как его режет живой путь — 1380 + остаток.
+///
+/// Замер потребителя: у одной цели приветствие пришло двумя сегментами 1380 и 190, и имя не
+/// поднялось вовсе — все беды приезжали голым адресом. Здесь тот же разрез воспроизводится на
+/// НАСТОЯЩЕМ приветствии (1566 байт, взято из живой записи), чтобы отделить «склейка не работает
+/// на такой длине» от «на том вантаже случилось что-то другое».
+#[test]
+fn приветствие_разрезанное_как_на_живом_пути() {
+    let hello = std::fs::read("tests/fixtures/long-hello.pcap")
+        .map(|data| {
+            let (frames, _) = reflex_core::pcap::read(&data, std::time::Instant::now());
+            let mut bytes = Vec::new();
+            for frame in &frames {
+                let net = frame.network();
+                if net.len() < 40 {
+                    continue;
+                }
+                let ihl = ((net[0] & 0x0f) as usize) * 4;
+                let doff = ((net[ihl + 12] >> 4) as usize) * 4;
+                let dport = u16::from_be_bytes([net[ihl + 2], net[ihl + 3]]);
+                if dport == 443 {
+                    bytes.extend_from_slice(&net[ihl + doff..]);
+                }
+            }
+            let length = u16::from_be_bytes([bytes[3], bytes[4]]) as usize;
+            bytes[..5 + length].to_vec()
+        })
+        .expect("фикстура на месте");
+
+    assert_eq!(hello.len(), 1566, "приветствие взято целиком");
+    let (first, tail) = hello.split_at(1380);
+
+    let said = named(
+        Paper::new()
+            .then_packet(syn(40004))
+            .then_packet(segment(40004, 1, first))
+            .then_packet(segment(40004, 1 + first.len() as u32, tail))
+            .then_stop(),
+    );
+
+    assert!(
+        said.iter().any(|name| name == "meduza.io"),
+        "разрез 1380 + {} обязан давать имя; названо: {said:?}",
+        tail.len()
+    );
+}
