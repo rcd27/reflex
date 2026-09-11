@@ -123,3 +123,132 @@ fn набор_кончается_когда_кончились_все() {
         "длинная цепочка обязана договорить: сказано ею {from_long}"
     );
 }
+
+// ─── ЗАКОН НАБОРА: МОЛЧАЩАЯ ЦЕПОЧКА НЕ ДЕРЖИТ ГОВОРЯЩУЮ ─────────────────────────────────────────
+//
+// Замер, которым закон оплачен: две цепочки рядом клали трафик НАСМЕРТЬ. Пустая цепочка выжигала
+// свой срок целиком, пакеты соседки стояли в очереди ядра и вытаймаучивались у клиента —
+// `www.google.com` отвечал за 0,35 с в одиночку и не отвечал НИ РАЗУ в наборе.
+//
+// Бумажный носитель этого поймать не может: его часы двигаются скачком, он не ждёт по-настоящему.
+// Потому здесь свой — он ЖДЁТ реально, как ждёт очередь ядра на пустом сокете.
+
+use std::time::{Duration, Instant};
+
+use reflex_core::held::{Answered, Delivered, Held, Refused, Terminal};
+use reflex_core::local::Local;
+use reflex_core::serves::{Served, Serves};
+use reflex_instrument::edge::Layout;
+
+/// НОСИТЕЛЬ, КОТОРЫЙ ЖДЁТ. Работы у него нет никогда: его предмет — молчание, выдержанное честно.
+struct Dozing {
+    /// Сколько оборотов ещё выдержать, прежде чем сказать «работы не будет никогда». Потолок, а не
+    /// вечность: набор обязан кончиться, иначе тест висит вместо того, чтобы падать.
+    turns: u32,
+}
+
+/// Край, ничего не ведущий: предмет теста — ОЖИДАНИЕ, и настоящий край занял бы в нём место
+/// предмета.
+#[derive(Debug, Clone, Copy)]
+struct Blank;
+
+impl reflex_core::edge::EdgeView for Blank {
+    fn down_packets(&self) -> Option<u64> { None }
+    fn up_packets(&self) -> Option<u64> { None }
+    fn down_bytes(&self) -> Option<u64> { None }
+    fn up_bytes(&self) -> Option<u64> { None }
+    fn idle(&self) -> Option<Duration> { None }
+    fn age(&self) -> Option<Duration> { None }
+    fn mark(&self) -> u32 { 0 }
+}
+
+#[derive(Debug)]
+enum Never {}
+
+impl Terminal for Dozing {
+    type Carrier = Vec<u8>;
+    type Answer = ();
+    type Refusal = Never;
+
+    fn apply(&mut self, answered: Answered<Vec<u8>, ()>) -> Result<Delivered<()>, Refused<(), Never>> {
+        Ok(Delivered { at: answered.at, answer: answered.answer })
+    }
+}
+
+impl reflex_core::capability::CanHold for Dozing {
+    fn release() {}
+}
+
+impl reflex_core::capability::CanRefuse for Dozing {
+    fn refuse() {}
+}
+
+impl Serves for Dozing {
+    type Edge = Blank;
+
+    fn serve<F>(&mut self, until: Instant, _decide: F) -> Served<Delivered<()>, Refused<(), Never>>
+    where
+        F: FnOnce(&Held<Vec<u8>>, Option<Blank>) -> (),
+    {
+        // ЖДЁМ ЧЕСТНО — ровно то, что делает очередь ядра на пустом сокете: спит до срока и
+        // возвращается ни с чем. Закон срока соблюдён: раньше `until` не вернулись.
+        let now = Instant::now();
+        if until > now {
+            std::thread::sleep(until - now);
+        }
+        self.turns = self.turns.saturating_sub(1);
+        Served::Idle
+    }
+
+    fn exhausted(&self) -> bool {
+        self.turns == 0
+    }
+}
+
+struct Dozes;
+
+impl IntoCarrier for Dozes {
+    type Carrier = Local<Dozing>;
+
+    fn open(self) -> Result<Local<Dozing>, Cause> {
+        Ok(Local::new(Dozing { turns: 200 }))
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::preset()
+    }
+
+    fn name(&self) -> String {
+        "дремлющий носитель".to_string()
+    }
+}
+
+/// ПРЕДМЕТ: молчащая цепочка не держит говорящую дольше ЛОМТЯ.
+///
+/// Без потолка ожидания говорящая цепочка ждала бы полного срока молчащей на КАЖДОМ показании — в
+/// поле это означало переполнение очереди ядра и убитый трафик, а здесь означало бы секунды вместо
+/// миллисекунд.
+#[test]
+fn молчащая_цепочка_не_держит_говорящую() {
+    let говорящая = Paper::new()
+        .then_packet(syn(40007))
+        .then_packet(request(40007))
+        .then_packet(request(40007))
+        .then_packet(request(40007))
+        .then_stop();
+
+    let started = Instant::now();
+    let heard: Vec<Note> = together()
+        .chain(engine(Dozes).from(Tcp).extract(Sni).detect(own(Always)))
+        .chain(engine(говорящая).from(Tcp).extract(Sni).detect(paper::Crier::always()))
+        .heard()
+        .take(3)
+        .collect();
+    let spent = started.elapsed();
+
+    assert_eq!(heard.len(), 3, "говорящая цепочка обязана быть услышана");
+    assert!(
+        spent < Duration::from_millis(150),
+        "три показания не должны стоить трёх сроков молчащей соседки: вышло {spent:?}"
+    );
+}
