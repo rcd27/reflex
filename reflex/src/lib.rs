@@ -1120,6 +1120,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             about: None,
             #[cfg(feature = "telling")]
             telling: None,
+            severing: None,
             transport: PhantomData,
         }
     }
@@ -1172,6 +1173,26 @@ impl<W, S> Park<W, S> {
     }
 }
 
+/// ПРАВИЛО ОБРЫВА при двери показаний: на какое слово рвать разговор.
+///
+/// Предикат, а не акт: акт строится ВНУТРИ цикла, где пакет ещё в руках, — из его байтов и лепится
+/// извещение стороне. Отдай мы потребителю право «ответить актом на показание», пришлось бы везти
+/// наружу байты пакета и ждать, пока он решит; к тому мигу носитель уже ответил, и рвать было бы
+/// нечем. Оттого решение о РОДЕ слова объявляется заранее, а решение о цели — по-прежнему у
+/// потребителя, через его собственный цикл.
+struct Severing<K, S> {
+    /// На какое слово рвать — решение потребителя о РОДЕ улики.
+    when: Box<dyn FnMut(&S) -> bool + Send>,
+    /// Чем сказать стороне, что разговора не будет. Указатель, а не бонд на цикле: способность
+    /// доказана В ТОЧКЕ ОБЪЯВЛЕНИЯ правила (§9.1), и цикл, ничего о ней не знающий, лишь зовёт
+    /// сохранённое. Так дверь показаний не требует умения рвать от ВСЯКОГО носителя — запись
+    /// по-прежнему отдаёт показания и по-прежнему не собирается с этой дверью.
+    notice: fn(&[u8]) -> Option<InjectablePacket>,
+    /// Чем отправить извещение. Второй указатель по той же причине: `CanInject` тоже доказан там,
+    /// где правило объявлено.
+    fire: fn(&mut K, InjectablePacket),
+}
+
 /// Детекторы копятся — можно добавить ещё или перейти к реакции.
 pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Distress> {
     home: PhantomData<fn() -> H>,
@@ -1183,6 +1204,9 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     /// обычное состояние наблюдателя.
     #[cfg(feature = "telling")]
     telling: Option<crate::telling::Telling>,
+    /// ПРАВИЛО ОБРЫВА для двери показаний: на какое слово рвать. `None` — не просили, и показания
+    /// остаются чистым наблюдением.
+    severing: Option<Severing<C::Carrier, S>>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -1205,8 +1229,44 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             about: self.about,
             #[cfg(feature = "telling")]
             telling: self.telling,
+            severing: self.severing,
             transport: PhantomData,
         }
+    }
+
+    /// РВАТЬ МЁРТВЫЙ РАЗГОВОР, НЕ ОТКАЗЫВАЯСЬ ОТ ПОКАЗАНИЙ ЗНАЧЕНИЕМ.
+    ///
+    /// До этой двери `.act` и `heard()` были взаимно исключающими: первый уводил цепочку в
+    /// `Acting`, где показаний нет. Потребителю же нужны обе половины сразу, и замер называет цену
+    /// разлуки в единице человека: лечение готово через ~2 секунды и лежит без дела, пока клиент
+    /// досиживает СВОЙ таймаут — двенадцать секунд на крутилке. Обрыв мёртвого разговора превращает
+    /// их в полсекунды: клиент переоткрывает соединение, и оно уже уезжает вылеченным.
+    ///
+    /// Предикат на СЛОВЕ, а не акт по показанию, и это не упрощение: акт лепится из байтов пакета,
+    /// который в этот миг ещё в руках цикла. Отдай мы наружу право ответить на показание — пришлось
+    /// бы везти байты потребителю и ждать его решения, а к тому времени носитель уже ответил.
+    ///
+    /// Способность требуется ЗДЕСЬ, в точке объявления правила (§9.1): у носителя, не умеющего
+    /// рвать, эта дверь не соберётся — ровно как `.act(Act::sever())` не собирается с записью.
+    ///
+    /// Рвётся только по улике, ПРИШЕДШЕЙ С ПАКЕТОМ: слово, рождённое узлом сетки, адреса не имеет,
+    /// и рвать по нему нечем — это закон цикла, не оговорка двери.
+    pub fn severing<P>(mut self, when: P) -> Detecting<C, T, H, S>
+    where
+        P: FnMut(&S) -> bool + Send + 'static,
+        C::Carrier: CanHold + CanSever + CanInject,
+        <C::Carrier as reflex_core::backend::Sink>::Error: std::fmt::Debug,
+    {
+        self.severing = Some(Severing {
+            when: Box::new(when),
+            notice: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Sender),
+            fire: |carrier, packet| {
+                if let Err(why) = carrier.emit(<C::Carrier as CanInject>::inject(packet)) {
+                    report!("обрыв не ушёл: {why:?}");
+                }
+            },
+        });
+        self
     }
 
     /// ДВЕРЬ ВНЕПОЛОСНОГО ЗНАНИЯ (черновая, за фичей `telling`). Ручка копируется и уезжает в
@@ -1736,23 +1796,49 @@ pub struct Note<S = Distress> {
 
 /// ГОЛОС, КЛАДУЩИЙ ПОКАЗАНИЯ В ОЧЕРЕДЬ, — тот же [`Voice`], которым говорят `.on` и `.act`.
 ///
-/// Обещаний миру не даёт (`does` пуст по построению, как у наблюдателя): показание-значение есть
-/// НАБЛЮДЕНИЕ, и дать ему трогать носителя значило бы завести действие в обход гейта §9.1.
-struct Collecting<'q, S>(&'q mut VecDeque<Note<S>>);
+/// МИРА ОН КАСАЕТСЯ РОВНО НАСТОЛЬКО, НАСКОЛЬКО ЕМУ ДАЛИ ПРАВИЛО. Без правила (`None`) он чистый
+/// наблюдатель, как и был: `does` не делает ничего, и показание-значение остаётся наблюдением.
+/// С правилом — рвёт, и способности на это доказаны НЕ ЗДЕСЬ, а в точке объявления
+/// ([`Detecting::severing`], §9.1): сюда доезжают уже готовые указатели, и цикл не требует умения
+/// рвать от всякого носителя. Оттого запись по-прежнему отдаёт показания и по-прежнему не
+/// собирается с этой дверью.
+struct Collecting<'q, K, S> {
+    said: &'q mut VecDeque<Note<S>>,
+    rule: Option<&'q mut Severing<K, S>>,
+}
 
-impl<K, S> Voice<K, S> for Collecting<'_, S> {
-    fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        self.0.push_back(Note {
+impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
+        // ОБРЫВ РЕШАЕТСЯ ЗДЕСЬ, пока байты пакета в руках: из них и лепится извещение стороне.
+        // Слово, рождённое узлом сетки, сюда приходит с ПУСТЫМИ байтами (`evidence` у буквы без
+        // адреса пуст по построению) — и `notice` на пустом не построится, то есть закон «рвать
+        // только по улике с пакетом» держится конструкцией, а не проверкой.
+        let effects = match self.rule.as_mut() {
+            None => SmallVec::new(),
+            Some(rule) => match (rule.when)(&word) {
+                false => SmallVec::new(),
+                true => (rule.notice)(seen).into_iter().map(Effect::Inject).collect(),
+            },
+        };
+        self.said.push_back(Note {
             target: whom.target.into(),
             edge: whom.edge,
             at: whom.at,
             flow: whom.flow,
             word,
         });
-        SmallVec::new()
+        effects
     }
 
-    fn does(&mut self, _carrier: &mut K, _effects: SmallVec<[Effect; 2]>) {}
+    fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>) {
+        let Some(rule) = self.rule.as_mut() else {
+            return;
+        };
+        for effect in effects {
+            let Effect::Inject(packet) = effect;
+            (rule.fire)(carrier, packet);
+        }
+    }
 }
 
 /// ПРОГОН КАК ЗНАЧЕНИЕ: показания идут вбок, наружу, по одному.
@@ -1808,6 +1894,9 @@ impl<K, S> Voice<K, S> for Collecting<'_, S> {
 ///   открыта.
 pub struct Heard<C: Bordered, T: Transport, S = Distress> {
     turning: Turning<C, T, S>,
+    /// Правило обрыва, если его объявляли ([`Detecting::severing`]). `None` — показания остаются
+    /// чистым наблюдением, и это обычное их состояние.
+    rule: Option<Severing<C::Carrier, S>>,
     /// Один оборот рождает НЕСКОЛЬКО показаний (буквы узла адресованы каждой живой машине), а
     /// итератор отдаёт по одному: очередь и есть эта разница.
     said: VecDeque<Note<S>>,
@@ -1832,7 +1921,10 @@ where
             // Оборот мог не сказать ничего (тишина, чужой кадр, узел без слова) — тогда крутим
             // дальше. Цикл здесь не «ожидание»: срок выдерживает НОСИТЕЛЬ внутри `serve`, а не мы
             // опросом. Тот же закон срока, что и у `.on`, — один оборот, один сон.
-            if !self.turning.pump(&mut Collecting(&mut self.said)) {
+            if !self.turning.pump(&mut Collecting {
+                said: &mut self.said,
+                rule: self.rule.as_mut(),
+            }) {
                 return None;
             }
         }
@@ -1857,9 +1949,11 @@ where
     ///
     /// `Err(Report)` — носитель не открылся; см. [`Heard`] о том, почему конец прогона `Report`а не
     /// несёт.
-    pub fn heard(self) -> Result<Heard<C, T, S>, Report> {
+    pub fn heard(mut self) -> Result<Heard<C, T, S>, Report> {
+        let rule = self.severing.take();
         Ok(Heard {
             turning: Turning::begun(self, false)?,
+            rule,
             said: VecDeque::new(),
         })
     }
