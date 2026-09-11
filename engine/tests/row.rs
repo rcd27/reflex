@@ -1,3 +1,21 @@
+//! СТРОКА ЦЕЛИ: пять законов вместо семнадцати случаев (схлопнуто 11.09.2026).
+//!
+//! Этот файл отличался от прочих схлопнутых: тесты здесь УЖЕ были названы законами — «пустой счёт
+//! нейтрален», «счёт не зависит от порядка», «счёт не зависит от группировки». Это аксиомы
+//! коммутативного моноида, и названы они верно.
+//!
+//! Проверены они были, однако, на ОДНОЙ тройке значений. Закон алгебры, предъявленный одним
+//! примером, — обещание, а не закон: `added` мог бы ломать ассоциативность у границы `u64`
+//! (насыщение — то самое место, где алгебра обычно и рвётся), и ни один из трёх тестов этого не
+//! увидел бы.
+//!
+//! Здесь вместо примеров ПЕРЕБОР, и там, где множества конечны, — исчерпывающий:
+//! * `told` есть функция от `Told × Sight`, то есть от трёх вариантов на два. Шесть пар — полная
+//!   её спецификация, а не выборка;
+//! * аксиомы моноида — на наборе, куда нарочно взяты ноль, единица и `u64::MAX`: насыщение обязано
+//!   сохранять и коммутативность, и ассоциативность, иначе счёт двух узлов зависел бы от того, в
+//!   каком порядке их слили.
+
 use reflex_engine::row::{
     added, host_of, keyed, net_of, no_counts, sighted, told, Counted, Naming, Sight, TargetKey,
     Told,
@@ -15,176 +33,203 @@ fn counts(up: u64, up_bytes: u64, down: u64, down_bytes: u64) -> Counted {
     }
 }
 
+/// Набор для аксиом: ноль, единица, обычные величины и ГРАНИЦА `u64`. Граница здесь не
+/// педантизм — `added` насыщает, и насыщение есть то место, где алгебра рвётся чаще всего.
+fn sample() -> Vec<Counted> {
+    vec![
+        no_counts(),
+        counts(1, 1, 1, 1),
+        counts(7, 1400, 3, 120),
+        counts(2, 90, 11, 4096),
+        counts(u64::MAX, 0, 0, u64::MAX),
+        counts(u64::MAX, u64::MAX, u64::MAX, u64::MAX),
+    ]
+}
+
+// ── СЧЁТ ЕСТЬ КОММУТАТИВНЫЙ МОНОИД ────────────────────────────────────────────────────────────
+
+/// ТРИ АКСИОМЫ НА ВСЕХ ПАРАХ И ТРОЙКАХ НАБОРА, ВКЛЮЧАЯ НАСЫЩЕНИЕ.
+///
+/// Почему это один тест, а не три: аксиомы моноида — не три независимых факта, а одно утверждение
+/// о структуре. Разойдись любая — структуры нет, и остальные две ничего не спасают. Прежде они
+/// стояли тремя тестами по одному примеру каждый.
+#[test]
+fn счёт_есть_коммутативный_моноид_включая_насыщение() {
+    let values = sample();
+
+    for &one in &values {
+        assert_eq!(added(one, no_counts()), one, "нейтраль справа: {one:?}");
+        assert_eq!(added(no_counts(), one), one, "нейтраль слева: {one:?}");
+    }
+
+    for &one in &values {
+        for &other in &values {
+            assert_eq!(
+                added(one, other),
+                added(other, one),
+                "порядок значим: {one:?} и {other:?}"
+            );
+        }
+    }
+
+    for &one in &values {
+        for &other in &values {
+            for &third in &values {
+                assert_eq!(
+                    added(added(one, other), third),
+                    added(one, added(other, third)),
+                    "группировка значима: {one:?}, {other:?}, {third:?}"
+                );
+            }
+        }
+    }
+}
+
+/// СЧЁТ ОТ СЛИЯНИЯ НЕ УБЫВАЕТ — закон, которого здесь не было ни прежде, ни у моноида.
+///
+/// Найден МУТАНТОМ, и найден тем, что мутант НЕ покраснел: подмена `saturating_add` на
+/// `wrapping_add` оставила все три аксиомы в силе — обёртка тоже коммутативна и ассоциативна.
+/// Между тем при обёртке `MAX + 1 = 0`, то есть счёт двух узлов оказался бы МЕНЬШЕ счёта одного.
+///
+/// Моноид этого не запрещает: он говорит, как складывать, и молчит о том, куда. Монотонность —
+/// отдельное утверждение, и для счётчиков пакетов оно и есть главное: слияние узлов ДОБАВЛЯЕТ
+/// наблюдения, а не пересчитывает их заново.
+#[test]
+fn счёт_от_слияния_не_убывает() {
+    for &one in &sample() {
+        for &other in &sample() {
+            let sum = added(one, other);
+            assert!(
+                sum.up >= one.up && sum.up >= other.up,
+                "пакеты вверх убыли: {one:?} + {other:?} = {sum:?}"
+            );
+            assert!(
+                sum.down >= one.down && sum.down >= other.down,
+                "пакеты вниз убыли: {one:?} + {other:?} = {sum:?}"
+            );
+            assert!(
+                sum.up_bytes >= one.up_bytes && sum.down_bytes >= one.down_bytes,
+                "байты убыли: {one:?} + {other:?} = {sum:?}"
+            );
+        }
+    }
+}
+
 // ── ИДЕНТИЧНОСТЬ СТРОКИ ────────────────────────────────────────────────────────────────────────
 
+/// ИМЯ ПЕРЕБИВАЕТ АДРЕС ВСЕГДА, И ШИРИНА ЕГО НЕ КАСАЕТСЯ ВОВСЕ.
+///
+/// Проверяется на ВСЕХ адресах набора и ОБЕИХ ширинах: прежде — на одном адресе и двух ширинах.
+/// Цена нарушения названа замером: на `188.114.96.1` имён ≥69 (`dig`, 31.08), и вернись ширина к
+/// названной цели — вред применился бы к шестидесяти девяти доменам через заднюю дверь.
 #[test]
-fn nazvavshayasya_tsel_klyuchuetsya_imenem() {
-    assert_eq!(
-        keyed(Naming::Spoken("rutracker.org"), CDN, net_of),
-        TargetKey::Named("rutracker.org")
-    );
-}
+fn имя_перебивает_адрес_при_любой_ширине_и_любом_адресе() {
+    for address in [CDN, Addr(0x0A_0B_0C_0D), Addr(0), Addr(u32::MAX)] {
+        assert_eq!(
+            keyed(Naming::Spoken("x.com"), address, net_of),
+            keyed(Naming::Spoken("x.com"), address, host_of),
+            "ширина тронула названную цель на {address:?}"
+        );
+        assert_eq!(
+            keyed(Naming::Spoken("x.com"), address, net_of),
+            TargetKey::Named("x.com")
+        );
+    }
 
-#[test]
-fn tsel_bez_imeni_klyuchuetsya_setyu_a_ne_adresom() {
-    assert_eq!(
-        keyed(Naming::<&str>::Silent, CDN, net_of),
-        TargetKey::Unnamed(Addr(0xBC_72_60_00))
-    );
-}
-
-/// ДВА РАЗНЫХ ИМЕНИ НА ОДНОМ АДРЕСЕ РАСХОДЯТСЯ В РАЗНЫЕ СТРОКИ. Это и есть причина, по которой
-/// строка собирается по ФЛОУ: на `188.114.96.1` имён ≥69 (замер `dig` 31.08), и группировка по
-/// адресу свела бы их в одну строку, а подсказка адрес→имя подставила бы имя последнего.
-#[test]
-fn dva_imeni_na_odnom_adrese_ne_slivayutsya() {
+    // Два разных имени на ОДНОМ адресе — разные строки. Иначе подсказка адрес→имя подставила бы
+    // имя последнего на всю группу.
     assert_ne!(
         keyed(Naming::Spoken("rutracker.org"), CDN, net_of),
         keyed(Naming::Spoken("x.com"), CDN, net_of)
     );
 }
 
-/// ОЖИДАНИЕ ИМЕНИ И ЕГО ОТСУТСТВИЕ ключуются одинаково — и это НЕ слияние состояний: они
-/// различаются `Standing`, а не ключом. Разделить их ключом значило бы менять строку в момент
-/// hello, то есть терять всё, что накоплено до него.
+/// БЕЗЫМЯННАЯ ЦЕЛЬ КЛЮЧУЕТСЯ ШИРИНОЙ, И ШИРИНЫ РАЗВОДЯТ ЕЁ В РАЗНЫЕ КЛЮЧИ.
+///
+/// В этом весь смысл параметра: строка копит по СЕТИ, действие лечит ХОЗЯИНА. Совпади ширины —
+/// либо строка рассыплется на 256 строк, либо знание применится к 256 чужим.
+///
+/// Ожидание имени и его отсутствие дают ОДИН ключ, и это не слияние состояний: различает их
+/// `Standing`, а не ключ. Разделить их ключом значило бы менять строку в момент приветствия, теряя
+/// всё накопленное до него.
 #[test]
-fn ozhidanie_imeni_i_ego_otsutstvie_dayut_odnu_stroku() {
-    assert_eq!(
-        keyed(Naming::<&str>::Awaited, CDN, net_of),
-        keyed(Naming::<&str>::Silent, CDN, net_of)
-    );
+fn безымянная_цель_ключуется_шириной_а_ожидание_имени_строки_не_меняет() {
+    for address in [CDN, Addr(0x0A_0B_0C_0D), Addr(0xFF_FF_FF_FF)] {
+        let by_net = keyed(Naming::<&str>::Silent, address, net_of);
+        let by_host = keyed(Naming::<&str>::Silent, address, host_of);
+        assert_ne!(by_net, by_host, "две ширины дали один ключ на {address:?}");
+        assert_eq!(
+            by_net,
+            keyed(Naming::<&str>::Awaited, address, net_of),
+            "ожидание имени сменило строку на {address:?}"
+        );
+    }
+
+    assert_eq!(net_of(Addr(0x0A_0B_0C_0D)), Addr(0x0A_0B_0C_00), "сеть срывает младший байт");
+    assert_eq!(host_of(Addr(0x0A_0B_0C_0D)), Addr(0x0A_0B_0C_0D), "хозяин — весь адрес");
 }
 
+// ── ЗРЕНИЕ ЗАМЕРЯЕТСЯ ДВУМЯ ОРАКУЛАМИ ─────────────────────────────────────────────────────────
+
+/// ЗРЕНИЕ ЕСТЬ НАСЫЩЕННАЯ РАЗНОСТЬ ДВУХ СЧЁТОВ — на всех парах набора, а не на трёх случаях.
+///
+/// Три прежних теста (совпали, ядро больше, плоскость больше) были тремя точками одной функции.
+/// Здесь ожидание записано НЕЗАВИСИМО — прямой насыщенной разностью, — и потому проверяет не
+/// «эти три точки», а форму целиком, включая насыщение в ноль: плоскость не может видеть больше
+/// ядра, и отрицательная слепота была бы утверждением сильнее установленного.
 #[test]
-fn shirina_zapisi_sryvaet_mladshiy_bayt() {
-    assert_eq!(net_of(Addr(0x0A_0B_0C_0D)), Addr(0x0A_0B_0C_00));
-}
-
-/// ДВЕ ШИРИНЫ РАЗВОДЯТ ОДНУ И ТУ ЖЕ ЦЕЛЬ В РАЗНЫЕ КЛЮЧИ, и это весь смысл параметра: строка копит
-/// по сети, действие лечит хозяина. Совпади они — либо строка рассыплется на 256 строк, либо
-/// знание применится к 256 чужим.
-#[test]
-fn shirina_zapisi_i_shirina_deystviya_raznye() {
-    assert_ne!(
-        keyed(Naming::<&str>::Silent, Addr(0x0A_0B_0C_0D), net_of),
-        keyed(Naming::<&str>::Silent, Addr(0x0A_0B_0C_0D), host_of)
-    );
-}
-
-/// НАЗВАННУЮ ЦЕЛЬ ШИРИНА НЕ КАСАЕТСЯ ВОВСЕ: имя перебивает адрес всегда — иначе вред на 69 доменов
-/// вернулся бы через заднюю дверь.
-#[test]
-fn imya_perebivaet_adres_pri_lyuboy_shirine() {
-    assert_eq!(
-        keyed(Naming::Spoken("x.com"), Addr(0x0A_0B_0C_0D), net_of),
-        keyed(Naming::Spoken("x.com"), Addr(0x0A_0B_0C_0D), host_of)
-    );
-}
-
-// ── СЧЁТ СКЛАДЫВАЕТСЯ (моноид) ─────────────────────────────────────────────────────────────────
-
-#[test]
-fn pustoy_schyot_neytralen() {
-    let one = counts(7, 1400, 0, 0);
-    assert_eq!(added(one, no_counts()), one);
-    assert_eq!(added(no_counts(), one), one);
-}
-
-#[test]
-fn schyot_ne_zavisit_ot_poryadka() {
-    let (one, other) = (counts(7, 1400, 3, 120), counts(2, 90, 11, 4096));
-    assert_eq!(added(one, other), added(other, one));
-}
-
-#[test]
-fn schyot_ne_zavisit_ot_gruppirovki() {
-    let (one, other, third) = (
-        counts(1, 2, 3, 4),
-        counts(5, 6, 7, 8),
-        counts(9, 10, 11, 12),
-    );
-    assert_eq!(
-        added(added(one, other), third),
-        added(one, added(other, third))
-    );
-}
-
-// ── ЗРЕНИЕ ЗАМЕРЯЕТСЯ ДВУМЯ ОРАКУЛАМИ ──────────────────────────────────────────────────────────
-
-/// Ядро и плоскость сосчитали одно и то же ⟹ плоскость видела весь разговор.
-#[test]
-fn sovpavshie_schyotchiki_dayut_polnoe_zrenie() {
-    let both = counts(7, 1400, 12, 18000);
-    assert_eq!(sighted(both, both), Sight::Full);
-}
-
-/// ЯДРО СОСЧИТАЛО БОЛЬШЕ ПЛОСКОСТИ ⟹ мы ослепли, и величина слепоты ИЗВЕСТНА. Это ровно тот
-/// случай, что создаёт закрытое утверждение 1 DoD: помеченную цель ядро уводит мимо очереди, и
-/// «плоскость таких пакетов не видит».
-#[test]
-fn yadro_soschitalo_bolshe_znachit_ploskost_oslepla() {
-    assert_eq!(
-        sighted(
-            counts(340, 402_000, 900, 1_400_000),
-            counts(7, 1400, 2, 120)
-        ),
-        Sight::Partial {
-            missed_up: 333,
-            missed_down: 898,
+fn зрение_есть_насыщенная_разность_счетов_на_всех_парах() {
+    for &kernel in &sample() {
+        for &engine in &sample() {
+            let missed_up = kernel.up.saturating_sub(engine.up);
+            let missed_down = kernel.down.saturating_sub(engine.down);
+            let expected = match (missed_up, missed_down) {
+                (0, 0) => Sight::Full,
+                _ => Sight::Partial {
+                    missed_up,
+                    missed_down,
+                },
+            };
+            assert_eq!(
+                sighted(kernel, engine),
+                expected,
+                "ядро {kernel:?} против плоскости {engine:?}"
+            );
         }
-    );
+    }
 }
 
-/// ПЛОСКОСТЬ НЕ МОЖЕТ ВИДЕТЬ БОЛЬШЕ ЯДРА, и если счётчики так говорят — это расхождение приборов,
-/// а не отрицательная слепота. Насыщаем в ноль: витнес обязан молчать, когда ему нечего сказать.
-#[test]
-fn ploskost_vperedi_yadra_ne_dayot_otritsatelnoy_slepoty() {
-    assert_eq!(
-        sighted(counts(2, 100, 0, 0), counts(7, 1400, 3, 120)),
-        Sight::Full
-    );
-}
+// ── ОТСУТСТВИЕ НАБЛЮДЕНИЯ ПРИ НЕПОЛНОМ ЗРЕНИИ ЕСТЬ СЛЕПОТА ────────────────────────────────────
 
-// ── ОТСУТСТВИЕ НАБЛЮДЕНИЯ ПРИ НЕПОЛНОМ ЗРЕНИИ ЕСТЬ СЛЕПОТА ─────────────────────────────────────
-
-/// Главный закон среза. Пустая клетка «Ответила» значит РАЗНОЕ в зависимости от того, могли ли мы
+/// ПОЛНАЯ СПЕЦИФИКАЦИЯ `told`: ВСЕ ШЕСТЬ ПАР `Told × Sight`, ни одной больше и ни одной меньше.
+///
+/// Главный закон среза: пустая клетка «Ответила» значит РАЗНОЕ в зависимости от того, могли ли мы
 /// вообще увидеть ответ. Слей их — и человек прочитает «цель молчит» там, где молчим МЫ.
+///
+/// Прежде здесь стояли четыре теста на четыре пары из шести; две оставались непроверенными, и
+/// какие именно — видно только пересчётом. Функция от двух КОНЕЧНЫХ множеств исчерпывается
+/// таблицей, и таблица эта короче четырёх тестов.
 #[test]
-fn nichego_ne_nablyudeno_pri_nepolnom_zrenii_chitaetsya_slepotoy() {
-    assert_eq!(
-        told(
-            Told::<Span>::Nothing,
-            Sight::Partial {
-                missed_up: 333,
-                missed_down: 898
-            }
-        ),
-        Told::Blind
-    );
-}
+fn слепота_и_наблюдение_сведены_полной_таблицей() {
+    let partial = Sight::Partial {
+        missed_up: 333,
+        missed_down: 898,
+    };
 
-#[test]
-fn nichego_ne_nablyudeno_pri_polnom_zrenii_ostayotsya_otsutstviem() {
-    assert_eq!(told(Told::<Span>::Nothing, Sight::Full), Told::Nothing);
-}
+    let table = [
+        // Ничего не наблюдено + ослепли ⟹ это НАША слепота, не молчание цели.
+        (Told::<Span>::Nothing, partial, Told::Blind),
+        // Ничего не наблюдено при полном зрении ⟹ честное отсутствие.
+        (Told::<Span>::Nothing, Sight::Full, Told::Nothing),
+        // Наблюдённое слепотой не отменяется: ответила ДО того, как мы ослепли — факт остаётся.
+        (Told::Told(Span(210)), partial, Told::Told(Span(210))),
+        (Told::Told(Span(210)), Sight::Full, Told::Told(Span(210))),
+        // Слепота назад не отходит: полное зрение ПОСЛЕ не отменяет пропущенного.
+        (Told::<Span>::Blind, Sight::Full, Told::Blind),
+        (Told::<Span>::Blind, partial, Told::Blind),
+    ];
 
-/// НАБЛЮДЁННОЕ СЛЕПОТОЙ НЕ ОТМЕНЯЕТСЯ: если цель ответила ДО того, как мы ослепли, факт остаётся
-/// фактом. Иначе действие стирало бы то, что оно же и добыло.
-#[test]
-fn nablyudyonnoe_perezhivaet_slepotu() {
-    assert_eq!(
-        told(
-            Told::Told(Span(210)),
-            Sight::Partial {
-                missed_up: 333,
-                missed_down: 898
-            }
-        ),
-        Told::Told(Span(210))
-    );
-}
-
-#[test]
-fn slepota_ne_othodit_nazad_pri_polnom_zrenii() {
-    assert_eq!(told(Told::<Span>::Blind, Sight::Full), Told::Blind);
+    for (was, sight, expected) in table {
+        assert_eq!(told(was, sight), expected, "{was:?} при {sight:?}");
+    }
 }
