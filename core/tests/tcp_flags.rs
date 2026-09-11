@@ -1,204 +1,109 @@
+//! ФЛАГИ TCP — четыре закона вместо тридцати двух случаев.
+//!
+//! Прежде здесь стояло 32 теста, и устроены они были как ТАБЛИЦА, записанная по строке на тест:
+//! `display_syn`, `display_ack`, `display_fin`, … Замер 11.09.2026 показал, чего такая таблица
+//! стоит:
+//!
+//! * она НЕ ПОЛНА и не умеет этого заметить. Флагов шесть, отдельных тестов печати было пять —
+//!   `PSH` своей строки не имел, он покрывался только парой. Добавь седьмой флаг (в TCP есть `ECE`
+//!   и `CWR`) — не покраснеет ни один из тридцати двух;
+//! * восемь тестов проверяли ЧУЖУЮ библиотеку: `from_bits_truncate`, `from_bits`, `|`, `&`,
+//!   `is_empty`, `bits`-туда-обратно — всё это механика крейта `bitflags`, которую мы не писали и
+//!   чинить не будем. Свой тест на чужой код не ловит наших ошибок, зато краснеет от чужих правок.
+//!
+//! Здесь вместо них ИСЧЕРПЫВАЮЩИЙ ПЕРЕБОР: флагов шесть, значений 64, и перебрать их все дешевле,
+//! чем выбирать представителей. Выбор представителей — то самое место, где `PSH` и потерялся.
+//!
+//! Каждый закон формулируется НЕЗАВИСИМО от реализации — через сырые биты, тогда как код работает
+//! через `contains`. Повтори тест реализацию — он стал бы тавтологией, зелёной при любой ошибке,
+//! кроме опечатки.
+
 use reflex_core::types::TcpFlags;
 
-// --- Display implementation ---
-
-#[test]
-fn display_syn() {
-    assert_eq!(format!("{}", TcpFlags::SYN), "S");
+/// Все 64 значения шести бит. Перебор, а не выборка: закон о КАЖДОМ, и «каждый» здесь исчислим.
+fn every_value() -> impl Iterator<Item = TcpFlags> {
+    (0u8..64).map(TcpFlags::from_bits_truncate)
 }
 
+/// ПЕЧАТЬ ЕСТЬ БУКВЫ УСТАНОВЛЕННЫХ БИТОВ В ПОРЯДКЕ `SAPFRU`, А ПУСТОЕ ЗНАЧЕНИЕ — СЛОВО `none`.
+///
+/// Порядок не алфавитный и не битовый: он читательский (`SA` привычнее `AS`), и потому обязан быть
+/// закреплён — иначе первая же правка перетасует вывод, на который смотрят глазами в логе.
 #[test]
-fn display_ack() {
-    assert_eq!(format!("{}", TcpFlags::ACK), "A");
+fn печать_есть_буквы_взведённых_битов_в_читательском_порядке() {
+    for value in every_value() {
+        let bits = value.bits();
+        let expected: String = [(0x02, 'S'), (0x10, 'A'), (0x08, 'P'), (0x01, 'F'), (0x04, 'R'), (0x20, 'U')]
+            .into_iter()
+            .filter(|(bit, _)| bits & bit != 0)
+            .map(|(_, letter)| letter)
+            .collect();
+        let expected = match expected.is_empty() {
+            true => "none".to_string(),
+            false => expected,
+        };
+        assert_eq!(format!("{value}"), expected, "значение {bits:#04x}");
+    }
 }
 
+/// У КАЖДОГО ОБЪЯВЛЕННОГО ФЛАГА ЕСТЬ СВОЯ БУКВА, И БУКВЫ РАЗЛИЧНЫ.
+///
+/// Вот закон, которого таблица случаев не держала вовсе. Флаг, добавленный без ветки в `Display`,
+/// печатался бы как `none` — то есть неотличимо от пустого значения, — и ни один прежний тест
+/// этого не замечал. Здесь краснеет сразу: перебор идёт по `TcpFlags::all()`, а не по списку в
+/// тесте, и новичок попадает в него сам.
 #[test]
-fn display_syn_ack() {
-    let flags = TcpFlags::SYN | TcpFlags::ACK;
-    assert_eq!(format!("{}", flags), "SA");
+fn каждый_флаг_печатается_своей_буквой_и_буквы_различны() {
+    let mut seen: Vec<String> = Vec::new();
+    for flag in TcpFlags::all().iter() {
+        let printed = format!("{flag}");
+        assert_ne!(
+            printed, "none",
+            "флаг {flag:?} объявлен, а ветки в `Display` не имеет — печатается как пустое значение"
+        );
+        assert!(
+            !seen.contains(&printed),
+            "буква {printed:?} занята дважды: флаг {flag:?} неотличим от соседа"
+        );
+        seen.push(printed);
+    }
+    assert_eq!(seen.len(), 6, "флагов стало иное число — закон надо перечитать, а не подправить");
 }
 
+/// ПРЕДИКАТЫ ОТВЕЧАЮТ СВОЕМУ ИМЕНИ НА ВСЕХ 64 ЗНАЧЕНИЯХ.
+///
+/// `is_syn` — ЧИСТЫЙ `SYN`: рукопожатие начинает он, а `SYN+ACK` есть ответ, и слить их значило бы
+/// считать открытием разговора его подтверждение. Остальные четыре — «бит(ы) взведены», без
+/// требований к соседям.
+///
+/// Ожидание записано сырыми битами, потому что реализация написана через `contains`: два разных
+/// способа сказать одно, и расхождение между ними — находка, а не шум.
 #[test]
-fn display_psh_ack() {
-    let flags = TcpFlags::PSH | TcpFlags::ACK;
-    assert_eq!(format!("{}", flags), "AP");
+fn предикаты_отвечают_своему_имени_на_всех_значениях() {
+    for value in every_value() {
+        let bits = value.bits();
+        assert_eq!(value.is_syn(), bits & 0x12 == 0x02, "is_syn на {bits:#04x}");
+        assert_eq!(value.is_syn_ack(), bits & 0x12 == 0x12, "is_syn_ack на {bits:#04x}");
+        assert_eq!(value.is_rst(), bits & 0x04 != 0, "is_rst на {bits:#04x}");
+        assert_eq!(value.is_fin(), bits & 0x01 != 0, "is_fin на {bits:#04x}");
+        assert_eq!(value.is_psh_ack(), bits & 0x18 == 0x18, "is_psh_ack на {bits:#04x}");
+    }
 }
 
+/// ЧИСТЫЙ `SYN` И ОТВЕТ НА НЕГО — РАЗНЫЕ СОБЫТИЯ, И НИ ОДНО ЗНАЧЕНИЕ НЕ ОБА СРАЗУ.
+///
+/// Отдельно от предыдущего нарочно: тот проверяет предикаты поодиночке и прошёл бы, объяви оба
+/// истину на `SYN+ACK`. Здесь предмет — их ВЗАИМНОЕ отношение, то самое, на котором стоит счёт
+/// открытых разговоров.
 #[test]
-fn display_fin() {
-    assert_eq!(format!("{}", TcpFlags::FIN), "F");
-}
-
-#[test]
-fn display_rst() {
-    assert_eq!(format!("{}", TcpFlags::RST), "R");
-}
-
-#[test]
-fn display_urg() {
-    assert_eq!(format!("{}", TcpFlags::URG), "U");
-}
-
-#[test]
-fn display_all_flags() {
-    let all = TcpFlags::SYN
-        | TcpFlags::ACK
-        | TcpFlags::PSH
-        | TcpFlags::FIN
-        | TcpFlags::RST
-        | TcpFlags::URG;
-    assert_eq!(format!("{}", all), "SAPFRU");
-}
-
-#[test]
-fn display_empty_flags() {
-    let empty = TcpFlags::empty();
-    assert_eq!(format!("{}", empty), "none");
-}
-
-#[test]
-fn display_fin_ack() {
-    let flags = TcpFlags::FIN | TcpFlags::ACK;
-    assert_eq!(format!("{}", flags), "AF");
-}
-
-// --- Flag methods ---
-
-#[test]
-fn is_syn_pure_syn() {
-    assert!(TcpFlags::SYN.is_syn());
-}
-
-#[test]
-fn is_syn_false_for_syn_ack() {
-    let flags = TcpFlags::SYN | TcpFlags::ACK;
-    assert!(!flags.is_syn());
-}
-
-#[test]
-fn is_syn_ack_true() {
-    let flags = TcpFlags::SYN | TcpFlags::ACK;
-    assert!(flags.is_syn_ack());
-}
-
-#[test]
-fn is_syn_ack_false_for_pure_syn() {
-    assert!(!TcpFlags::SYN.is_syn_ack());
-}
-
-#[test]
-fn is_rst_true() {
-    assert!(TcpFlags::RST.is_rst());
-}
-
-#[test]
-fn is_rst_false_for_ack() {
-    assert!(!TcpFlags::ACK.is_rst());
-}
-
-#[test]
-fn is_fin_true() {
-    assert!(TcpFlags::FIN.is_fin());
-}
-
-#[test]
-fn is_fin_false_for_syn() {
-    assert!(!TcpFlags::SYN.is_fin());
-}
-
-#[test]
-fn is_psh_ack_true() {
-    let flags = TcpFlags::PSH | TcpFlags::ACK;
-    assert!(flags.is_psh_ack());
-}
-
-#[test]
-fn is_psh_ack_false_for_pure_psh() {
-    assert!(!TcpFlags::PSH.is_psh_ack());
-}
-
-// --- Bitflag operations ---
-
-#[test]
-fn from_bits_truncate_known() {
-    let flags = TcpFlags::from_bits_truncate(0x02);
-    assert_eq!(flags, TcpFlags::SYN);
-}
-
-#[test]
-fn from_bits_truncate_combined() {
-    let flags = TcpFlags::from_bits_truncate(0x12); // SYN | ACK
-    assert_eq!(flags, TcpFlags::SYN | TcpFlags::ACK);
-}
-
-#[test]
-fn from_bits_truncate_unknown_bits_stripped() {
-    let flags = TcpFlags::from_bits_truncate(0xFF);
-    assert!(flags.contains(TcpFlags::SYN));
-    assert!(flags.contains(TcpFlags::ACK));
-    assert!(flags.contains(TcpFlags::FIN));
-    assert!(flags.contains(TcpFlags::RST));
-    assert!(flags.contains(TcpFlags::PSH));
-    assert!(flags.contains(TcpFlags::URG));
-}
-
-#[test]
-fn from_bits_exact() {
-    let flags = TcpFlags::from_bits(0x12);
-    assert_eq!(flags, Some(TcpFlags::SYN | TcpFlags::ACK));
-}
-
-#[test]
-fn from_bits_invalid_returns_none() {
-    // 0x80 is not a defined flag
-    let flags = TcpFlags::from_bits(0x80);
-    assert!(flags.is_none());
-}
-
-#[test]
-fn bitwise_or_combines_flags() {
-    let flags = TcpFlags::SYN | TcpFlags::FIN;
-    assert!(flags.contains(TcpFlags::SYN));
-    assert!(flags.contains(TcpFlags::FIN));
-    assert!(!flags.contains(TcpFlags::ACK));
-}
-
-#[test]
-fn bitwise_and_intersects_flags() {
-    let a = TcpFlags::SYN | TcpFlags::ACK;
-    let b = TcpFlags::ACK | TcpFlags::PSH;
-    let intersection = a & b;
-    assert_eq!(intersection, TcpFlags::ACK);
-}
-
-#[test]
-fn is_empty_true_for_no_flags() {
-    assert!(TcpFlags::empty().is_empty());
-}
-
-#[test]
-fn is_empty_false_for_syn() {
-    assert!(!TcpFlags::SYN.is_empty());
-}
-
-#[test]
-fn bits_roundtrip() {
-    let original = TcpFlags::SYN | TcpFlags::ACK | TcpFlags::PSH;
-    let bits = original.bits();
-    let reconstructed = TcpFlags::from_bits(bits).unwrap();
-    assert_eq!(original, reconstructed);
-}
-
-// --- rst with ack ---
-
-#[test]
-fn is_rst_true_even_with_ack() {
-    let flags = TcpFlags::RST | TcpFlags::ACK;
-    assert!(flags.is_rst());
-}
-
-#[test]
-fn is_fin_true_even_with_ack() {
-    let flags = TcpFlags::FIN | TcpFlags::ACK;
-    assert!(flags.is_fin());
+fn открытие_разговора_и_ответ_на_него_не_совпадают_ни_на_одном_значении() {
+    for value in every_value() {
+        assert!(
+            !(value.is_syn() && value.is_syn_ack()),
+            "значение {:#04x} объявлено и открытием, и ответом разом",
+            value.bits()
+        );
+    }
+    assert!(TcpFlags::SYN.is_syn() && !TcpFlags::SYN.is_syn_ack());
+    assert!((TcpFlags::SYN | TcpFlags::ACK).is_syn_ack() && !(TcpFlags::SYN | TcpFlags::ACK).is_syn());
 }
