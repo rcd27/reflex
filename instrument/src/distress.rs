@@ -21,6 +21,15 @@ pub enum Distress {
     /// состоялось вовсе — отдельная буква, не `NoBytes`/`Silence` (те про УЖЕ открытое соединение).
     /// Блок по адресу, до всякого имени; `after_ms` — от первого `SYN` до повтора (RTO ядра).
     Blackhole { after_ms: u32 },
+    /// ЦЕЛЬ ОТВЕЧАЕТ, А ОТВЕТЫ НЕ ДОХОДЯТ: она повторяет один и тот же сегмент с нарастающим RTO,
+    /// и прогресса нет. Отдельная буква, не `Silence` и не `Throttled`, и различие проверяемое:
+    /// молчание про ОТСУТСТВИЕ байтов (а они идут), троттлинг про СКОРОСТЬ (а тут её не «мало» —
+    /// её нет вовсе, повтор не есть прогресс). Слей с любым из них — и фильтр «в обратную сторону»
+    /// станет неотличим от медленного канала, каким он и выглядел до этой буквы.
+    ///
+    /// `retries` — сколько раз цель повторила, не продвинувшись. Величина, а не флаг: одиночный
+    /// повтор бывает от обычной потери, ряд повторов — уже заявление стороны.
+    Unreached { retries: u32 },
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
@@ -40,6 +49,7 @@ impl Distress {
             Distress::NoBytes => "no_bytes",
             Distress::Retransmit { .. } => "retransmit",
             Distress::Blackhole { .. } => "blackhole",
+            Distress::Unreached { .. } => "unreached",
             Distress::Poisoned => "poisoned",
             Distress::Diverged { .. } => "diverged",
         }
@@ -61,6 +71,9 @@ impl Distress {
             Distress::Throttled { bps } => format!("{} КБ/с", bps / 1024),
             Distress::Retransmit { after_ms } => format!("повтор через {after_ms} мс"),
             Distress::Blackhole { after_ms } => format!("SYN без ответа через {after_ms} мс"),
+            Distress::Unreached { retries } => {
+                format!("цель повторила ответ {retries} раза — до клиента не дошло")
+            }
             Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
         }
@@ -131,6 +144,7 @@ impl core::fmt::Display for Distress {
             Distress::NoBytes => f.write_str("no_bytes"),
             Distress::Retransmit { after_ms } => write!(f, "retransmit after_ms={after_ms}"),
             Distress::Blackhole { after_ms } => write!(f, "blackhole after_ms={after_ms}"),
+            Distress::Unreached { retries } => write!(f, "unreached retries={retries}"),
             Distress::Poisoned => f.write_str("poisoned"),
             Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
         }

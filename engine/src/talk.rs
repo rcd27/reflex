@@ -17,9 +17,11 @@ use crate::parse::{Datagram, Wire};
 /// уронить наблюдение своим шагом.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Talk {
-    /// Наибольший `seq + длина` от КЛИЕНТА. Сегмент раньше него — ПОВТОР (просьба ушла второй раз):
-    /// для человека это «страница не грузится», а не «грузится дальше».
-    frontier: Option<u32>,
+    /// Наибольший `seq + длина` по КАЖДОЙ стороне: `(вверх, вниз)`. Сегмент раньше своей границы —
+    /// ПОВТОР. У клиента это «просьба ушла второй раз» («страница не грузится», а не «грузится
+    /// дальше»); у цели — «ответ ушёл и не дошёл», и без второй границы этот класс был невидим
+    /// вовсе (см. [`crate::Seen::Restated`]). Пара по направлению — тот же приём, что у `head_out`.
+    frontier: (Option<u32>, Option<u32>),
     /// Выдана ли уже голова потока — по направлению. Первый сегмент с данными несёт то, по чему
     /// узнаётся протокол; последующие — объём. Опознание работает по началу разговора, один раз.
     head_out: (bool, bool),
@@ -67,10 +69,11 @@ fn behind_frontier(seq: u32, payload: &[u8], frontier: Option<u32>) -> bool {
     }
 }
 
-/// Куда сдвинулась граница клиента. Только вперёд: повтор границы не двигает, иначе второй повтор
-/// перестал бы считаться повтором.
-fn moved(seq: u32, payload: &[u8], from_client: bool, frontier: Option<u32>) -> Option<u32> {
-    match from_client && !payload.is_empty() {
+/// Куда сдвинулась граница СВОЕЙ стороны. Только вперёд: повтор границы не двигает, иначе второй
+/// повтор перестал бы считаться повтором. Сторону выбирает вызывающий — функция о направлении не
+/// знает и знать не должна, закон у обеих сторон один.
+fn moved(seq: u32, payload: &[u8], frontier: Option<u32>) -> Option<u32> {
+    match !payload.is_empty() {
         false => frontier,
         true => {
             let end = seq.wrapping_add(payload.len() as u32);
@@ -115,8 +118,15 @@ fn anywhere(payload: &[u8], from_client: bool, repeat: bool, head: bool) -> Opti
                 count: payload.len() as u32,
             },
         }),
-        (true, false, false) => Some(Seen::Received {
-            count: payload.len() as u32,
+        (true, false, false) => Some(match repeat {
+            // Повтор ЦЕЛИ — своя буква: ответ ушёл и не дошёл. Схлопни его в «цель отдала», и
+            // обратный фильтр стал бы неотличим от медленного канала (докблок `Seen::Restated`).
+            true => Seen::Restated {
+                count: payload.len() as u32,
+            },
+            false => Seen::Received {
+                count: payload.len() as u32,
+            },
         }),
         (false, _, _) => None,
     }
@@ -177,12 +187,25 @@ impl Talks {
     pub fn read(&mut self, wire: &Wire<'_>) -> Option<SeenTcp> {
         let from_client = matches!(wire.dir, Dir::Up);
         let talk = self.talks.get(&wire.flow).copied().unwrap_or_default();
-        let repeat = from_client && behind_frontier(wire.header.seq, wire.payload, talk.frontier);
+        let mine = match from_client {
+            true => talk.frontier.0,
+            false => talk.frontier.1,
+        };
+        let repeat = behind_frontier(wire.header.seq, wire.payload, mine);
         let head = heads(wire.payload, from_client, talk.head_out);
         self.talks.insert(
             wire.flow,
             Talk {
-                frontier: moved(wire.header.seq, wire.payload, from_client, talk.frontier),
+                frontier: match from_client {
+                    true => (
+                        moved(wire.header.seq, wire.payload, talk.frontier.0),
+                        talk.frontier.1,
+                    ),
+                    false => (
+                        talk.frontier.0,
+                        moved(wire.header.seq, wire.payload, talk.frontier.1),
+                    ),
+                },
                 head_out: marked(talk.head_out, head, from_client),
                 // У соединения ждать нечего: имя в первом сегменте открытым текстом. Счётчик ведётся
                 // всё равно — разговор может сменить транспорт на том же ключе.
@@ -322,7 +345,7 @@ mod tests {
     /// Продолжение потока — не повтор: следующий сегмент начинается ровно с границы (разница ноль).
     #[test]
     fn a_continuing_segment_is_not_a_repeat() {
-        let frontier = moved(1000, b"hello", true, None);
+        let frontier = moved(1000, b"hello", None);
         assert_eq!(frontier, Some(1005));
         assert!(!behind_frontier(1005, b"more", frontier));
     }
@@ -330,7 +353,7 @@ mod tests {
     /// Повтор того же — повтор: та же просьба ушла второй раз.
     #[test]
     fn the_same_segment_sent_again_is_a_repeat() {
-        let frontier = moved(1000, b"hello", true, None);
+        let frontier = moved(1000, b"hello", None);
         assert!(behind_frontier(1000, b"hello", frontier));
     }
 
@@ -338,12 +361,12 @@ mod tests {
     /// после продвижения: на единственном сегменте граница совпадает при любом правиле.
     #[test]
     fn a_repeat_does_not_move_the_frontier_back() {
-        let first = moved(1000, b"hello", true, None);
-        let advanced = moved(1005, b"world!", true, first);
+        let first = moved(1000, b"hello", None);
+        let advanced = moved(1005, b"world!", first);
         assert_eq!(advanced, Some(1011), "граница не продвинулась");
 
         // Повтор ПЕРВОГО сегмента: он позади границы и откатывать её не смеет.
-        let after_repeat = moved(1000, b"hello", true, advanced);
+        let after_repeat = moved(1000, b"hello", advanced);
         assert_eq!(
             after_repeat, advanced,
             "повтор откатил границу: следующая ретрансмиссия сойдёт за новую просьбу"
@@ -351,11 +374,31 @@ mod tests {
         assert!(behind_frontier(1005, b"world!", after_repeat));
     }
 
-    /// Границу двигает только клиент: ответы цели идут своей нумерацией.
+    /// ГРАНИЦЫ У СТОРОН РАЗНЫЕ, и это не удобство, а единственный способ увидеть повтор ЦЕЛИ.
+    ///
+    /// Прежде граница была одна, клиентская: ответы цели шли своей нумерацией и её не двигали, а
+    /// повтор цели схлопывался в обычное «цель отдала». Цена схлопывания — целый класс блокировок
+    /// «в обратную сторону», неотличимый от медленного канала (докблок `Seen::Restated`).
+    ///
+    /// Закон у обеих сторон ОДИН (`moved` о направлении не знает), а память — своя: сегмент цели с
+    /// номером из её потока не смеет ни двигать клиентскую границу, ни считаться по ней повтором.
     #[test]
-    fn the_servers_bytes_do_not_move_the_clients_frontier() {
-        let frontier = moved(1000, b"hello", true, None);
-        assert_eq!(moved(7000, b"answer", false, frontier), frontier);
+    fn each_side_keeps_its_own_frontier() {
+        let up = moved(1000, b"hello", None);
+        let down = moved(7000, b"answer", None);
+
+        assert_ne!(up, down, "нумерация у сторон своя");
+        // Сегмент цели, сравненный с ЧУЖОЙ границей, выглядел бы повтором из-за одной лишь
+        // разницы номеров — ровно так и рождалась бы ложная тревога, будь память общей.
+        assert!(behind_frontier(1000, b"answer", down));
+        // Сегмент, стоящий НА границе, — продолжение, а не повтор: граница есть «докуда дошло».
+        assert!(
+            !behind_frontier(7006, b"more", down),
+            "следующий по порядку сегмент повтором не является"
+        );
+        // А тот же самый, посланный второй раз, ВИДЕН повтором — это и есть предмет второй
+        // границы: без неё сравнивать ответ цели было бы не с чем.
+        assert!(behind_frontier(7000, b"answer", down));
     }
 
     /// Голова потока выдаётся один раз на направление: опознание работает по началу разговора.
@@ -480,9 +523,9 @@ mod tests {
     /// Пустой сегмент (чистый `ACK`) не повтор и границы не двигает.
     #[test]
     fn a_bare_ack_is_neither_a_repeat_nor_progress() {
-        let frontier = moved(1000, b"hello", true, None);
+        let frontier = moved(1000, b"hello", None);
         assert!(!behind_frontier(1000, b"", frontier));
-        assert_eq!(moved(1000, b"", true, frontier), frontier);
+        assert_eq!(moved(1000, b"", frontier), frontier);
     }
 
     /// Обёртка номеров переживается: `seq` 32-битен, на 4 ГБ потока начинается заново. Прямое
@@ -490,7 +533,7 @@ mod tests {
     #[test]
     fn the_sequence_wrap_is_survived() {
         let near_end = u32::MAX - 2;
-        let frontier = moved(near_end, b"abcde", true, None);
+        let frontier = moved(near_end, b"abcde", None);
         // Продолжение после обёртки: 4294967293 + 5 = 2 (mod 2^32).
         assert_eq!(frontier, Some(2));
         assert!(!behind_frontier(2, b"next", frontier));

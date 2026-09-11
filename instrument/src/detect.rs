@@ -71,8 +71,11 @@ impl reflex_core::mealy::Mealy for RstInstrument {
                         },
                         smallvec::smallvec![Distress::Rst],
                     ),
-                    // Цель заговорила — дальше её сброс неотличим от конца разговора.
-                    (SeenTcp::Anywhere(Seen::Received { .. }), _fired, _answered) => (
+                    // Цель заговорила — дальше её сброс неотличим от конца разговора. Повтор цели
+                    // здесь наравне с первым ответом: она ГОВОРИЛА, а перехват тем и отличается,
+                    // что цель не сказала ничего.
+                    (SeenTcp::Anywhere(Seen::Received { .. }), _fired, _answered)
+                    | (SeenTcp::Anywhere(Seen::Restated { .. }), _fired, _answered) => (
                         Self {
                             answered: true,
                             ..self
@@ -247,13 +250,18 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                         true => self.bytes,
                         false => self.bytes + head.len() as u32,
                     },
+                    // Повтор ЦЕЛИ — тоже её байты: для ЭТОГО прибора предмет «ответила ли
+                    // вообще», и повторяющая цель ответила. Что повтор означает отсутствие
+                    // ПРОГРЕССА — предмет другого прибора, и путать их значило бы заставить
+                    // тишину кричать там, где байты идут.
+                    Seen::Restated { count } => self.bytes + count,
                     Seen::Sent { .. } | Seen::Resent { .. } | Seen::Closed { .. } => self.bytes,
                 };
                 // Просьба вверх открывает ожидание, ответ вниз закрывает.
                 let awaiting = match &input {
                     Seen::Sent { .. } | Seen::Resent { .. } => true,
                     Seen::Payload { from_client, .. } => *from_client,
-                    Seen::Received { .. } => false,
+                    Seen::Received { .. } | Seen::Restated { .. } => false,
                     Seen::Closed { .. } => self.awaiting,
                 };
                 let watch = match &input {
@@ -261,6 +269,7 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                     Seen::Sent { .. }
                     | Seen::Resent { .. }
                     | Seen::Received { .. }
+                    | Seen::Restated { .. }
                     | Seen::Payload { .. } => self.watch,
                 };
                 // Часы молчания НЕ двигает клиентский ПОВТОР: ретрансмиссия той же просьбы есть
@@ -272,6 +281,10 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                     Seen::Resent { .. } => self.last.or(Some(at)),
                     Seen::Sent { .. }
                     | Seen::Received { .. }
+                    // Повтор цели часы молчания ДВИГАЕТ — в отличие от повтора клиента: молчит
+                    // здесь цель, а она как раз говорит. Не сдвинь — тишина подтвердилась бы на
+                    // разговоре, где цель шлёт байты каждую секунду.
+                    | Seen::Restated { .. }
                     | Seen::Payload { .. }
                     | Seen::Closed { .. } => Some(at),
                 };
@@ -472,7 +485,11 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                         asked_ever: true,
                         ..self
                     },
-                    SeenTcp::Anywhere(Seen::Received { count }) => Self {
+                    // Повтор цели — байты вниз наравне с первым ответом: прибор мерит ОБЪЁМ, и
+                    // повторённый байт по проводу прошёл. Что он не принёс прогресса — не его
+                    // предмет.
+                    SeenTcp::Anywhere(Seen::Received { count })
+                    | SeenTcp::Anywhere(Seen::Restated { count }) => Self {
                         down: self.down + count as u64,
                         ..self
                     },
@@ -703,7 +720,7 @@ impl reflex_core::mealy::Mealy for ChokedInstrument {
                         sent: waiting.sent + count as u64,
                         ..waiting
                     },
-                    Seen::Received { count } => Self {
+                    Seen::Received { count } | Seen::Restated { count } => Self {
                         received: waiting.received + count as u64,
                         ..waiting
                     },

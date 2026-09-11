@@ -258,7 +258,8 @@ pub fn engine<C: IntoCarrier>(carrier: C) -> Engine<C> {
 pub struct Observed<W> {
     pub flow: Flow,
     /// Ключ цели — расслоение §4 (`Named | Unnamed`). Им цель ключуется в слое; ярлык для человека
-    /// получается из него [`label`], а не наоборот: обратный ход терял бы тег.
+    /// получается ИЗ НЕГО (приватная `label` рядом в этом файле), а не наоборот: обратный ход
+    /// терял бы тег, и крафт-SNI, равный записи адреса, схлопнулся бы с безымянной целью.
     pub key: TargetKey<Box<str>>,
     pub wire: W,
 }
@@ -433,6 +434,29 @@ impl Silence {
     /// Сколько молчания терпим, прежде чем назвать это тихим дропом.
     pub fn after(after: Duration) -> Silence {
         Silence { after }
+    }
+}
+
+/// Детектор фильтра «В ОБРАТНУЮ СТОРОНУ»: цель отвечает, ответы не доходят, и она повторяет одно и
+/// то же с нарастающим RTO. До этой двери класс был невидим ЦЕЛИКОМ — не «виден хуже», а невидим:
+/// тишина и захлёбывание не видят беды (байты идут), троттлинг видит скорость, повтор клиента ловит
+/// другую сторону, сброса нет вовсе. Предмет транспортно-независим: работает и на TCP, и на QUIC.
+pub struct Unreached;
+
+impl Unreached {
+    /// Ответы цели не доходят до клиента.
+    pub fn answers() -> Unreached {
+        Unreached
+    }
+}
+
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Unreached {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, Seen, _, Distress, Distress>(
+            reflex_instrument::unreached::UnreachedInstrument::new(),
+        ))
     }
 }
 

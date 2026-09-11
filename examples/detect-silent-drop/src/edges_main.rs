@@ -65,6 +65,7 @@ fn react(target: &str, distress: Distress) {
         Distress::Silence { .. }
         | Distress::Rst
         | Distress::Throttled { .. }
+        | Distress::Unreached { .. }
         | Distress::Poisoned => report!(
             "НЕОЖИДАННО для этой цепочки: «{target}» {distress:?} — детектора, рождающего это, здесь нет"
         ),

@@ -642,6 +642,14 @@ pub fn names(seen: Log<Letter>) -> Vec<String> {
 
 /// Минимальный кадр IPv4+TCP — ровно то, что очередь ядра кладёт в руки: без Ethernet.
 fn frame(src_port: u16, dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+    frame_at(src_port, dst_port, flags, 0, payload)
+}
+
+/// То же с НОМЕРОМ. Без него сочинённый провод не умел выразить ПРОДВИЖЕНИЕ: все кадры шли с
+/// нулевым `seq`, то есть каждый второй ответ цели выглядел её повтором. Пока повтор цели ничего не
+/// значил, это было безразлично; с буквой [`crate::Seen::Restated`] стало половиной закона —
+/// «ответы не доходят» проверяемо лишь против «ответы доходят».
+fn frame_at(src_port: u16, dst_port: u16, flags: u8, seq: u32, payload: &[u8]) -> Vec<u8> {
     let total = 20 + 20 + payload.len();
     let mut packet = vec![0u8; total];
     packet[0] = 0x45;
@@ -651,6 +659,7 @@ fn frame(src_port: u16, dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
     packet[16..20].copy_from_slice(&[93, 184, 216, 34]);
     packet[20..22].copy_from_slice(&src_port.to_be_bytes());
     packet[22..24].copy_from_slice(&dst_port.to_be_bytes());
+    packet[24..28].copy_from_slice(&seq.to_be_bytes());
     packet[32] = 5 << 4;
     packet[33] = flags;
     packet[34..36].copy_from_slice(&64240u16.to_be_bytes());
@@ -672,6 +681,11 @@ pub fn request(src_port: u16) -> Vec<u8> {
 /// от молчания: сброс, инжект, ответ с нагрузкой. Без него сочинить можно было только просьбы
 /// клиента, и приборы, читающие ответ, оставались непроверяемы на сочинённом проводе.
 fn from_target(dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+    from_target_at(dst_port, flags, 0, payload)
+}
+
+/// Кадр цели С НОМЕРОМ — см. [`frame_at`]: без номера продвижение цели невыразимо.
+fn from_target_at(dst_port: u16, flags: u8, seq: u32, payload: &[u8]) -> Vec<u8> {
     let total = 20 + 20 + payload.len();
     let mut packet = vec![0u8; total];
     packet[0] = 0x45;
@@ -681,6 +695,7 @@ fn from_target(dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
     packet[16..20].copy_from_slice(&[10, 0, 0, 1]);
     packet[20..22].copy_from_slice(&443u16.to_be_bytes());
     packet[22..24].copy_from_slice(&dst_port.to_be_bytes());
+    packet[24..28].copy_from_slice(&seq.to_be_bytes());
     packet[32] = 5 << 4;
     packet[33] = flags;
     packet[34..36].copy_from_slice(&64240u16.to_be_bytes());
@@ -697,6 +712,13 @@ pub fn rst(client_port: u16) -> Vec<u8> {
 /// им и кормятся приборы величины ([`reflex::Throttled`](crate::Throttled)).
 pub fn reply(client_port: u16, bytes: usize) -> Vec<u8> {
     from_target(client_port, 0x18, &vec![0x41; bytes])
+}
+
+/// ОТВЕТ ЦЕЛИ С НОМЕРОМ — им выражается ПРОДВИЖЕНИЕ (номер растёт) и ПОВТОР (номер тот же).
+/// Ответ без номера ([`reply`]) идёт с нуля, и второй такой же цель повторяет — для проверки
+/// повтора это удобно, для проверки продвижения непригодно.
+pub fn reply_at(client_port: u16, seq: u32, bytes: usize) -> Vec<u8> {
+    from_target_at(client_port, 0x18, seq, &vec![0x41; bytes])
 }
 
 /// ЧУЖОЙ кадр: не наш порт, транспорт его не опознает (`observe → Observation::Foreign`).
