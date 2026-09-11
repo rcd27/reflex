@@ -262,17 +262,11 @@ fn crypto_at(payload: &[u8], at: usize) -> Option<(u64, &[u8], usize)> {
     Some((offset, data, data_at + length as usize))
 }
 
-/// Склеить куски по сдвигам. Дыры не заполняются: неполный `ClientHello` лучше склеенного
-/// неверно — из первого имя просто не достанется, из второго достанется ЧУЖОЕ.
+/// Склеить куски по сдвигам — ЗАКОН ОБЩИЙ, [`crate::splice::by_offset`]. Здесь остался только
+/// зов: у TLS поверх TCP предмет тот же (браузерное приветствие не влезает в сегмент), и две копии
+/// одного закона разошлись бы молча.
 fn assemble(pieces: Vec<(u64, Vec<u8>)>) -> Vec<u8> {
-    let ordered: std::collections::BTreeMap<u64, Vec<u8>> = pieces.into_iter().collect();
-    ordered.into_iter().fold(Vec::new(), |acc, (offset, data)| {
-        match offset as usize == acc.len() {
-            true => acc.into_iter().chain(data).collect(),
-            // Кусок не встык — дальше склеивать нельзя.
-            false => acc,
-        }
-    })
+    crate::splice::by_offset(&pieces)
 }
 
 /// Куски `ClientHello` из одной датаграммы — со сдвигами, как лежат на проводе. Кусками, не

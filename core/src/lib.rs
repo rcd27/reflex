@@ -33,6 +33,9 @@ pub mod meter;
 pub mod notice;
 pub mod parse;
 pub mod serves;
+// СКЛЕЙКА ПО СДВИГАМ — один закон на QUIC и на TLS поверх TCP. Не под фичей: зависимостей нет, а
+// нужен он обоим.
+pub mod splice;
 pub mod stack;
 pub mod tape;
 // ЗАПИСАННЫЙ ПРОВОД — симуляционный источник (#295, срез 0). Под фичей, потому что читать файлы

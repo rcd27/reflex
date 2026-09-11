@@ -314,7 +314,28 @@ pub struct Tcp;
 struct Ident {
     dst: Addr,
     naming: Naming<Box<str>>,
+    /// Куски КЛИЕНТСКОГО приветствия со сдвигами от его начала — пока имя не названо.
+    ///
+    /// Копятся потому, что `ClientHello` живого браузера в один сегмент НЕ ВЛЕЗАЕТ: замер на живом
+    /// разговоре — приветствие 1561 байт, в первом сегменте 118, имя лежит дальше. Пока склейки не
+    /// было, имя с браузерного трафика не поднималось ПОЧТИ НИКОГДА, и цель ключевалась адресом.
+    ///
+    /// Цена этого хуже пропуска: продукт, лечащий по цели, метит АДРЕС, а на одном адресе живут
+    /// чужие имена — в обход уводятся посторонние разговоры, о которых не знает никто. Не «не
+    /// увидели беду», а «навредили непричастному».
+    ///
+    /// Почему все проверки были зелены: фикстуры лаборатории сняты `curl`, у которого приветствие
+    /// короткое (517 байт) и влезает в сегмент. Корпус, собранный одним клиентом, зелен по
+    /// построению.
+    hello: Vec<(u64, Vec<u8>)>,
+    /// Номер первого байта приветствия — от него считаются сдвиги кусков.
+    hello_at: Option<u32>,
 }
+
+/// Потолок копления приветствия. `ClientHello` — одна запись TLS, а запись не бывает длиннее
+/// 16384 байт плюс заголовок (RFC 8446 §5.1); что не собралось к этому, не соберётся никогда, и
+/// копить дальше значило бы платить памятью за всякий поток, начавшийся с байта `0x16`.
+const HELLO_CEILING: usize = 16 * 1024 + 512;
 
 impl Ident {
     /// Ключ цели — расслоение §4: имя, если цепочка его дала, иначе адрес. Отдаём КЛЮЧ, а не строку:
@@ -323,6 +344,49 @@ impl Ident {
     /// имени под контролем противника, значит коллизия достижима, а не редка.
     fn key(&self) -> TargetKey<Box<str>> {
         keyed(self.naming.clone(), self.dst, host_of)
+    }
+}
+
+/// ПОДНЯТЬ ИМЯ ИЗ ПРИВЕТСТВИЯ, СКОЛЬКИМИ БЫ СЕГМЕНТАМИ ОНО НИ ПРИШЛО.
+///
+/// Сперва пробуется один сегмент — так имя поднимается у короткого приветствия, не заводя копления
+/// вовсе. Не поднялось — байты кладутся в склейку по СДВИГУ (`crate::splice`, тот же закон, что у
+/// QUIC), и проба повторяется на склеенном: дыра склейку останавливает, и из неполного имя просто
+/// не достанется — в отличие от склеенного через дыру, откуда достанется ЧУЖОЕ.
+///
+/// Копится только КЛИЕНТСКОЕ и только начатое байтом рукопожатия (`0x16`): иначе всякий поток —
+/// HTTP, почта, что угодно — платил бы памятью за чужой предмет.
+fn name_from_hello(ident: &mut Ident, wire: &reflex_engine::parse::Wire<'_>) {
+    if !matches!(ident.naming, Naming::Awaited) {
+        return;
+    }
+    if let Some(sni) = tls::extract_sni(wire.payload) {
+        ident.naming = Naming::Spoken(sni.into());
+        // Имя названо — копить больше нечего: держать куски дальше значило бы платить памятью за
+        // уже установленное.
+        ident.hello = Vec::new();
+        return;
+    }
+    let from_client = matches!(wire.dir, reflex_core::types::Dir::Up);
+    if !from_client || wire.payload.is_empty() {
+        return;
+    }
+    let starts = ident.hello_at.get_or_insert(wire.header.seq);
+    // Сдвиг от начала приветствия. Байты РАНЬШЕ начала (повтор прошлого) сюда не лягут — обёртка
+    // номера даёт огромный сдвиг, и потолок их отсечёт.
+    let at = wire.header.seq.wrapping_sub(*starts) as u64;
+    let opens = ident.hello.is_empty();
+    if opens && wire.payload.first() != Some(&0x16) {
+        // Не рукопожатие — копить нечего, и это НЕ «имени нет»: имени здесь не бывает.
+        return;
+    }
+    if at as usize + wire.payload.len() > HELLO_CEILING {
+        return;
+    }
+    ident.hello.push((at, wire.payload.to_vec()));
+    if let Some(sni) = tls::extract_sni(&reflex_core::splice::by_offset(&ident.hello)) {
+        ident.naming = Naming::Spoken(sni.into());
+        ident.hello = Vec::new();
     }
 }
 
@@ -363,10 +427,10 @@ impl Transport for Tcp {
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
             dst: wire.dst,
             naming: Naming::Awaited,
+            hello: Vec::new(),
+            hello_at: None,
         });
-        if let Some(sni) = tls::extract_sni(wire.payload) {
-            ident.naming = Naming::Spoken(sni.into());
-        }
+        name_from_hello(ident, &wire);
         let key = ident.key();
         // Разбор состоялся, а наблюдения из него не вышло (`Talks` не всякий сегмент переводит в
         // слово): кадр наш и целый — прятать нечего, потому `Foreign`, а не `Unread`.
@@ -2544,18 +2608,24 @@ mod tests {
         let awaited = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Awaited,
+            hello: Vec::new(),
+            hello_at: None,
         };
         assert_eq!(label(&awaited.key()), "10.0.0.1");
 
         let silent = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
+            hello: Vec::new(),
+            hello_at: None,
         };
         assert_eq!(label(&silent.key()), "10.0.0.1");
 
         let named = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("rutracker.org".into()),
+            hello: Vec::new(),
+            hello_at: None,
         };
         assert_eq!(label(&named.key()), "rutracker.org");
     }
@@ -2568,10 +2638,14 @@ mod tests {
         let nameless = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
+            hello: Vec::new(),
+            hello_at: None,
         };
         let crafted = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("10.0.0.1".into()),
+            hello: Vec::new(),
+            hello_at: None,
         };
 
         assert_eq!(nameless.key(), TargetKey::Unnamed(Addr(0x0A00_0001)));
