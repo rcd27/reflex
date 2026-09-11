@@ -154,12 +154,33 @@ pub fn conntrack_flag_request(queue: u16, seq: u32) -> Vec<u8> {
 
 /// Вердикт пакету. При `Some(mark)` кладёт `NFQA_CT{CTA_MARK}` — состояние уезжает в ядро вместе с
 /// вердиктом; при `None` атрибута `NFQA_CT` нет вовсе (не трогать ≠ записать своё).
-pub fn verdict_message(queue: u16, seq: u32, id: u32, accept: bool, ct_mark: Option<u32>) -> Vec<u8> {
+///
+/// `payload` при `Some` кладёт `NFQA_PAYLOAD` — ТЕМ ЖЕ сообщением: ядро отпустит не тот пакет, что
+/// брало, а эти байты. Один атрибут, не второй вызов, и это не экономия: вердикт и подмена
+/// неделимы ровно так же, как вердикт и память (§5). Раздельные сообщения допускали бы «отпустили
+/// старый, а новый не доехал» — то есть выпуск в сеть ровно того, что мы решили не выпускать.
+///
+/// Способность была у ПРЕЖНЕГО бэкенда (`nfqueue::Answer::Modified`) и при переезде на свой сокет
+/// (10.09.2026) не переехала — боевой носитель молча стал уметь меньше, а канон §9.1 продолжал
+/// числить `CanRewrite` за движком. Возвращено 11.09.2026 по правилу: что канон объявил, код обязан
+/// держать.
+pub fn verdict_message(
+    queue: u16,
+    seq: u32,
+    id: u32,
+    accept: bool,
+    ct_mark: Option<u32>,
+    payload: Option<&[u8]>,
+) -> Vec<u8> {
     let verdict = if accept { NF_ACCEPT } else { NF_DROP };
     let head = tlv(NFQA_VERDICT_HDR, &verdict_body(verdict, id));
-    let body = match ct_mark {
+    let with_state = match ct_mark {
         Some(mark) => [head, nested(NFQA_CT, &tlv(CTA_MARK, &mark.to_be_bytes()))].concat(),
         None => head,
+    };
+    let body = match payload {
+        Some(bytes) => [with_state, tlv(NFQA_PAYLOAD, bytes)].concat(),
+        None => with_state,
     };
     message(NFQNL_MSG_VERDICT, queue, seq, &body)
 }

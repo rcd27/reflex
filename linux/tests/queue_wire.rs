@@ -143,7 +143,7 @@ fn conntrack_flag_request_sets_flag_and_mask() {
 /// Состояние уезжает вложенным NFQA_CT{CTA_MARK} — именно этого не умеет крейт nfq.
 #[test]
 fn verdict_carries_conntrack_mark() {
-    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234));
+    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234), None);
     // NFQA_CT = 11 (вложенный), внутри CTA_MARK = 8, be32.
     let ct = nested_attr(&built, 11).expect("NFQA_CT в вердикте");
     assert_eq!(be32_attr(&ct, 8), Some(0x0000_1234));
@@ -159,7 +159,7 @@ fn verdict_carries_conntrack_mark() {
 /// Вердикт без смены состояния не несёт NFQA_CT вовсе: не трогать — не то же, что записать своё.
 #[test]
 fn verdict_without_state_carries_no_conntrack_attribute() {
-    let built = verdict_message(200, 7, 42, true, None);
+    let built = verdict_message(200, 7, 42, true, None, None);
     assert!(nested_attr(&built, 11).is_none());
 }
 
@@ -183,4 +183,37 @@ fn packet_carries_payload_and_view() {
 fn several_messages_in_one_buffer_are_all_read() {
     let buffer = [packet_message(1, &[1], 0), packet_message(2, &[2], 0)].concat();
     assert_eq!(incoming_of(&buffer).len(), 2);
+}
+
+/// НОВЫЕ БАЙТЫ УЕЗЖАЮТ ТЕМ ЖЕ СООБЩЕНИЕМ, ЧТО И ВЕРДИКТ — атрибутом `NFQA_PAYLOAD` (10).
+///
+/// Неделимость здесь того же рода, что у вердикта с памятью (§5), и цена разделения хуже: два
+/// сообщения допускали бы «отпустили старый пакет, а новый не доехал», то есть выпуск в сеть
+/// ровно того, что мы решили не выпускать.
+#[test]
+fn verdict_carries_new_payload() {
+    let fresh = [0x45u8, 0x00, 0x00, 0x28, 0xAB, 0xCD];
+    let built = verdict_message(200, 7, 42, true, None, Some(&fresh));
+
+    assert_eq!(
+        attrs_of(&built)
+            .into_iter()
+            .find_map(|(kind, value)| (kind == 10).then_some(value))
+            .as_deref(),
+        Some(&fresh[..]),
+        "подменённые байты обязаны уехать в NFQA_PAYLOAD того же вердикта"
+    );
+    assert!(
+        attrs_of(&built).iter().any(|(kind, _)| *kind == 2),
+        "вердикт (NFQA_VERDICT_HDR = 2) при этом на месте: подмена не заменяет решения, она едет \
+         ВМЕСТЕ с ним"
+    );
+}
+
+/// Вердикт без подмены не несёт `NFQA_PAYLOAD` вовсе — «не трогать» не то же, что «переписать тем
+/// же». Держит предыдущий тест честным: атрибут, стоящий всегда, не доказывал бы ничего.
+#[test]
+fn verdict_without_rewrite_carries_no_payload() {
+    let built = verdict_message(200, 7, 42, true, Some(0x1234), None);
+    assert!(attrs_of(&built).iter().all(|(kind, _)| *kind != 10));
 }

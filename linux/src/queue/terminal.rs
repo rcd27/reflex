@@ -57,21 +57,41 @@ impl Edging for Held {
 
 /// Чем ответить очереди. `Remembered` несёт следующее состояние в марку — тем же словом, что и
 /// вердикт (см. [`CanRemember`]): раздельные слова допускали бы «ответили, но не запомнили».
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Copy` СНЯТ 11.09.2026 вместе с приходом `Rewritten`: новые байты пакета — владение, и
+/// притворяться, что слово ответа по-прежнему копируется даром, значило бы лгать о цене. Слово
+/// уходит по значению один раз за пакет, `Clone` остался — на путях, где его и правда копируют.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Pass,
     Stop,
     Remembered { accept: bool, state: u32 },
+    /// Отпустить НЕ ТО, что взяли: ядро выпустит эти байты вместо исходного пакета
+    /// (`NFQA_PAYLOAD` в том же сообщении вердикта). Предмет [`CanRewrite`].
+    ///
+    /// Способность была у прежнего бэкенда (`nfqueue::Answer::Modified`) и при переезде на свой
+    /// сокет не переехала — боевой носитель молча стал уметь меньше, чем прежний, а канон §9.1
+    /// продолжал числить `CanRewrite` за движком. Вернулась по правилу хозяина: что канон объявил,
+    /// код обязан держать.
+    ///
+    /// ПРЕДЕЛ, названный вслух: «переписать И запомнить» одним словом сегодня НЕ выразимо —
+    /// `CanRewrite::rewrite(bytes)` состояния не принимает, такова подпись закона. Пока переписать
+    /// значит не запомнить, и это довод к хранителю, а не забывчивость: слить их — та же работа,
+    /// что слила вердикт с памятью в `Remembered`.
+    Rewritten(Vec<u8>),
 }
 
 /// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре.
 /// Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод слова в байты вердикта свидетельствовало
 /// бы только живое ядро (§9: выше значения, ниже мир). `apply` лишь исполняет это решение сокетом.
-pub(crate) fn asked(answer: &Answer) -> (bool, Option<u32>) {
-    match *answer {
-        Answer::Pass => (true, None),
-        Answer::Stop => (false, None),
-        Answer::Remembered { accept, state } => (accept, Some(state)),
+pub(crate) fn asked(answer: &Answer) -> (bool, Option<u32>, Option<&[u8]>) {
+    match answer {
+        Answer::Pass => (true, None, None),
+        Answer::Stop => (false, None, None),
+        Answer::Remembered { accept, state } => (*accept, Some(*state), None),
+        // Подменённый пакет ОТПУСКАЕТСЯ: дропнуть его и одновременно подменить бессмысленно —
+        // выпускать было бы нечего. Потому `accept` здесь не выбор вызывающего, а следствие слова.
+        Answer::Rewritten(bytes) => (true, None, Some(bytes)),
     }
 }
 
@@ -85,8 +105,8 @@ impl Terminal for QueueSocket {
         answered: Answered<Held, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
         let id = answered.carrier.packet.id;
-        let (accept, state) = asked(&answered.answer);
-        match self.verdict(id, accept, state) {
+        let (accept, state, payload) = asked(&answered.answer);
+        match self.verdict(id, accept, state, payload) {
             Ok(()) => Ok(Delivered {
                 at: answered.at,
                 answer: answered.answer,
@@ -246,10 +266,28 @@ mod tests {
                 accept: true,
                 state: 0x1234
             }),
-            (true, Some(0x1234))
+            (true, Some(0x1234), None)
         );
-        assert_eq!(asked(&Answer::Pass), (true, None));
-        assert_eq!(asked(&Answer::Stop), (false, None));
+        assert_eq!(asked(&Answer::Pass), (true, None, None));
+        assert_eq!(asked(&Answer::Stop), (false, None, None));
+    }
+
+    /// ПОДМЕНА ДОЕЗЖАЕТ ДО ВЕРДИКТА, и доезжает ОТПУЩЕННОЙ. Дропнуть подменённый пакет
+    /// бессмысленно — выпускать было бы нечего, — потому `accept` здесь не выбор вызывающего, а
+    /// следствие слова, и это проверяется, а не подразумевается.
+    #[test]
+    fn rewriting_reaches_the_verdict() {
+        let fresh = vec![0x45u8, 0x00, 0xAB, 0xCD];
+        let answer = Answer::Rewritten(fresh.clone());
+        let (accept, state, payload) = asked(&answer);
+
+        assert!(accept, "подменённый пакет отпускается: дропать нечего");
+        assert_eq!(payload, Some(&fresh[..]), "новые байты доезжают до вердикта");
+        assert_eq!(
+            state, None,
+            "«переписать И запомнить» одним словом сегодня не выразимо — подпись `CanRewrite::rewrite` \
+             состояния не принимает; предел назван в докблоке `Answer::Rewritten`, а не обойдён молча"
+        );
     }
 
     fn a_packet() -> Packet {
@@ -298,6 +336,21 @@ mod tests {
 impl CanRemember for QueueSocket {
     fn remember(state: u32, accept: bool) -> Answer {
         Answer::Remembered { accept, state }
+    }
+}
+
+/// ПЕРЕПИСАТЬ ПАКЕТ: ядро отпустит новые байты вместо взятых, одним сообщением с вердиктом.
+///
+/// Способность объявлена каноном §9.1 и была у прежнего бэкенда (`nfqueue::Answer::Modified`); при
+/// переезде на свой сокет (10.09.2026) она не переехала, и боевой носитель молча стал уметь меньше.
+/// Замер 11.09.2026 нашёл это не прогоном, а счётом «объявлено каноном / реализовано в дереве»:
+/// `CanRewrite` числилась за движком и жила только на пути, переставшем быть боевым.
+///
+/// Сторож: `verdict_carries_new_payload`, `rewriting_reaches_the_verdict` (`linux/tests/queue_wire.rs`,
+/// `linux/src/queue/terminal.rs`).
+impl reflex_core::CanRewrite for QueueSocket {
+    fn rewrite(bytes: Vec<u8>) -> Answer {
+        Answer::Rewritten(bytes)
     }
 }
 

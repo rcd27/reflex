@@ -166,9 +166,16 @@ impl QueueSocket {
         }
     }
 
-    /// Вердикт пакету `id`. `ct_mark` при `Some` уезжает вложенным `NFQA_CT{CTA_MARK}`.
-    pub fn verdict(&self, id: u32, accept: bool, ct_mark: Option<u32>) -> Result<(), QueueError> {
-        self.send(&verdict_message(self.queue, id, id, accept, ct_mark))
+    /// Вердикт пакету `id`. `ct_mark` при `Some` уезжает вложенным `NFQA_CT{CTA_MARK}`, `payload`
+    /// при `Some` — атрибутом `NFQA_PAYLOAD`: ядро отпустит ЭТИ байты вместо взятых.
+    pub fn verdict(
+        &self,
+        id: u32,
+        accept: bool,
+        ct_mark: Option<u32>,
+        payload: Option<&[u8]>,
+    ) -> Result<(), QueueError> {
+        self.send(&verdict_message(self.queue, id, id, accept, ct_mark, payload))
     }
 }
 
