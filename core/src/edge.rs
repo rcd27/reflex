@@ -40,3 +40,73 @@ pub trait EdgeView {
     /// Слово состояния, как его хранит край (наша марка под маской-параметром).
     fn mark(&self) -> u32;
 }
+
+/// СНИМОК КРАЯ — величины, СНЯТЫЕ в момент наблюдения, отвязанные от того, кто их вёл.
+///
+/// Зачем он есть: величины края текут через цепочку и их читают приборы, но наружу их не отдавала
+/// ни одна дверь — ни `.on`, ни `.act`, ни показания значением. Потребителю, рисующему человеку
+/// таблицу «у кого беда, чем ведём, что с байтами», взять их было негде, и он написал бы второй
+/// прибор о том же — то есть вторую правду об одних числах.
+///
+/// Почему СНИМОК, а не сам край: край живёт у носителя и переживает пакет, а показание уезжает к
+/// потребителю и живёт дольше буквы. Отдать ссылку значило бы обещать, что носитель не сдвинется.
+///
+/// Почему не «беда»: край есть СВОЙСТВО РАЗГОВОРА, а не поломка. Объявить его словом бедствия ради
+/// доставки — покривить алфавитом: `Distress` описывает, что человек ПОЧУВСТВОВАЛ бы как поломку, а
+/// «вниз прошло 40 килобайт» он не чувствует никак.
+///
+/// Клетка незнания сохраняется целиком: каждое поле — `Option`, и `None` значит «не считали», а не
+/// «ноль» (§7). Снимок берётся с любого края одним способом ([`Counted::of`]), потому два края не
+/// могут разойтись в том, ЧТО именно снято.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Counted {
+    pub down_packets: Option<u64>,
+    pub up_packets: Option<u64>,
+    pub down_bytes: Option<u64>,
+    pub up_bytes: Option<u64>,
+    pub idle: Option<Duration>,
+    pub age: Option<Duration>,
+    pub mark: u32,
+}
+
+impl Counted {
+    /// Снять величины с любого края. Один способ на все края — иначе снимки с conntrack и с
+    /// местного счёта разошлись бы в том, что считается снятым.
+    pub fn of<V: EdgeView + ?Sized>(view: &V) -> Counted {
+        Counted {
+            down_packets: view.down_packets(),
+            up_packets: view.up_packets(),
+            down_bytes: view.down_bytes(),
+            up_bytes: view.up_bytes(),
+            idle: view.idle(),
+            age: view.age(),
+            mark: view.mark(),
+        }
+    }
+}
+
+/// Снимок сам есть край: прибор, написанный над `EdgeView`, читает его без переделки — и тем
+/// доказуемо, что снимок ничего не потерял.
+impl EdgeView for Counted {
+    fn down_packets(&self) -> Option<u64> {
+        self.down_packets
+    }
+    fn up_packets(&self) -> Option<u64> {
+        self.up_packets
+    }
+    fn down_bytes(&self) -> Option<u64> {
+        self.down_bytes
+    }
+    fn up_bytes(&self) -> Option<u64> {
+        self.up_bytes
+    }
+    fn idle(&self) -> Option<Duration> {
+        self.idle
+    }
+    fn age(&self) -> Option<Duration> {
+        self.age
+    }
+    fn mark(&self) -> u32 {
+        self.mark
+    }
+}

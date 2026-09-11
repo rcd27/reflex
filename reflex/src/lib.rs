@@ -78,6 +78,8 @@ use reflex_core::word::Word;
 use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
 use reflex_core::edge::EdgeView;
+/// Снимок величин края — реэкспорт: он стоит в подписи [`Whom`] и [`Note`], а дверь у фасада одна.
+pub use reflex_core::edge::Counted;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::held::{Held, Terminal};
@@ -1533,6 +1535,12 @@ pub struct Whom<'a> {
     pub target: &'a str,
     /// Ключ разговора: пятёрка, которой он опознан.
     pub flow: Flow,
+    /// ВЕЛИЧИНЫ КРАЯ на момент этой буквы — `None`, если буква их не несла.
+    ///
+    /// Несла бы всякая — и `None` стало бы ложью: слово, рождённое узлом сетки, края не видит, у
+    /// времени края нет. Клетка незнания здесь не украшение: «край не сняли» и «край показал нули»
+    /// — разные вещи, и вторая внутри снимка тоже названа `Option`ами (§7).
+    pub edge: Option<Counted>,
 }
 
 /// Как реакция принимает адрес. Два способа, и оба — одна дверь `.on`: `|target, слово|` берёт
@@ -1661,6 +1669,8 @@ pub struct Note<S = Distress> {
     pub flow: Flow,
     /// Что сказала машина.
     pub word: S,
+    /// Величины края на момент буквы — то же, что в [`Whom::edge`], и по той же причине `Option`.
+    pub edge: Option<Counted>,
 }
 
 /// ГОЛОС, КЛАДУЩИЙ ПОКАЗАНИЯ В ОЧЕРЕДЬ, — тот же [`Voice`], которым говорят `.on` и `.act`.
@@ -1673,6 +1683,7 @@ impl<K, S> Voice<K, S> for Collecting<'_, S> {
     fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
         self.0.push_back(Note {
             target: whom.target.into(),
+            edge: whom.edge,
             flow: whom.flow,
             word,
         });
@@ -2341,6 +2352,18 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             // рождённый словом ЧУЖОГО разговора, оборвал бы разговор, привёзший пакет. Тот не
             // бедствовал вовсе, а слово необратимо (§1). Прежде закон держался тем, что штатные
             // приборы на узле молчат, — то есть совпадением; `own(…)` его нарушал.
+            // ВЕЛИЧИНЫ КРАЯ СНИМАЮТСЯ С БУКВЫ, а не спрашиваются у носителя: спроси мы носителя
+            // здесь, снимок был бы «на момент, когда мы собрались спросить», а не на момент
+            // наблюдения, и слово поехало бы с чужими числами. Буква без края (узел сетки, дыра)
+            // даёт `None` — «не сняли», не «нули» (§7).
+            let counted: Option<Counted> = match &letter {
+                DetectorEvent::Packet { input, .. } => {
+                    input.1.as_ref().map(|edge| Counted::of(edge))
+                }
+                DetectorEvent::Tick { .. }
+                | DetectorEvent::Opaque { .. }
+                | DetectorEvent::Torn { .. } => None,
+            };
             let (said, evidence): (
                 Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>)>,
                 &[u8],
@@ -2412,6 +2435,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                         Whom {
                             target: &named,
                             flow,
+                            edge: counted,
                         },
                         signal.clone(),
                         evidence,
