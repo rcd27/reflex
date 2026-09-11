@@ -78,7 +78,7 @@ pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
 use reflex_core::Serves;
 use reflex_core::{CanSever, Toward};
-use reflex_engine::parse::{self, Read};
+use reflex_engine::parse::{self};
 use reflex_engine::row::{host_of, keyed, Naming, TargetKey};
 use reflex_engine::talk::Talks;
 use reflex_engine::Addr;
@@ -113,6 +113,11 @@ pub use smallvec::{smallvec, SmallVec};
 #[cfg(unix)]
 mod nfqueue;
 pub mod pcap;
+// ТРАНСПОРТ QUIC — третий рядом с TCP и UDP. За фичей: тянет `ring`, см. манифест.
+#[cfg(feature = "quic")]
+mod quic;
+#[cfg(feature = "quic")]
+pub use quic::{Quic, QuicState};
 // СОЧИНЁННЫЙ ПРОВОД — третий носитель: сценарий вместо мира. В умолчании, см. манифест.
 #[cfg(feature = "scenario")]
 pub mod scenario;
@@ -131,6 +136,12 @@ pub use pcap::{pcap, Recording};
 /// [`Transport::observe`], и без неё свой транспорт снаружи не написать — а `Truncated` из неё
 /// решает, ослепнут приборы на этой букве или нет (`DetectorEvent::hides_observation`).
 pub use reflex_core::parse::Unread;
+
+/// Разобранный кадр — реэкспорт по той же причине, что и [`Unread`]: он стоит в подписи
+/// [`Transport::observe`], и без него свой транспорт снаружи НЕ НАПИСАТЬ. Трейт при этом публичен —
+/// то есть дверь была открыта, а ключ от неё лежал внутри. Нашлось при попытке поверить свой же
+/// транспорт: тест не мог назвать тип, который трейт требует.
+pub use reflex_engine::parse::{Datagram, Read};
 
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
@@ -226,12 +237,17 @@ pub fn engine<C: IntoCarrier>(carrier: C) -> Engine<C> {
 // ─── Транспорт: ось `.from` ───────────────────────────────────────────────────────────────────
 
 /// Наблюдение из кадра: ключ разговора, имя цели (для реакции) и широкое слово провода.
+///
+/// Поля ПУБЛИЧНЫ, и это не послабление: `Observed` есть ВЫХОД [`Transport::observe`], а трейт
+/// публичен — с приватными полями его нельзя было реализовать снаружи вовсе, то есть ось `.from`
+/// объявлялась расширяемой и расширяться не давала. Нашлось при поверке собственного транспорта:
+/// тест не мог ни построить наблюдение, ни прочесть построенное.
 pub struct Observed<W> {
-    flow: Flow,
+    pub flow: Flow,
     /// Ключ цели — расслоение §4 (`Named | Unnamed`). Им цель ключуется в слое; ярлык для человека
     /// получается из него [`label`], а не наоборот: обратный ход терял бы тег.
-    key: TargetKey<Box<str>>,
-    wire: W,
+    pub key: TargetKey<Box<str>>,
+    pub wire: W,
 }
 
 /// Транспорт `.from(…)`. Несёт свой широкий словарь провода [`Transport::Wire`], порт сервера и своё
