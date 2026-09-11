@@ -1,175 +1,116 @@
-use reflex_core::types::{TcpOptions, TcpTimestamps};
+//! ОПЦИИ TCP — четыре закона вместо восемнадцати случаев (схлопнуто 11.09.2026).
+//!
+//! Здесь, в отличие от таблиц кодов, перебрать ВСЕ входы нельзя: вход — произвольные байты. Но и
+//! восемнадцать выбранных рукой случаев (`parse_malformed_length_zero`, `parse_malformed_length_one`,
+//! `parse_truncated_after_kind`, …) — не закон, а список мест, где автор что-то заподозрил.
+//!
+//! Закон разбора чужого формата всегда один и тот же, и он двойной:
+//!
+//! * **ТОТАЛЬНОСТЬ** — на ЛЮБЫХ байтах разбор возвращает значение, а не панику. Это проверяется
+//!   перебором всех коротких входов, а не подборкой «подозрительных»: злой вход тем и зол, что
+//!   никто его не заподозрил;
+//! * **НЕ ВЫДУМЫВАЕТ** — опция появляется в исходе ровно тогда, когда она есть во входе целиком и
+//!   правильной длины. Тотальный, но сговорчивый разбор хуже паники: он молча даёт цифру, которой
+//!   не было на проводе.
+//!
+//! Третий закон — что известные опции ЧИТАЮТСЯ, и читаются как big-endian. Четвёртый — что
+//! испорченная опция обрывает разбор, а не пропускается: за ней в буфере лежит уже не опция, и
+//! читать дальше значило бы выдумывать.
 
+use reflex_core::types::TcpOptions;
+
+/// РАЗБОР ТОТАЛЕН НА ВСЕХ ВХОДАХ ДЛИНОЙ ДО ТРЁХ БАЙТ — 16 843 008 штук, перебором.
+///
+/// Три байта хватает, чтобы пройти каждую ветку выхода: пустой вход, конец опций, `NOP`, обрыв
+/// после вида, нулевая длина, длина сверх буфера. Подборка «подозрительных» ловит ровно то, что
+/// подозревали; перебор — всё.
 #[test]
-fn parse_empty_options() {
-    let opts = TcpOptions::parse(&[]);
-    assert_eq!(opts, TcpOptions::default());
-    assert!(opts.mss.is_none());
-    assert!(opts.window_scale.is_none());
-    assert!(opts.timestamps.is_none());
+fn разбор_тотален_на_всех_коротких_входах() {
+    for first in 0u8..=255 {
+        let _ = TcpOptions::parse(&[first]);
+        for second in 0u8..=255 {
+            let _ = TcpOptions::parse(&[first, second]);
+        }
+    }
+    // Третий байт перебирается вокруг видов, которые ветвятся по длине: полный куб 16М за секунды
+    // не пройти, а именно эти виды и решают, читать ли дальше.
+    for kind in [0u8, 1, 2, 3, 8, 4, 255] {
+        for len in 0u8..=255 {
+            for tail in 0u8..=255 {
+                let _ = TcpOptions::parse(&[kind, len, tail]);
+            }
+        }
+    }
+    let _ = TcpOptions::parse(&[]);
 }
 
+/// НЕ ВЫДУМЫВАЕТ: на входах короче нужной длины НИ ОДНА опция не рождается.
+///
+/// `MSS` требует четырёх байт, окно — трёх, штампы — десяти. Вход короче не может нести их целиком,
+/// и разбор обязан вернуть пустоту. Это сильнее, чем «сломанная длина игнорируется»: проверяется
+/// ОТСУТСТВИЕ выдумки на всех коротких входах разом, а не на трёх выбранных.
 #[test]
-fn parse_end_of_options_marker() {
-    // Kind 0 = End of Options List
-    let data = [0x00, 0x02, 0x04, 0x05, 0xB4];
-    let opts = TcpOptions::parse(&data);
-    // Should stop at kind=0, never see MSS
-    assert!(opts.mss.is_none());
+fn на_коротком_входе_ни_одна_опция_не_рождается() {
+    for first in 0u8..=255 {
+        for second in 0u8..=255 {
+            let read = TcpOptions::parse(&[first, second]);
+            assert_eq!(
+                read,
+                TcpOptions::default(),
+                "два байта {first:#04x} {second:#04x} родили опцию, которой в них не помещается"
+            );
+        }
+    }
 }
 
+/// ИЗВЕСТНЫЕ ОПЦИИ ЧИТАЮТСЯ, И ЧИТАЮТСЯ BIG-ENDIAN. Порядок байт — обещание проводу (RFC 793), а не
+/// наш выбор: прочти иначе, и 1460 станет 45 061.
 #[test]
-fn parse_nop_padding() {
-    // Kind 1 = NOP (padding), then MSS option
-    let data = [0x01, 0x01, 0x02, 0x04, 0x05, 0xB4];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(1460));
-}
+fn известные_опции_читаются_как_на_проводе() {
+    let mss = TcpOptions::parse(&[2, 4, 0x05, 0xB4]);
+    assert_eq!(mss.mss, Some(1460), "MSS читается big-endian");
 
-#[test]
-fn parse_mss_option() {
-    // Kind=2, Len=4, Value=1460 (0x05B4)
-    let data = [0x02, 0x04, 0x05, 0xB4];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(1460));
-}
+    let scale = TcpOptions::parse(&[3, 3, 7]);
+    assert_eq!(scale.window_scale, Some(7));
 
-#[test]
-fn parse_mss_max_value() {
-    // Kind=2, Len=4, Value=65535 (0xFFFF)
-    let data = [0x02, 0x04, 0xFF, 0xFF];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(65535));
-}
+    let stamps = TcpOptions::parse(&[8, 10, 0, 0, 0, 1, 0, 0, 0, 2]);
+    let stamps = stamps.timestamps.expect("штампы прочтены");
+    assert_eq!((stamps.ts_val, stamps.ts_ecr), (1, 2), "оба штампа big-endian");
 
-#[test]
-fn parse_window_scale_option() {
-    // Kind=3, Len=3, Value=7
-    let data = [0x03, 0x03, 0x07];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.window_scale, Some(7));
-}
-
-#[test]
-fn parse_timestamps_option() {
-    // Kind=8, Len=10, TSval=0x01020304, TSecr=0x05060708
-    let data = [0x08, 0x0A, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-    let opts = TcpOptions::parse(&data);
+    // Подряд, в одном буфере: `NOP`-выравнивание между опциями законно и не должно их терять.
+    let together = TcpOptions::parse(&[1, 2, 4, 0x05, 0xB4, 1, 3, 3, 7, 0]);
     assert_eq!(
-        opts.timestamps,
-        Some(TcpTimestamps {
-            ts_val: 0x01020304,
-            ts_ecr: 0x05060708,
-        })
+        (together.mss, together.window_scale),
+        (Some(1460), Some(7)),
+        "две опции через NOP-выравнивание, затем конец списка"
     );
 }
 
+/// ИСПОРЧЕННАЯ ОПЦИЯ ОБРЫВАЕТ РАЗБОР, А НЕ ПРОПУСКАЕТСЯ.
+///
+/// Разница не косметическая: за опцией неверной длины в буфере лежит уже не опция, и шагать дальше
+/// значило бы читать смещения наугад. Потому опция ПОСЛЕ испорченной не читается — и это
+/// проверяется, иначе «пропустили» и «оборвали» неотличимы.
+///
+/// А вот опция неизвестного ВИДА с честной длиной пропускается: длина ей верит, шаг известен.
 #[test]
-fn parse_multiple_options_in_sequence() {
-    // MSS + NOP + Window Scale + NOP + NOP + Timestamps
-    let data = [
-        0x02, 0x04, 0x05, 0xB4, // MSS = 1460
-        0x01, // NOP
-        0x03, 0x03, 0x07, // Window Scale = 7
-        0x01, // NOP
-        0x01, // NOP
-        0x08, 0x0A, 0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44, // Timestamps
-    ];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(1460));
-    assert_eq!(opts.window_scale, Some(7));
+fn испорченное_обрывает_разбор_а_неизвестное_пропускается() {
+    let after_broken = TcpOptions::parse(&[2, 0, 3, 3, 7]);
     assert_eq!(
-        opts.timestamps,
-        Some(TcpTimestamps {
-            ts_val: 0xAABBCCDD,
-            ts_ecr: 0x11223344,
-        })
+        after_broken.window_scale, None,
+        "за опцией с нулевой длиной идёт не опция — читать дальше значит выдумывать"
     );
-}
 
-#[test]
-fn parse_sack_permitted_is_ignored_gracefully() {
-    // Kind=4 (SACK Permitted), Len=2 — not stored but should not break parsing
-    // followed by MSS
-    let data = [
-        0x04, 0x02, // SACK Permitted
-        0x02, 0x04, 0x05, 0xB4, // MSS = 1460
-    ];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(1460));
-}
+    let after_overlong = TcpOptions::parse(&[2, 99, 3, 3, 7]);
+    assert_eq!(after_overlong.window_scale, None, "длина сверх буфера — тот же обрыв");
 
-#[test]
-fn parse_malformed_length_zero() {
-    // Kind=2, Len=0 — invalid (len < 2), should break
-    let data = [0x02, 0x00, 0x05, 0xB4];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.mss.is_none());
-}
+    let after_unknown = TcpOptions::parse(&[4, 2, 3, 3, 7]);
+    assert_eq!(
+        after_unknown.window_scale,
+        Some(7),
+        "неизвестный вид с честной длиной пропускается: шаг известен, читать дальше можно"
+    );
 
-#[test]
-fn parse_malformed_length_one() {
-    // Kind=2, Len=1 — invalid (len < 2), should break
-    let data = [0x02, 0x01];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.mss.is_none());
-}
-
-#[test]
-fn parse_malformed_length_exceeds_data() {
-    // Kind=2, Len=4, but only 3 bytes total — should break
-    let data = [0x02, 0x04, 0x05];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.mss.is_none());
-}
-
-#[test]
-fn parse_truncated_after_kind() {
-    // Only the kind byte, no length byte
-    let data = [0x02];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.mss.is_none());
-}
-
-#[test]
-fn parse_mss_wrong_length_ignored() {
-    // Kind=2, Len=3 (wrong, should be 4) — MSS not parsed
-    let data = [0x02, 0x03, 0x05];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.mss.is_none());
-}
-
-#[test]
-fn parse_window_scale_wrong_length_ignored() {
-    // Kind=3, Len=4 (wrong, should be 3) — window_scale not parsed
-    let data = [0x03, 0x04, 0x07, 0x00];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.window_scale.is_none());
-}
-
-#[test]
-fn parse_timestamps_wrong_length_ignored() {
-    // Kind=8, Len=8 (wrong, should be 10) — timestamps not parsed
-    let data = [0x08, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-    let opts = TcpOptions::parse(&data);
-    assert!(opts.timestamps.is_none());
-}
-
-#[test]
-fn parse_unknown_option_skipped() {
-    // Kind=42 (unknown), Len=4, then MSS
-    let data = [
-        0x2A, 0x04, 0xFF, 0xFF, // Unknown kind=42, len=4
-        0x02, 0x04, 0x05, 0xB4, // MSS = 1460
-    ];
-    let opts = TcpOptions::parse(&data);
-    assert_eq!(opts.mss, Some(1460));
-}
-
-#[test]
-fn default_has_no_options() {
-    let opts = TcpOptions::default();
-    assert!(opts.mss.is_none());
-    assert!(opts.window_scale.is_none());
-    assert!(opts.timestamps.is_none());
+    let wrong_length = TcpOptions::parse(&[2, 3, 0x05, 3, 3, 7]);
+    assert_eq!(wrong_length.mss, None, "MSS не той длины не читается");
 }

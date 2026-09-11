@@ -1,82 +1,45 @@
+//! ТИП КАДРА — два закона вместо тринадцати случаев (схлопнуто 11.09.2026).
+//!
+//! Та же порода, что у протоколов и флагов TCP: тринадцать тестов были представителями таблицы,
+//! выбранными рукой. Здесь значений 65 536 — перебрать все по-прежнему дешевле, чем выбирать, и
+//! перебор ловит то, чего выборка не ловит по устройству: код, попавший в две ветки, или
+//! именованный тип, отвечающий чужим числом.
+//!
+//! Прежние `ethertype_eq` и `ethertype_copy` сняты: они проверяли выведенные компилятором
+//! `PartialEq` и `Copy`. Свой тест на `derive` не ловит наших ошибок — он проверяет компилятор.
+
 use reflex_core::types::EtherType;
 
-// --- from_u16 ---
-
+/// ИМЕНОВАНЫ РОВНО ТРИ КОДА, И РОВНО ТЕ. Числа взяты из реестра IANA напрямую, независимо от
+/// реализации: два способа сказать одно, и расхождение между ними — находка.
 #[test]
-fn ethertype_ipv4_from_u16() {
-    assert_eq!(EtherType::from_u16(0x0800), EtherType::Ipv4);
+fn именованы_ровно_три_кода_остальные_шестьдесят_пять_тысяч_чужие() {
+    for code in 0u16..=u16::MAX {
+        let named = match code {
+            0x0800 => Some(EtherType::Ipv4),
+            0x86DD => Some(EtherType::Ipv6),
+            0x0806 => Some(EtherType::Arp),
+            _ => None,
+        };
+        let expected = named.unwrap_or(EtherType::Other(code));
+        assert_eq!(
+            EtherType::from_u16(code),
+            expected,
+            "код {code:#06x} разобран не тем вариантом"
+        );
+    }
 }
 
+/// КРУГ ЗАМКНУТ НА ВСЕХ КОДАХ. Закон таблицы не «0x0800 даёт IPv4», а «ни один код не теряется и не
+/// подменяется по дороге» — ошибка в любой строке краснит его, включая ту, что осталась бы без
+/// своего теста.
 #[test]
-fn ethertype_ipv6_from_u16() {
-    assert_eq!(EtherType::from_u16(0x86DD), EtherType::Ipv6);
-}
-
-#[test]
-fn ethertype_arp_from_u16() {
-    assert_eq!(EtherType::from_u16(0x0806), EtherType::Arp);
-}
-
-#[test]
-fn ethertype_other_from_u16() {
-    assert_eq!(EtherType::from_u16(0x8100), EtherType::Other(0x8100));
-}
-
-#[test]
-fn ethertype_zero_is_other() {
-    assert_eq!(EtherType::from_u16(0x0000), EtherType::Other(0x0000));
-}
-
-// --- to_u16 ---
-
-#[test]
-fn ethertype_ipv4_to_u16() {
-    assert_eq!(EtherType::Ipv4.to_u16(), 0x0800);
-}
-
-#[test]
-fn ethertype_ipv6_to_u16() {
-    assert_eq!(EtherType::Ipv6.to_u16(), 0x86DD);
-}
-
-#[test]
-fn ethertype_arp_to_u16() {
-    assert_eq!(EtherType::Arp.to_u16(), 0x0806);
-}
-
-#[test]
-fn ethertype_other_to_u16() {
-    assert_eq!(EtherType::Other(0x88CC).to_u16(), 0x88CC);
-}
-
-// --- Roundtrip ---
-
-#[test]
-fn ethertype_roundtrip_known() {
-    [0x0800u16, 0x86DD, 0x0806]
-        .iter()
-        .for_each(|&v| assert_eq!(EtherType::from_u16(v).to_u16(), v));
-}
-
-#[test]
-fn ethertype_roundtrip_other() {
-    [0x8100u16, 0x88CC, 0x0000, 0xFFFF]
-        .iter()
-        .for_each(|&v| assert_eq!(EtherType::from_u16(v).to_u16(), v));
-}
-
-// --- Equality ---
-
-#[test]
-fn ethertype_eq() {
-    assert_eq!(EtherType::Ipv4, EtherType::Ipv4);
-    assert_ne!(EtherType::Ipv4, EtherType::Ipv6);
-    assert_ne!(EtherType::Other(0x0800), EtherType::Ipv4);
-}
-
-#[test]
-fn ethertype_copy() {
-    let e = EtherType::Ipv4;
-    let e2 = e;
-    assert_eq!(e, e2);
+fn круг_кодов_замкнут_на_всех_значениях() {
+    for code in 0u16..=u16::MAX {
+        assert_eq!(
+            EtherType::from_u16(code).to_u16(),
+            code,
+            "код {code:#06x} не пережил дорогу туда и обратно"
+        );
+    }
 }

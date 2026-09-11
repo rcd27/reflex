@@ -1,108 +1,71 @@
+//! ПРОТОКОЛЫ — три закона вместо семнадцати случаев (схлопнуто 11.09.2026).
+//!
+//! Прежде: 15 тестов из 17 были одним `assert` — представители таблицы, выбранные рукой
+//! (`tcp_from_u8`, `udp_from_u8`, `icmp_from_u8`, `zero_is_other`, `255_is_other`, и так далее).
+//! Выбор представителей и есть место, где теряется случай: у флагов TCP тем же способом потерялся
+//! `PSH`, и тридцать два теста этого не заметили.
+//!
+//! Здесь значений 256 — перебрать все дешевле, чем выбирать. Перебор ловит и то, чего выборка не
+//! ловит по устройству: код, попавший в ДВЕ ветки, или именованный протокол, отвечающий чужим
+//! числом.
+//!
+//! Про `Protocol` (наш узкий словарь из двух) сказано отдельно и коротко: его полноту держит
+//! КОМПИЛЯТОР — `match` в `Display` не имеет ветки `_`, и третий вариант не соберётся молча.
+//! Тесту остаются сами имена, а не полнота.
+
 use reflex_core::types::{IpProtocol, Protocol};
 
-// --- IpProtocol from_u8 ---
-
+/// ИМЕНОВАНЫ РОВНО ТРИ КОДА, И РОВНО ТЕ. Перебор всех 256: каждый код либо даёт свой именованный
+/// вариант, либо `Other` с собой внутри. Третьего не дано, и это проверяется, а не подразумевается.
+///
+/// Ожидание записано числами RFC 790 напрямую, независимо от реализации (она — `match` по тем же
+/// числам). Два способа сказать одно; расхождение между ними есть находка.
 #[test]
-fn ip_protocol_tcp_from_u8() {
-    assert_eq!(IpProtocol::from_u8(6), IpProtocol::Tcp);
+fn именованы_ровно_три_кода_и_остальные_двести_пятьдесят_три_чужие() {
+    for code in 0u8..=255 {
+        let named = match code {
+            1 => Some(IpProtocol::Icmp),
+            6 => Some(IpProtocol::Tcp),
+            17 => Some(IpProtocol::Udp),
+            _ => None,
+        };
+        let expected = named.unwrap_or(IpProtocol::Other(code));
+        assert_eq!(
+            IpProtocol::from_u8(code),
+            expected,
+            "код {code} разобран не тем вариантом"
+        );
+    }
 }
 
+/// КРУГ ЗАМКНУТ НА ВСЕХ 256 КОДАХ: `from_u8` и `to_u8` взаимно обратны.
+///
+/// Это и есть закон таблицы — не «шесть даёт TCP», а «ни один код не теряется и не подменяется по
+/// дороге». Ошибка в любой строке таблицы краснит его, включая ту, которую забыли бы покрыть
+/// отдельным тестом.
 #[test]
-fn ip_protocol_udp_from_u8() {
-    assert_eq!(IpProtocol::from_u8(17), IpProtocol::Udp);
+fn круг_кодов_замкнут_на_всех_значениях() {
+    for code in 0u8..=255 {
+        assert_eq!(
+            IpProtocol::from_u8(code).to_u8(),
+            code,
+            "код {code} не пережил дорогу туда и обратно"
+        );
+    }
 }
 
+/// НАШ СЛОВАРЬ ИЗ ДВУХ ПЕЧАТАЕТСЯ СВОИМИ ИМЕНАМИ, И ИМЕНА РАЗЛИЧНЫ.
+///
+/// Полноту здесь держит компилятор: `match` в `Display` без ветки `_`, и третий вариант потребует
+/// строку. Тест держит только то, чего тип не держит, — какие именно это буквы: их читают глазами
+/// в логе, и смена молча перетасовала бы вывод.
 #[test]
-fn ip_protocol_icmp_from_u8() {
-    assert_eq!(IpProtocol::from_u8(1), IpProtocol::Icmp);
-}
-
-#[test]
-fn ip_protocol_other_from_u8() {
-    assert_eq!(IpProtocol::from_u8(47), IpProtocol::Other(47));
-}
-
-#[test]
-fn ip_protocol_zero_is_other() {
-    assert_eq!(IpProtocol::from_u8(0), IpProtocol::Other(0));
-}
-
-#[test]
-fn ip_protocol_255_is_other() {
-    assert_eq!(IpProtocol::from_u8(255), IpProtocol::Other(255));
-}
-
-// --- IpProtocol to_u8 ---
-
-#[test]
-fn ip_protocol_tcp_to_u8() {
-    assert_eq!(IpProtocol::Tcp.to_u8(), 6);
-}
-
-#[test]
-fn ip_protocol_udp_to_u8() {
-    assert_eq!(IpProtocol::Udp.to_u8(), 17);
-}
-
-#[test]
-fn ip_protocol_icmp_to_u8() {
-    assert_eq!(IpProtocol::Icmp.to_u8(), 1);
-}
-
-#[test]
-fn ip_protocol_other_to_u8() {
-    assert_eq!(IpProtocol::Other(89).to_u8(), 89);
-}
-
-// --- IpProtocol roundtrip ---
-
-#[test]
-fn ip_protocol_roundtrip_all_known() {
-    [1u8, 6, 17]
-        .iter()
-        .for_each(|&v| assert_eq!(IpProtocol::from_u8(v).to_u8(), v));
-}
-
-#[test]
-fn ip_protocol_roundtrip_other() {
-    (0u8..=255)
-        .filter(|v| !matches!(v, 1 | 6 | 17))
-        .take(10)
-        .for_each(|v| assert_eq!(IpProtocol::from_u8(v).to_u8(), v));
-}
-
-// --- IpProtocol equality / hash ---
-
-#[test]
-fn ip_protocol_eq() {
-    assert_eq!(IpProtocol::Tcp, IpProtocol::Tcp);
-    assert_ne!(IpProtocol::Tcp, IpProtocol::Udp);
-    assert_ne!(IpProtocol::Other(6), IpProtocol::Tcp);
-}
-
-// --- Protocol Display ---
-
-#[test]
-fn protocol_tcp_display() {
+fn наш_словарь_печатается_своими_именами() {
     assert_eq!(format!("{}", Protocol::Tcp), "TCP");
-}
-
-#[test]
-fn protocol_udp_display() {
     assert_eq!(format!("{}", Protocol::Udp), "UDP");
-}
-
-// --- Protocol equality ---
-
-#[test]
-fn protocol_eq() {
-    assert_eq!(Protocol::Tcp, Protocol::Tcp);
-    assert_ne!(Protocol::Tcp, Protocol::Udp);
-}
-
-#[test]
-fn protocol_copy() {
-    let p = Protocol::Tcp;
-    let p2 = p;
-    assert_eq!(p, p2);
+    assert_ne!(
+        format!("{}", Protocol::Tcp),
+        format!("{}", Protocol::Udp),
+        "два протокола, одно имя — в логе они стали бы неразличимы"
+    );
 }
