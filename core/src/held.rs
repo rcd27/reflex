@@ -97,9 +97,7 @@ pub struct Refused<A, E> {
 pub trait Terminal {
     /// Носитель права ответа, который этот терминал умеет отдать.
     type Carrier;
-    /// Чем ему можно ответить.
     type Answer;
-    /// Чем он отказывает.
     type Refusal;
 
     fn apply(
@@ -113,7 +111,6 @@ impl<M> Held<M> {
         Self { carrier, at }
     }
 
-    /// Когда наблюдено.
     pub fn at(&self) -> Instant {
         self.at
     }

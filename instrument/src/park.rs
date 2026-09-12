@@ -8,7 +8,6 @@
 pub struct Passport {
     /// Публичное имя прибора — им же подписаны его показания.
     pub instrument: &'static str,
-    /// Уровень, на котором лежит улика.
     pub layer: crate::Layer,
     /// Протоколы, на которых улика существует. Пустой — улики нет на проводе.
     pub protocols: &'static [crate::Protocol],

@@ -222,7 +222,6 @@ pub struct Measured {
     pub since_ms: u32,
     pub bytes: u32,
     pub awaiting: bool,
-    /// Смотрит ли прибор ещё.
     pub watch: Watch,
 }
 

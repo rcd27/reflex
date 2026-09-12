@@ -301,7 +301,6 @@ impl Paper {
         self.applied
     }
 
-    /// Ручка на журнал инъекций.
     pub fn injected(&self) -> Log<Vec<u8>> {
         self.injected
     }

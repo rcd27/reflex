@@ -10,7 +10,6 @@ pub struct SagInstrument;
 /// Что просело и когда. Не `bool`: без момента и величины беду ни назвать, ни сверить с землёй.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sag {
-    /// Номер окна, на котором темп упал.
     pub at_window: usize,
     /// Байт в секунду ДО просадки — доказанная целью планка.
     pub before_bps: u64,

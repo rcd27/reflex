@@ -118,7 +118,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Исполняются ли команды миру в этом прогоне.
     pub fn touches_the_world(&self) -> bool {
         matches!(self, Mode::Live)
     }

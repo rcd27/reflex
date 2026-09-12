@@ -75,7 +75,6 @@ impl<T> Level<T> {
         }
     }
 
-    /// Истина прямо сейчас.
     pub fn get(&self) -> T {
         (self.resync)()
     }

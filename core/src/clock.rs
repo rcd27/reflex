@@ -19,7 +19,6 @@ use futures::Stream;
 /// есть повод спросить; `ticks` порождает повод в молчании. Часы отдаются потребителю ЗНАЧЕНИЕМ, не
 /// из глобального `Instant::now()` — иначе тест не может двигать время.
 pub trait Clock: Clone {
-    /// Который час по этим часам.
     fn now(&self) -> Instant;
 }
 
@@ -87,7 +86,6 @@ impl TestClock {
         *self.passed.lock().expect("часы теста не отравлены") += span;
     }
 
-    /// Сколько прошло с начала.
     fn elapsed(&self) -> Duration {
         *self.passed.lock().expect("часы теста не отравлены")
     }

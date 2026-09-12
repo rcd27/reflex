@@ -155,7 +155,6 @@ impl reflex_core::Reads<Reading> for SeenTcp {
 /// Отдельным трейтом, не полем в `reflex_core::Protocol`: `reflex` о наблюдениях знать не должен.
 /// `type Seen` ассоциированным типом: наблюдение, СОСТАВ которого протоколом определён.
 pub trait Alphabet: reflex_core::Protocol + Clone + core::fmt::Debug + PartialEq + Eq {
-    /// Что на этом протоколе бывает видно.
     type Seen: Clone + core::fmt::Debug + PartialEq + Eq;
 
     /// Сузить до общего словаря. `None` — буква принадлежит протоколу. Отдельным методом, а не
