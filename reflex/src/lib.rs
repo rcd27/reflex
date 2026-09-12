@@ -2464,7 +2464,10 @@ struct Turning<C: Bordered, T: Transport, S> {
     /// Внеполосная дверь и ДОМ РЕШЕНИЙ ПО КЛЮЧУ. Дом здесь, а не в `Alive`: решение не наблюдение
     /// и приборам не достаётся — оно живёт до вердикта и читается им.
     #[cfg(feature = "telling")]
-    telling: Option<(crate::telling::Telling, HashMap<String, reflex_core::mark::Marked>)>,
+    telling: Option<(
+        crate::telling::Mailbox,
+        HashMap<String, reflex_core::mark::Marked>,
+    )>,
 }
 
 impl<C, T, S> Turning<C, T, S>
@@ -2559,7 +2562,9 @@ where
             name,
             certified: None,
             #[cfg(feature = "telling")]
-            telling: telling.map(|handle| (handle, HashMap::new())),
+            // ПОДПИСКА, А НЕ САМА РУЧКА: ящик заводится здесь, при постройке цепочки, и потому
+            // решение достаётся КАЖДОЙ цепочке потребителя, а не той, чей оборот случился раньше.
+            telling: telling.map(|handle| (handle.subscribe(), HashMap::new())),
         })
     }
 
