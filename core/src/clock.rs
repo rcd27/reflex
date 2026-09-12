@@ -49,16 +49,30 @@ pub trait Beats: Clock {
 #[derive(Clone)]
 pub struct TestClock {
     began: Instant,
-    /// Сколько времени продвинуто с начала. Наносекундами: `Duration` не атомарен, а состояние здесь
-    /// разделяемое (тест двигает, поток читает).
-    passed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Сколько времени продвинуто с начала. Состояние разделяемое: тест двигает, поток читает.
+    ///
+    /// ЗАМКОМ, А НЕ АТОМИКОМ, и `Duration`, а не наносекундами. Здесь стоял `AtomicU64` — и он
+    /// уносил ВЕСЬ КРЕЙТ на целях без 64-битных атомиков: `mips`, `mipsel`, `powerpc`. Модуль
+    /// публичный (рядом боевой [`OsClock`]), поэтому тестовый дубль компилировался в каждой
+    /// релизной сборке потребителя и отнимал у него три архитектуры — ради кода, который тот не
+    /// исполняет никогда. Воспроизведено 12.09.2026: `cargo check -p reflex-core --target
+    /// powerpc-unknown-linux-gnu` → `cannot find AtomicU64 in atomic`.
+    ///
+    /// Наносекунды были СЛЕДСТВИЕМ атомика («`Duration` не атомарен») — со снятием атомика повод
+    /// считать в них исчез, и хранится теперь сам `Duration`: пропало приведение `as u64` заодно.
+    /// Замок здесь ничего не стоит: часы тестовые, а спор за них идёт раз в продвижение.
+    ///
+    /// НЕ `AtomicUsize`, хотя он напрашивается первым: на 32-битной цели это 32 бита, и счётчик
+    /// наносекунд переполнится через 4,3 секунды модельного времени. Сборка позеленела бы, а тесты
+    /// стали бы тихо неверными — цена хуже той, что чинили.
+    passed: std::sync::Arc<std::sync::Mutex<Duration>>,
 }
 
 impl TestClock {
     pub fn new() -> TestClock {
         TestClock {
             began: Instant::now(),
-            passed: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            passed: std::sync::Arc::new(std::sync::Mutex::new(Duration::ZERO)),
         }
     }
 
@@ -70,13 +84,12 @@ impl TestClock {
 
     /// Продвинуть время. Всё, что должно случиться за `span`, случается.
     pub fn advance(&self, span: Duration) {
-        self.passed
-            .fetch_add(span.as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        *self.passed.lock().expect("часы теста не отравлены") += span;
     }
 
     /// Сколько прошло с начала.
     fn elapsed(&self) -> Duration {
-        Duration::from_nanos(self.passed.load(std::sync::atomic::Ordering::Relaxed))
+        *self.passed.lock().expect("часы теста не отравлены")
     }
 }
 
