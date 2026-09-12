@@ -138,6 +138,7 @@ mod tests {
             direction,
             authoritative: false,
             authority_records: 0,
+            truncated: false,
             rcode,
             queries: vec![reflex_core::dns::DnsQuery {
                 name: "nnmclub.to".into(),

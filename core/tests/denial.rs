@@ -77,3 +77,23 @@ fn the_authority_count_reaches_the_reader() {
         "подделке срок не нужен: она живёт один пакет"
     );
 }
+
+/// ТРЕТЬЯ УЛИКА, И ОНА О ДРУГОМ ПРЕДМЕТЕ: сообщение объявило себя УСЕЧЁННЫМ (`TC`).
+///
+/// Счётчик секции у обрезанного ответа ничего не говорит о долге отвечающего: секцию срезали по
+/// дороге, а не не заполнили. Замер 12.09.2026: `dig +norec +dnssec +bufsize=512 +ignore` к
+/// `a0.org.afilias-nst.info` и `a.dns.ripn.net` — `aa tc`, AUTHORITY: 0, обе зоны из двух.
+#[test]
+fn a_truncated_message_says_so_in_its_header() {
+    let cut = DnsMessage::parse(&denial(0x8783, 0)).expect("отказ разбирается");
+    let whole = DnsMessage::parse(&denial(0x8583, 0)).expect("отказ разбирается");
+
+    assert!(
+        cut.truncated,
+        "обрезанное сообщение обязано донести до читателя, что оно обрезано"
+    );
+    assert!(
+        !whole.truncated,
+        "целое сообщение усечённым не притворяется"
+    );
+}
