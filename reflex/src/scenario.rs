@@ -59,7 +59,6 @@
 //! Утечка нарочна: носитель уезжает в цикл целиком и назад не возвращается, посмотреть на него
 //! после прогона иначе нечем; а `&'static` даёт `Copy`, без которого прибор в `own(…)` не собрать.
 
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -780,16 +779,34 @@ pub fn dns_query(client_port: u16, name: &str) -> Vec<u8> {
     datagram([10, 0, 0, 1], client_port, RESOLVER, 53, &message)
 }
 
-/// ОТКАЗ РЕЗОЛВЕРА: «такого имени нет». `authoritative` — присвоил ли отвечающий себе
-/// авторитетность; в ней вся разница между поиском по суффиксам и стиранием имени на пути.
-pub fn dns_denial(client_port: u16, name: &str, authoritative: bool) -> Vec<u8> {
-    let flags: u16 = match authoritative {
-        true => 0x8583,
-        false => 0x8183,
+/// КТО СКАЗАЛ «такого имени нет». Три клетки, а не два флага: отвечающий заявляет РОЛЬ (`AA`) и
+/// исполняет ДОЛГ роли (`SOA` со сроком отрицания, RFC 2308), и подделку выдаёт именно расхождение
+/// этих двух. Пара `bool`-ов допускала бы четвёртое сочетание, которого мир не показал.
+///
+/// Клетки списаны с замера вантажа 12.09.2026 (`dig @8.8.8.8`), по одной на каждый виденный класс.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    /// Рекурсор: имени нет, роли чужой зоны не заявляет, срок отрицания прикладывает.
+    Recursor,
+    /// Подделка на пути: роль хозяина заявлена, долг не исполнен. Живёт один пакет, срок не нужен.
+    Forged,
+    /// ХОЗЯИН ЗОНЫ, спрошенный напрямую: роль заявлена по праву и долг исполнен. Выглядит как
+    /// подделка ровно одним битом `AA` — и различает их только срок.
+    ZoneOwner,
+}
+
+/// ОТКАЗ РЕЗОЛВЕРА: «такого имени нет», сказанное одним из трёх (см. [`Denial`]).
+pub fn dns_denial(client_port: u16, name: &str, who: Denial) -> Vec<u8> {
+    let (flags, authority): (u16, u16) = match who {
+        Denial::Recursor => (0x8183, 1),
+        Denial::Forged => (0x8583, 0),
+        Denial::ZoneOwner => (0x8583, 1),
     };
     let mut message = vec![0xAA, 0xBB];
     message.extend_from_slice(&flags.to_be_bytes());
-    message.extend_from_slice(&[0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    message.extend_from_slice(&[0x00, 0x01, 0, 0]);
+    message.extend_from_slice(&authority.to_be_bytes());
+    message.extend_from_slice(&[0, 0]);
     message.extend_from_slice(&labelled(name));
     message.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
     datagram(RESOLVER, 53, [10, 0, 0, 1], client_port, &message)
