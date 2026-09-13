@@ -4,9 +4,7 @@
 
 use std::time::Duration;
 
-use crate::netlink::{
-    aligned, attrs, be16_at, be32_at, be64_at, i32_at, u16_at, NLMSG_DONE, NLMSG_ERROR,
-};
+use crate::netlink::{attrs, be16_at, be32_at, be64_at, portion_of, Portion};
 
 /// Сколько прошло в одну сторону по счёту ЯДРА.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,7 +104,6 @@ pub struct CtView {
     pub mark: u32,
 }
 
-const HDR: usize = 16;
 const NFGEN: usize = 4;
 const CTA_TUPLE_ORIG: u16 = 1;
 const CTA_MARK: u16 = 8;
@@ -337,32 +334,12 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
     })
 }
 
-/// Разбор порции дампа. Тотален по построению: обрыв на любой границе прекращает обход, не уводит
-/// указатель в мусор.
+/// Разбор порции дампа. Обход сообщений — общий с вопросами маршрутизатору
+/// (`netlink::portion_of`), здесь лишь чем узнаётся запись.
 pub fn chunk_of(buffer: &[u8]) -> Chunk {
-    fn walk(rest: &[u8], so_far: Vec<Entry>) -> Chunk {
-        match (
-            rest.get(0..4)
-                .map(|four| u32::from_ne_bytes([four[0], four[1], four[2], four[3]]) as usize),
-            u16_at(rest, 4),
-        ) {
-            (Some(len), Some(kind)) if len >= HDR && len <= rest.len() => match kind {
-                NLMSG_DONE => Chunk::Done(so_far),
-                NLMSG_ERROR => match i32_at(rest, HDR) {
-                    Some(0) => Chunk::Done(so_far),
-                    Some(code) => Chunk::Failed(code),
-                    None => Chunk::Failed(0),
-                },
-                _record => match rest.get(HDR..len).and_then(entry_of) {
-                    Some(found) => walk(
-                        rest.get(aligned(len)..).unwrap_or(&[]),
-                        so_far.into_iter().chain(core::iter::once(found)).collect(),
-                    ),
-                    None => walk(rest.get(aligned(len)..).unwrap_or(&[]), so_far),
-                },
-            },
-            (Some(_), _) | (None, _) => Chunk::More(so_far),
-        }
+    match portion_of(buffer, |_kind, record| entry_of(record)) {
+        Portion::More(found) => Chunk::More(found),
+        Portion::Done(found) => Chunk::Done(found),
+        Portion::Failed(code) => Chunk::Failed(code),
     }
-    walk(buffer, Vec::new())
 }

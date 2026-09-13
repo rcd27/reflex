@@ -89,3 +89,10 @@ required-features = ["conntrack"]
 name = "flow_identity"
 path = "tests/flow_identity.rs"
 required-features = ["conntrack"]
+
+# СВИДЕТЕЛЬ ПУТИ УВОДА НА ЖИВОМ МАРШРУТИЗАТОРЕ. Прав не требует: тест переисполняет себя в своём
+# сетевом пространстве (`unshare -Ur --net`) и сам собирает там ногу, правила и мутантов.
+[[test]]
+name = "steer_path"
+path = "tests/steer_path.rs"
+required-features = ["nfqueue"]

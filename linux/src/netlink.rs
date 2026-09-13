@@ -51,6 +51,53 @@ pub(crate) fn i32_at(bytes: &[u8], at: usize) -> Option<i32> {
         .map(|four| i32::from_ne_bytes([four[0], four[1], four[2], four[3]]))
 }
 
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    bytes
+        .get(at..at + 4)
+        .map(|four| u32::from_ne_bytes([four[0], four[1], four[2], four[3]]))
+}
+
+/// Заголовок сообщения netlink (`nlmsghdr`).
+pub(crate) const HDR: usize = 16;
+
+/// Порция ответа netlink: что в ней узнано и чем она кончилась.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Portion<T> {
+    More(Vec<T>),
+    Done(Vec<T>),
+    Failed(i32),
+}
+
+/// Обход сообщений порции — ОДИН на все двери: дамп conntrack и вопросы маршрутизатору читают одни
+/// и те же границы, и две копии обхода разошлись бы на обрыве молча. Тотален по построению: обрыв
+/// на любой границе прекращает обход, не уводит указатель в мусор. `NLMSG_ERROR` с нулём —
+/// подтверждение, а не отказ. `pick` видит тип сообщения и тело без заголовка; чего не узнал —
+/// пропускается.
+pub(crate) fn portion_of<T>(buffer: &[u8], pick: impl Fn(u16, &[u8]) -> Option<T>) -> Portion<T> {
+    fn walk<T>(rest: &[u8], so_far: Vec<T>, pick: &dyn Fn(u16, &[u8]) -> Option<T>) -> Portion<T> {
+        match (u32_at(rest, 0).map(|len| len as usize), u16_at(rest, 4)) {
+            (Some(len), Some(kind)) if len >= HDR && len <= rest.len() => match kind {
+                NLMSG_DONE => Portion::Done(so_far),
+                NLMSG_ERROR => match i32_at(rest, HDR) {
+                    Some(0) => Portion::Done(so_far),
+                    Some(code) => Portion::Failed(code),
+                    None => Portion::Failed(0),
+                },
+                _record => walk(
+                    rest.get(aligned(len)..).unwrap_or(&[]),
+                    so_far
+                        .into_iter()
+                        .chain(rest.get(HDR..len).and_then(|body| pick(kind, body)))
+                        .collect(),
+                    pick,
+                ),
+            },
+            (Some(_), _) | (None, _) => Portion::More(so_far),
+        }
+    }
+    walk(buffer, Vec::new(), &pick)
+}
+
 /// Обход TLV одного уровня. Длина в заголовке включает его самого; короче заголовка — обрыв, обход
 /// прекращается, а не пропускает байты наугад.
 pub(crate) struct Attrs<'a> {
