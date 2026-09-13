@@ -145,7 +145,7 @@ pub mod scenario;
 #[cfg(feature = "telling")]
 pub mod telling;
 #[cfg(unix)]
-pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK};
+pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK, UNSTEERABLE};
 /// Дверь записи стоит в КОРНЕ рядом с [`engine`]: `reflex::pcap("файл")`. Имя делят модуль и
 /// функция — Rust держит их в разных пространствах, и это ровно тот случай, ради которого
 /// пространства и разведены: предмет один, а `reflex::pcap::Recording` рядом с `reflex::pcap(…)`

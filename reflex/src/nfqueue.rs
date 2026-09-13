@@ -31,7 +31,13 @@ use crate::{Cause, IntoCarrier};
 pub struct Nfqueue {
     queue: u16,
     layout: Layout,
+    /// Путь увода, который обязан быть предъявлен ядром до первого пакета: метка и нога.
+    steer: Option<(u32, String)>,
 }
+
+/// Чем начинается отказ открыть носитель по непредъявленному пути — отличимо от отказа предпосылки
+/// машины: лечения у них разные, и человек обязан узнать, какое из двух.
+pub const UNSTEERABLE: &str = "путь увода: ";
 
 /// Метка на инъекциях движка: ядро ставит её (SO_MARK) на впрыснутый RST, чтобы он не вернулся в
 /// свою же очередь. Правило очереди обязано пропускать помеченное (`meta mark != INJECT_MARK`).
@@ -44,6 +50,22 @@ impl Nfqueue {
         Nfqueue {
             queue: num,
             layout: Layout::preset(),
+            steer: None,
+        }
+    }
+
+    /// Та же очередь, но движок НЕ ПОДНИМЕТСЯ, пока ядро не покажет путь увода меткой `mark` в ногу
+    /// `device` ([`reflex_linux::route::witness`]): помеченный TCP и UDP уходят в ногу, свои адреса
+    /// машины остаются машине. Правила ставятся снаружи, как и `queue num N`; здесь они
+    /// свидетельствуются.
+    ///
+    /// Гейт на подъёме, а не на акте: путь — свойство мира, а не входа, и узнать о нём можно лишь
+    /// читая мир. Цена молчаливого пропуска оплачена 13.09.2026 — QUIC без увода при докладе об
+    /// успехе и машина, отрезанная собственной меткой.
+    pub fn steering(self, mark: u32, device: &str) -> Nfqueue {
+        Nfqueue {
+            steer: Some((mark, device.to_string())),
+            ..self
         }
     }
 
@@ -237,6 +259,13 @@ impl IntoCarrier for Nfqueue {
     /// она была бы абсурдна (WinDivert про conntrack не слышал). Сырой сокет инъекции поднимается
     /// следом, тоже здесь и тоже безусловно (см. докблок [`NfqueueCarrier`]).
     fn open(self) -> Result<NfqueueCarrier, Cause> {
+        // Путь — ПРЕЖДЕ предпосылки машины: не поднятая очередь не стоит ничего, а увод по
+        // непоказанному пути стоит самой машины.
+        self.steer
+            .as_ref()
+            .map(|(mark, device)| reflex_linux::route::witness(*mark, device))
+            .transpose()
+            .map_err(|why| Cause(format!("{UNSTEERABLE}{why}")))?;
         reflex_linux::nfqueue::preflight::check().map_err(|why| Cause(why.to_string()))?;
         let base = TimeoutBase::read().ok_or_else(|| {
             Cause(
