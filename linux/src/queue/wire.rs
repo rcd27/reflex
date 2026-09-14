@@ -30,6 +30,7 @@ const NFQA_CFG_FLAGS: u16 = 5;
 const NFQNL_CFG_CMD_BIND: u8 = 1;
 const NFQNL_COPY_PACKET: u8 = 2;
 const NFQA_CFG_F_CONNTRACK: u32 = 0x0002;
+const NFQA_CFG_F_FAIL_OPEN: u32 = 0x0001;
 
 const NF_DROP: u32 = 0;
 const NF_ACCEPT: u32 = 1;
@@ -145,10 +146,18 @@ pub fn queue_maxlen_request(queue: u16, seq: u32, maxlen: u32) -> Vec<u8> {
     )
 }
 
-/// Включить `NFQA_CT`: флаг плюс маска, называющая тот же бит (ядро меняет только биты маски).
-pub fn conntrack_flag_request(queue: u16, seq: u32) -> Vec<u8> {
-    let flags = tlv(NFQA_CFG_FLAGS, &NFQA_CFG_F_CONNTRACK.to_be_bytes());
-    let mask = tlv(NFQA_CFG_MASK, &NFQA_CFG_F_CONNTRACK.to_be_bytes());
+/// Флаги очереди: `NFQA_CT` и `FAIL_OPEN`, маска называет те же биты (ядро меняет только биты маски).
+///
+/// FAIL_OPEN — НЕ ВЫБРАСЫВАТЬ ПАКЕТ, КОГДА НАС НЕ ДОЖДАЛИСЬ (14.09.2026). Без флага ядро на
+/// переполненном сокете (`ENOBUFS`) пакет роняет и считает в `queue_user_dropped`. Канарейка 0.9.30:
+/// 9212 потерянных на TCP-очереди и 1057 на QUIC-очереди при вечных крутилках ютуба у владельца —
+/// «движок не успел» превращалось в «человек не получил пакет». С флагом ядро такой пакет ПРИНИМАЕТ
+/// без нас. Цена названа: пакет, пропущенный мимо, не осмотрен и не вылечен, — но прямая не хуже, чем
+/// без продукта, а сброшенный пакет хуже.
+pub fn flags_request(queue: u16, seq: u32) -> Vec<u8> {
+    let bits = NFQA_CFG_F_CONNTRACK | NFQA_CFG_F_FAIL_OPEN;
+    let flags = tlv(NFQA_CFG_FLAGS, &bits.to_be_bytes());
+    let mask = tlv(NFQA_CFG_MASK, &bits.to_be_bytes());
     message(NFQNL_MSG_CONFIG, queue, seq, &[flags, mask].concat())
 }
 

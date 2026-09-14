@@ -9,7 +9,7 @@ use std::time::Instant;
 use libc::{c_int, c_void, close, poll, pollfd, recv, send, socket, AF_NETLINK, POLLIN, SOCK_RAW};
 
 use super::wire::{
-    bind_request, conntrack_flag_request, incoming_of, params_request, queue_maxlen_request,
+    bind_request, flags_request, incoming_of, params_request, queue_maxlen_request,
     verdict_message, Incoming,
 };
 use crate::conntrack::TimeoutBase;
@@ -204,7 +204,7 @@ impl QueueSocket {
         };
         sock.send(&bind_request(queue, 1))?;
         sock.send(&params_request(queue, 2, COPY_RANGE))?;
-        sock.send(&conntrack_flag_request(queue, 3))?;
+        sock.send(&flags_request(queue, 3))?;
         // ЁМКОСТЬ ОЧЕРЕДИ ПРОСИМ ЯВНО, а не берём умолчание ядра (1024 пакета).
         //
         // Замер потребителя на браузерной нагрузке: одна загрузка страницы даёт 7119 пакетов в
