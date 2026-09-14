@@ -368,6 +368,173 @@ fn скрытый_вход_ломает_свидетельство_на_той_�
     );
 }
 
+/// Пакет без канального слоя — так его отдаёт очередь ядра и так пишет запись движка.
+fn raw(flow: &Flow, seq: u32, ack: u32, flags: TcpFlags, payload: &[u8]) -> Vec<u8> {
+    TcpBuilder::new()
+        .flow(flow)
+        .seq(seq)
+        .ack(ack)
+        .flags(flags)
+        .ttl(64)
+        .payload(payload)
+        .build()
+        .serialize_ip()
+}
+
+fn back() -> Flow {
+    Flow {
+        src: talk().dst,
+        dst: talk().src,
+        protocol: Protocol::Tcp,
+    }
+}
+
+/// ЗАГРУЗКА, КОТОРУЮ ПРИБОР ТЕМПА ЗОВЁТ БЕДОЙ: в первом окне цель отдаёт 28 КБ, затем три окна
+/// подряд по 500 байт. Окно — 300 мс, сетка идёт от первого кадра записи.
+fn throttled_download() -> Vec<(u64, Vec<u8>)> {
+    let hello = reflex_core::tls::build_client_hello("example.com");
+    let asked = 1 + hello.len() as u32;
+    let opening = vec![
+        (0, raw(&talk(), 0, 0, TcpFlags::SYN, &[])),
+        (
+            10_000,
+            raw(&back(), 0, 1, TcpFlags::SYN | TcpFlags::ACK, &[]),
+        ),
+        (
+            20_000,
+            raw(&talk(), 1, 1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+        ),
+    ];
+    let peak = (0..20u32).map(|n| {
+        (
+            30_000 + u64::from(n) * 10_000,
+            raw(&back(), 1 + n * 1400, asked, TcpFlags::ACK, &[7u8; 1400]),
+        )
+    });
+    let sag = (0..4u32).map(|n| {
+        (
+            400_000 + u64::from(n) * 300_000,
+            raw(&back(), 28_001 + n * 500, asked, TcpFlags::ACK, &[7u8; 500]),
+        )
+    });
+    let closing = std::iter::once((1_650_000, raw(&talk(), asked, 30_001, TcpFlags::ACK, &[])));
+    opening
+        .into_iter()
+        .chain(peak)
+        .chain(sag)
+        .chain(closing)
+        .collect()
+}
+
+/// Запись движка: заголовок `LINKTYPE_RAW` и кадры, каждый урезанный правилом `keep`.
+fn engine_recording(frames: &[(u64, Vec<u8>)], keep: impl Fn(&[u8]) -> usize) -> Vec<u8> {
+    frames
+        .iter()
+        .fold(reflex_core::pcap::opening(), |file, (micros, packet)| {
+            let wall = std::time::UNIX_EPOCH
+                + std::time::Duration::from_micros(1_756_000_000_000_000 + micros);
+            file.into_iter()
+                .chain(reflex_core::pcap::entry(
+                    wall,
+                    &packet[..keep(packet)],
+                    packet.len(),
+                ))
+                .collect()
+        })
+}
+
+fn heard_tempo(path: &std::path::Path) -> Vec<(String, Distress)> {
+    let heard = std::sync::Mutex::new(Vec::new());
+    pcap(path)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Throttled::over(std::time::Duration::from_millis(300)))
+        .on(|target: &str, distress| {
+            heard
+                .lock()
+                .iter_mut()
+                .for_each(|log| log.push((target.to_string(), distress.clone())))
+        })
+        .run();
+    heard.into_inner().unwrap_or_default()
+}
+
+/// ПРЕДМЕТ: ЗАПИСЬ ДВИЖКА ДАЁТ ТЕ ЖЕ СЛОВА, ЧТО ПОЛНЫЙ ПРОВОД. Писатель оставляет у ответов цели
+/// одни заголовки — иначе час трафика коробки не помещается ни в какую память, — и закон здесь
+/// один: урезание не имеет права сменить вердикт. Прибор выбран тот, что считает БАЙТЫ ответа, то
+/// есть ровно тот, кого урезание ослепило бы первым.
+#[test]
+fn a_cut_engine_recording_says_what_the_whole_one_says() {
+    let frames = throttled_download();
+    let whole = engine_recording(&frames, |packet| packet.len());
+    let cut = engine_recording(&frames, |packet| record::kept(packet, 443));
+
+    let heard_whole = heard_tempo(&saved("tempo-whole", &whole));
+    let heard_cut = heard_tempo(&saved("tempo-cut", &cut));
+
+    assert!(
+        heard_whole
+            .iter()
+            .any(|(_, distress)| matches!(distress, Distress::Throttled { .. })),
+        "разговор не троттлинг даже целиком — предмет теста не собран: {heard_whole:?}"
+    );
+    assert_eq!(heard_cut, heard_whole, "урезание сменило вердикт прибора");
+    assert!(
+        cut.len() * 3 < whole.len(),
+        "урезание не урезало: {} байт против {}",
+        cut.len(),
+        whole.len()
+    );
+}
+
+/// ПРЕДМЕТ: ЗАПИСЬ ДЕРЖИТ ПОТОЛОК. Коробке отведена память, а не диск: поколение, дошедшее до
+/// потолка, уступает место новому, старшие сдвигаются, лишнее уходит. Каждое поколение обязано
+/// читаться само по себе — иначе снятый с коробки файл нечем прогнать.
+#[test]
+fn the_engine_recording_holds_its_ceiling_by_generations() {
+    let dir = std::env::temp_dir().join(format!("reflex-generations-{}", std::process::id()));
+    let made = std::fs::create_dir_all(&dir);
+    assert!(made.is_ok(), "временный каталог не создан: {made:?}");
+    let path = dir.join("q.pcap");
+    let recorder = Recorder::start(Record::at(&path).capped(4096).keeping(3));
+
+    (0..200u32).for_each(|n| {
+        recorder.note(&raw(
+            &talk(),
+            n * 100,
+            0,
+            TcpFlags::PSH | TcpFlags::ACK,
+            &[1u8; 100],
+        ))
+    });
+    let lost = recorder.finish();
+
+    assert!(
+        matches!(lost, Ok(0)),
+        "кадры потеряны или нить упала: {lost:?}"
+    );
+    let generations: Vec<std::path::PathBuf> =
+        [path.clone(), dir.join("q.pcap.1"), dir.join("q.pcap.2")].to_vec();
+    generations.iter().for_each(|generation| {
+        let bytes = std::fs::read(generation).unwrap_or_default();
+        let (frames, broken) = reflex_core::pcap::read(&bytes, std::time::Instant::now());
+        assert!(
+            !frames.is_empty(),
+            "поколение {generation:?} пустое или не записано"
+        );
+        assert_eq!(broken, None, "поколение {generation:?} оборвано");
+        assert!(
+            bytes.len() <= 4096,
+            "поколение {generation:?} перешло потолок: {}",
+            bytes.len()
+        );
+    });
+    assert!(
+        !dir.join("q.pcap.3").exists(),
+        "лишнее поколение не ушло — кольцо растёт"
+    );
+}
+
 /// Прибор со СКРЫТЫМ входом: величину берёт из счётчика, живущего вне его состояния. Ровно то, что
 /// восьмой закон обязан ловить.
 #[derive(Clone, Copy, Default)]

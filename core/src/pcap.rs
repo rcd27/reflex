@@ -22,6 +22,9 @@ pub struct Frame {
     /// в заголовке файла ровно раз, и всякий, кто выводил бы смещение сам, разошёлся бы с записью
     /// молча — а расходится он в сторону тишины (см. [`Frame::network`]).
     pub link: Link,
+    /// Сколько байт было в кадре НА ПРОВОДЕ (`orig_len` записи), не меньше снятого. Больше снятого
+    /// бывает, когда писатель урезал тело (см. [`Frame::restored`]).
+    pub original: usize,
 }
 
 /// Канальный слой записи — те роды, что этот читатель разбирает.
@@ -37,6 +40,9 @@ pub enum Link {
     Sll,
     /// `LINKTYPE_LINUX_SLL2` (276): то же второй редакции, 20 байт, род в НАЧАЛЕ.
     Sll2,
+    /// `LINKTYPE_RAW` (101): канального слоя нет, первым байтом IP. Так пишет сам движок — очередь
+    /// ядра отдаёт ему голый пакет (см. [`opening`]).
+    Raw,
 }
 
 /// Канальный слой Ethernet: две марки и род содержимого.
@@ -81,9 +87,28 @@ impl Frame {
             // сняло их, разбирая пакет, и род сети в поле протокола стоит настоящий.
             Link::Sll => SLL_HEADER,
             Link::Sll2 => SLL2_HEADER,
+            Link::Raw => 0,
         };
 
         self.bytes.get(after..).unwrap_or(&[])
+    }
+
+    /// СЕТЕВОЙ ПАКЕТ ДЛИНЫ, КОТОРУЮ ОН ИМЕЛ НА ПРОВОДЕ: снятое как есть, недостающий хвост — нулями.
+    ///
+    /// Нужен затем, что приборы считают байты ДЛИНОЙ ТЕЛА, а не полем IP-заголовка. Писатель движка
+    /// оставляет у ответов цели одни заголовки (тело ответа не читает никто, кроме счёта), и без
+    /// восстановления такой кадр читался бы пустым подтверждением: троттлинг на записи стал бы
+    /// невыразим, а тишина — ложной.
+    ///
+    /// ЦЕНА НАЗВАНА: длины честные, содержимое хвоста — нет. Прибор, который начнёт читать тело
+    /// ответа цели, на урезанной записи увидит нули.
+    pub fn restored(&self) -> Vec<u8> {
+        let missing = self.original.saturating_sub(self.bytes.len());
+        self.network()
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(0, missing))
+            .collect()
     }
 }
 
@@ -113,6 +138,10 @@ const ETHERNET: u32 = 1;
 const LINUX_SLL: u32 = 113;
 /// `LINKTYPE_LINUX_SLL2` — он же сегодня.
 const LINUX_SLL2: u32 = 276;
+/// `LINKTYPE_RAW` — голый IP, так пишет сам движок.
+const RAW: u32 = 101;
+/// Потолок кадра, объявляемый писателем движка: пакет из очереди ядра длиннее не бывает.
+const SNAPLEN: u32 = 65_535;
 /// Длина «cooked»-заголовка первой редакции: род пакета, род адреса, длина адреса, адрес, протокол.
 const SLL_HEADER: usize = 16;
 /// Длина второй редакции: протокол, резерв, индекс устройства, род адреса, род пакета, длина, адрес.
@@ -151,6 +180,7 @@ fn header(data: &[u8]) -> Result<(bool, Link), Broken> {
             ETHERNET => Ok((swapped, Link::Ethernet)),
             LINUX_SLL => Ok((swapped, Link::Sll)),
             LINUX_SLL2 => Ok((swapped, Link::Sll2)),
+            RAW => Ok((swapped, Link::Raw)),
             link_type => Err(Broken::UnsupportedLink { link_type }),
         },
     }
@@ -161,25 +191,21 @@ fn header(data: &[u8]) -> Result<(bool, Link), Broken> {
 /// Без изменяемого состояния и без рекурсии: смещения порождаются `successors` (ленивая
 /// последовательность). Рекурсия была бы хуже цикла (кадров сотни тысяч, стек не резиновый), `let
 /// mut` — хуже обоих: открывает место для правки, невидимой в сигнатуре.
-fn records(
-    data: &[u8],
-    base: Instant,
-    swapped: bool,
-    link: Link,
-) -> (Vec<Frame>, Option<Broken>) {
-    let taken: Vec<(u64, &[u8])> = offsets(data, swapped)
+fn records(data: &[u8], base: Instant, swapped: bool, link: Link) -> (Vec<Frame>, Option<Broken>) {
+    let taken: Vec<(u64, &[u8], usize)> = offsets(data, swapped)
         .filter_map(|offset| record_at(data, offset, swapped))
         .collect();
 
-    let first = taken.first().map(|(stamp, _)| *stamp).unwrap_or(0);
+    let first = taken.first().map(|(stamp, _, _)| *stamp).unwrap_or(0);
 
     let frames: Vec<Frame> = taken
         .iter()
-        .map(|(stamp, bytes)| Frame {
+        .map(|(stamp, bytes, original)| Frame {
             at: base + Duration::from_micros(stamp.saturating_sub(first)),
             wall: UNIX_EPOCH + Duration::from_micros(*stamp),
             bytes: bytes.to_vec(),
             link,
+            original: *original,
         })
         .collect();
 
@@ -201,18 +227,21 @@ fn captured_at(data: &[u8], offset: usize, swapped: bool) -> Option<usize> {
         .map(|head| word(&head[8..12], swapped) as usize)
 }
 
-/// Штамп и тело записи, если она помещается целиком.
-fn record_at(data: &[u8], offset: usize, swapped: bool) -> Option<(u64, &[u8])> {
+/// Штамп, тело и длина на проводе, если запись помещается целиком.
+fn record_at(data: &[u8], offset: usize, swapped: bool) -> Option<(u64, &[u8], usize)> {
     let head = data.get(offset..offset + RECORD_HEADER)?;
     let seconds = word(&head[0..4], swapped) as u64;
     let fraction = word(&head[4..8], swapped) as u64;
     let captured = word(&head[8..12], swapped) as usize;
+    // Не меньше снятого: запись, обещающая на проводе меньше, чем в ней лежит, врёт о себе, и
+    // верить здесь можно только байтам.
+    let original = (word(&head[12..16], swapped) as usize).max(captured);
     let body = offset + RECORD_HEADER;
 
     // Доли секунды считаем микросекундами: наносекундная разновидность встречается редко и даёт
     // лишь более грубый шаг, а порядок событий от этого не меняется.
     data.get(body..body + captured)
-        .map(|bytes| (seconds * 1_000_000 + fraction.min(999_999), bytes))
+        .map(|bytes| (seconds * 1_000_000 + fraction.min(999_999), bytes, original))
 }
 
 /// Обрыв в конце, если он есть. `tcpdump`, убитый сигналом, оставляет хвост — выбросить из-за него
@@ -246,6 +275,43 @@ fn word(bytes: &[u8], swapped: bool) -> u32 {
         true => u32::from_be_bytes(raw),
         false => u32::from_le_bytes(raw),
     }
+}
+
+/// ЗАГОЛОВОК ЗАПИСИ ДВИЖКА: классический `pcap`, микросекунды, канальный слой `LINKTYPE_RAW`.
+///
+/// Писатель живёт рядом с читателем, а не у потребителя: формат, записанный одной рукой и
+/// прочитанный другой, расходится молча, а здесь их сверяет один тест. Чистые функции без IO —
+/// куда класть байты, решает носитель.
+pub fn opening() -> Vec<u8> {
+    0xa1b2_c3d4u32
+        .to_le_bytes()
+        .into_iter()
+        .chain(2u16.to_le_bytes())
+        .chain(4u16.to_le_bytes())
+        .chain([0; 8])
+        .chain(SNAPLEN.to_le_bytes())
+        .chain(RAW.to_le_bytes())
+        .collect()
+}
+
+/// ОДНА ЗАПИСЬ: момент на стене, снятые байты и длина пакета на проводе. `original` меньше снятого
+/// не пишется — длина на проводе не бывает короче того, что с провода сняли.
+///
+/// Момент раньше эпохи (часы коробки без RTC до NTP) пишется нулём, а не паникой: запись с неверным
+/// календарём всё ещё несёт верные ПРОМЕЖУТКИ, а по ним и работают приборы.
+pub fn entry(wall: SystemTime, kept: &[u8], original: usize) -> Vec<u8> {
+    let since = wall.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+    let seconds = u32::try_from(since.as_secs()).unwrap_or(u32::MAX);
+    let captured = u32::try_from(kept.len()).unwrap_or(u32::MAX);
+    let on_wire = u32::try_from(original.max(kept.len())).unwrap_or(u32::MAX);
+    seconds
+        .to_le_bytes()
+        .into_iter()
+        .chain(since.subsec_micros().to_le_bytes())
+        .chain(captured.to_le_bytes())
+        .chain(on_wire.to_le_bytes())
+        .chain(kept.iter().copied())
+        .collect()
 }
 
 #[cfg(test)]
@@ -448,6 +514,62 @@ mod tests {
         let (frames, broken) = read(&pcap_of(&[]), Instant::now());
         assert!(frames.is_empty());
         assert_eq!(broken, None);
+    }
+
+    /// ПРЕДМЕТ: запись, которую пишет сам движок, читается обратно ТЕМИ ЖЕ пакетами. Очередь ядра
+    /// отдаёт голый IP, и канальный слой у такой записи `LINKTYPE_RAW`: приписать ей Ethernet
+    /// значило бы записать то, чего движок не видел.
+    #[test]
+    fn the_engines_own_recording_reads_back_as_the_same_packets() {
+        let packet = b"\x45\x00\x00\x28ip-packet".to_vec();
+        let wall = UNIX_EPOCH + Duration::from_micros(1_756_000_000_250_000);
+        let file: Vec<u8> = opening()
+            .into_iter()
+            .chain(entry(wall, &packet, packet.len()))
+            .collect();
+
+        let (frames, broken) = read(&file, Instant::now());
+
+        assert_eq!(broken, None);
+        assert_eq!(
+            frames.first().map(|frame| frame.network().to_vec()),
+            Some(packet)
+        );
+        assert_eq!(frames.first().map(|frame| frame.wall), Some(wall));
+    }
+
+    /// ПРЕДМЕТ: урезанный кадр помнит, СКОЛЬКО В НЁМ БЫЛО. Приборы считают байты длиной тела, и
+    /// кадр, у которого от тела остались одни заголовки, без восстановления читался бы как пустое
+    /// подтверждение — троттлинг на такой записи стал бы невыразим.
+    #[test]
+    fn a_cut_frame_is_restored_to_its_declared_length() {
+        let headers = b"\x45\x00\x05\xdcheaders".to_vec();
+        let file: Vec<u8> = opening()
+            .into_iter()
+            .chain(entry(UNIX_EPOCH, &headers, 1500))
+            .collect();
+
+        let (frames, _broken) = read(&file, Instant::now());
+        let restored = frames.first().map(Frame::restored);
+
+        assert_eq!(restored.as_ref().map(Vec::len), Some(1500));
+        assert_eq!(
+            restored.map(|bytes| bytes.starts_with(&headers)),
+            Some(true),
+            "восстановление обязано дорастить хвост, не трогая снятого"
+        );
+    }
+
+    /// Целый кадр восстанавливается в себя: доращивать нечего, и чужая запись не меняется ни байтом.
+    #[test]
+    fn a_whole_frame_is_restored_as_it_is() {
+        let packet = b"\x45\x00\x00\x28ip";
+        let (frames, _broken) = read(
+            &pcap_of(&[(1, 0, &framed(0x0800, &[], packet))]),
+            Instant::now(),
+        );
+
+        assert_eq!(frames.first().map(Frame::restored), Some(packet.to_vec()));
     }
 }
 

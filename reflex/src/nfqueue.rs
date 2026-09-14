@@ -33,6 +33,8 @@ pub struct Nfqueue {
     layout: Layout,
     /// Путь увода, который обязан быть предъявлен ядром до первого пакета: метка и нога.
     steer: Option<(u32, String)>,
+    /// Куда писать провод, каким его видит движок. `None` — не писать.
+    record: Option<crate::record::Record>,
 }
 
 /// Чем начинается отказ открыть носитель по непредъявленному пути — отличимо от отказа предпосылки
@@ -51,6 +53,19 @@ impl Nfqueue {
             queue: num,
             layout: Layout::preset(),
             steer: None,
+            record: None,
+        }
+    }
+
+    /// Та же очередь, и КАЖДЫЙ её пакет пишется в запись ([`crate::record`]) — ровно таким, каким
+    /// его получил движок, до решения. Прогон этой записи (`pcap(путь)`) есть тот же движок на том
+    /// же входе, без коробки.
+    ///
+    /// Запись не условие работы: не открылся файл — очередь живёт, отказ печатается по имени.
+    pub fn recording(self, record: crate::record::Record) -> Nfqueue {
+        Nfqueue {
+            record: Some(record),
+            ..self
         }
     }
 
@@ -148,6 +163,7 @@ impl IntoCarrier for LocalNfqueue {
 pub struct NfqueueCarrier {
     socket: QueueSocket,
     sender: RawSender,
+    recorder: Option<crate::record::Recorder>,
 }
 
 /// Носитель отвечает удержанному тем же терминалом, что и голый `QueueSocket` — делегированием, не
@@ -179,7 +195,14 @@ impl Serves for NfqueueCarrier {
     where
         F: FnOnce(&reflex_core::held::Held<Self::Carrier>, Option<Self::Edge>) -> Self::Answer,
     {
-        self.socket.serve(until, decide)
+        // Пишется ДО решения: пакет, на котором цепочка упала бы, в записи обязан остаться.
+        let recorder = &self.recorder;
+        self.socket.serve(until, move |held, edge| {
+            recorder
+                .iter()
+                .for_each(|recorder| recorder.note(held.seen()));
+            decide(held, edge)
+        })
     }
 }
 
@@ -277,7 +300,11 @@ impl IntoCarrier for Nfqueue {
             QueueSocket::open(self.queue, base).map_err(|why| Cause(format!("{why:?}")))?;
         let sender =
             RawSender::open(INJECT_MARK).map_err(|why| Cause(format!("сокет инъекции: {why}")))?;
-        Ok(NfqueueCarrier { socket, sender })
+        Ok(NfqueueCarrier {
+            socket,
+            sender,
+            recorder: self.record.map(crate::record::Recorder::start),
+        })
     }
 
     fn layout(&self) -> Layout {

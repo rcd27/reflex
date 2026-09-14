@@ -200,10 +200,12 @@ impl Serves for PcapFile {
     {
         match self.frames.get(self.next) {
             Some(frame) => {
-                // `network`, а не `bytes`: разбор провода ждёт IP-заголовок первым байтом, а в
+                // `restored`, а не `bytes`: разбор провода ждёт IP-заголовок первым байтом, а в
                 // записи перед ним лежит канальный слой. Снимает его `core::pcap` — там известен
-                // род слоя, здесь нет.
-                let held = Held::new(frame.network().to_vec(), frame.at);
+                // род слоя, здесь нет. Он же доращивает урезанное тело до длины на проводе:
+                // приборы считают байты длиной тела, и без этого запись движка (`record`), где у
+                // ответов цели остаются одни заголовки, читалась бы как молчание цели.
+                let held = Held::new(frame.restored(), frame.at);
                 self.next += 1;
                 let answer = decide(&held, None);
                 Served::Answered(self.apply(held.answered(answer)))
