@@ -31,6 +31,9 @@ pub struct Entry {
     pub orig_counts: Counts,
     pub reply_counts: Counts,
     pub mark: u32,
+    /// Состояние по мнению ядра. Нужно тому, кто решает, какую запись можно забыть без вреда:
+    /// `SynSent` — рукопожатия не было, рвать нечего.
+    pub tcp: Option<CtTcp>,
 }
 
 /// TCP-состояние разговора по мнению ЯДРА (из `CTA_PROTOINFO`). Свой автомат TCP не нужен — ядро
@@ -331,6 +334,7 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
         orig_counts: view.down,
         reply_counts: view.up,
         mark: view.mark,
+        tcp: view.tcp,
     })
 }
 
