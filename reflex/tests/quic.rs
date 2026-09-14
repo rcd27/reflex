@@ -111,9 +111,15 @@ fn talk() -> Flow {
 /// Первый клиентский `Initial` из настоящей записи — берём его байты, а не сочиняем: заголовок
 /// QUIC сочинить можно, но тогда поверялся бы наш сочинитель.
 fn real_initial() -> Vec<u8> {
+    datagram_of_record(0)
+}
+
+/// Датаграмма `n`-го кадра записи (с нуля). В записи кадры 0 и 1 — ОБА клиентские `Initial` с одним
+/// `DCID`, через 8 мкс: `ClientHello` не влез в одну датаграмму, и имя лежит во второй (tshark).
+fn datagram_of_record(n: usize) -> Vec<u8> {
     let data = std::fs::read("tests/fixtures/quic-handshake.pcap").expect("фикстура на месте");
     let (frames, _broken) = reflex_core::pcap::read(&data, std::time::Instant::now());
-    let net = frames.first().expect("кадр есть").network().to_vec();
+    let net = frames.get(n).expect("кадр есть").network().to_vec();
     let ihl = ((net[0] & 0x0f) as usize) * 4;
     net[ihl + 8..].to_vec()
 }
@@ -182,6 +188,82 @@ fn после_ответа_цели_повтор_уликой_не_являет�
     assert!(
         !matches!(seen(&mut state, &initial, Dir::Up), Seen::Resent { .. }),
         "после ответа цели повтор открытия улики не несёт"
+    );
+}
+
+/// ПРЕДМЕТ: ВТОРАЯ ПОЛОВИНА `ClientHello` — не повтор, хотя `DCID` тот же и цель ещё молчит.
+///
+/// Замер 14.09.2026 на стенде и в парке: браузерное приветствие с постквантовым ключом не влезает в
+/// одну датаграмму, и КАЖДЫЙ разговор QUIC давал `Retransmit { after_ms: 0 }` — «повтор» через 8
+/// мкс. Продукт уводил в контур `googlevideo`, `youtube`, `quic.nginx.org`, и цель, не
+/// заблокированная никем, лечилась. Повтор отличается от продолжения тем, что НЕ НЕСЁТ НОВЫХ
+/// БАЙТОВ рукопожатия: смещения `CRYPTO` второй датаграммы (1077…1468) лежат дальше первой.
+#[test]
+fn hello_continued_in_next_datagram_is_not_a_repeat() {
+    let mut state = QuicState::default();
+
+    let _ = seen(&mut state, &datagram_of_record(0), Dir::Up);
+    assert!(
+        !matches!(
+            seen(&mut state, &datagram_of_record(1), Dir::Up),
+            Seen::Resent { .. }
+        ),
+        "вторая датаграмма несёт ДАЛЬНЕЙШИЕ байты приветствия — это продолжение, а не повтор"
+    );
+}
+
+/// Терминальная половина того же: на настоящем рукопожатии, где цель ответила через 45 мс, прибор
+/// повтора обязан молчать. Именно его слово уводило чистые цели в контур.
+#[test]
+fn retransmit_is_silent_on_a_real_split_handshake() {
+    let heard = std::sync::Mutex::new(Vec::new());
+
+    pcap("tests/fixtures/quic-handshake.pcap")
+        .from(Quic)
+        .extract(Sni)
+        .detect(Retransmit::unanswered())
+        .on(|_target: &str, distress: Distress| {
+            heard.lock().expect("журнал не отравлен").push(distress)
+        })
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        !heard
+            .iter()
+            .any(|distress| matches!(distress, Distress::Retransmit { .. })),
+        "клиент разбил приветствие на две датаграммы, цель ответила — беды нет; услышано: {heard:?}"
+    );
+}
+
+/// Обезоруживающая половина, и она не выдумана: под НАСТОЯЩИМ дропом клиент повторяет открытие
+/// ПРОБОЙ — `Initial` из `PING` и `PADDING`, без единого байта `CRYPTO`. Запись стенда 14.09.2026
+/// (curl/ngtcp2, дроп UDP/443 на `lab-dpi`, tcpdump у клиента): приветствие двумя датаграммами,
+/// затем пробы через 1 и 3 с, и так на обоих адресах цели.
+///
+/// Проба новых байт не несёт — это повтор, и прибор обязан назвать беду. Первая редакция закона
+/// «ни одного нового байта» считала пустую датаграмму «не повтором» и молчала на настоящей беде;
+/// нашлось обезоруживанием на стенде, а не чтением. Порог в 500 мс отделяет честную пробу от ложного
+/// «повтора» второй половины приветствия через 0 мс.
+#[test]
+fn a_probe_without_crypto_under_a_real_drop_is_a_repeat() {
+    let heard = std::sync::Mutex::new(Vec::new());
+
+    pcap("tests/fixtures/quic-drop.pcap")
+        .from(Quic)
+        .extract(Sni)
+        .detect(Retransmit::unanswered())
+        .on(|_target: &str, distress: Distress| {
+            heard.lock().expect("журнал не отравлен").push(distress)
+        })
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard
+            .iter()
+            .any(|distress| matches!(distress, Distress::Retransmit { after_ms } if *after_ms >= 500)),
+        "цель молчит, клиент шлёт пробы через 1 и 3 с — беда обязана быть названа; услышано: {heard:?}"
     );
 }
 

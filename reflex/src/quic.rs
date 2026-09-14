@@ -71,6 +71,15 @@
 //! наблюдателю и не меняется между попытками, — `DCID` (открытым текстом, RFC 9001 §5.2). У TCP ту
 //! же работу делает граница по `seq`; здесь её делает `DCID`.
 //!
+//! Но `DCID` один и у ПРОДОЛЖЕНИЯ: приветствие с постквантовым ключом в датаграмму не влезает, и
+//! вторая его половина уходит через микросекунды с тем же `DCID`. Первая редакция звала её повтором —
+//! и каждый разговор QUIC давал `Retransmit { after_ms: 0 }` (замер 14.09.2026: стенд и парк, чистые
+//! цели уводились в контур). Потому повтор — `DCID` тот же И датаграмма не несёт НИ ОДНОГО нового
+//! байта рукопожатия: её куски `CRYPTO` лежат внутри уже присланного, либо кусков нет вовсе — так
+//! выглядит проба клиента (`PING` + `PADDING`), и под настоящим дропом других повторов нет (запись
+//! стенда, curl/ngtcp2). Цена названа: `Initial`, который не расшифровался (не версия 1), кусков не
+//! отдаёт, и его продолжение прочитается повтором — ровно как до этой правки.
+//!
 //! Повтор объявляется ТОЛЬКО пока цель не ответила ни разу. Ответила — и второй `Initial` уже не
 //! улика: так бывает при миграции соединения, и обвинять цель за неё значило бы врать.
 
@@ -101,12 +110,59 @@ struct Talk {
     /// а односоставная `quic::sni` молчит на обеих. Ровно ради этого случая в фундаменте и разведены
     /// `crypto_of` (куски из одной датаграммы) и `sni_of` (имя из склеенных кусков).
     crypto: Vec<(u64, Vec<u8>)>,
+    /// Какие байты рукопожатия клиент УЖЕ прислал — слитые отрезки `[от, до)` смещений `CRYPTO`.
+    /// Живёт дольше `crypto`: имя найдено, а повтор судится до ответа цели. Отрезков единицы —
+    /// приветствие непрерывно, слияние сводит десятки кусков к одному.
+    covered: Vec<(u64, u64)>,
 }
 
 /// Память разбора QUIC. Своя у транспорта — как `TcpState` у соединений.
 #[derive(Default)]
 pub struct QuicState {
     talks: HashMap<Flow, Talk>,
+}
+
+/// Не несёт ли датаграмма ни одного нового байта рукопожатия — это и есть повтор. Датаграмма БЕЗ
+/// кусков тоже повтор: так клиент зовёт молчащую цель пробой (`PING` + `PADDING`). Запись стенда
+/// под дропом (curl/ngtcp2): после приветствия — только такие пробы, через 1 и 3 с. Первая редакция
+/// звала пустую датаграмму «не повтором» и молчала на настоящей беде.
+fn brings_nothing_new(covered: &[(u64, u64)], pieces: &[(u64, Vec<u8>)]) -> bool {
+    pieces.iter().all(|(offset, data)| {
+        let end = offset.saturating_add(data.len() as u64);
+        covered
+            .iter()
+            .any(|(from, to)| from <= offset && end <= *to)
+    })
+}
+
+/// Покрытие после датаграммы: старые отрезки плюс её куски, отсортированы и слиты. Слияние
+/// обязательно — повтор бывает перепакован иначе, чем оригинал, и его кусок накрывается лишь
+/// СОЮЗОМ прежних.
+fn widened(covered: &[(u64, u64)], pieces: &[(u64, Vec<u8>)]) -> Vec<(u64, u64)> {
+    covered
+        .iter()
+        .copied()
+        .chain(
+            pieces
+                .iter()
+                .map(|(offset, data)| (*offset, offset.saturating_add(data.len() as u64))),
+        )
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .fold(
+            Vec::new(),
+            |spans: Vec<(u64, u64)>, (from, to)| match spans.split_last() {
+                Some((&(last_from, last_to), rest)) if from <= last_to => rest
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once((last_from, last_to.max(to))))
+                    .collect(),
+                Some(_) | None => spans
+                    .into_iter()
+                    .chain(std::iter::once((from, to)))
+                    .collect(),
+            },
+        )
 }
 
 impl Transport for Quic {
@@ -142,6 +198,7 @@ impl Transport for Quic {
             answered: false,
             named: None,
             crypto: Vec::new(),
+            covered: Vec::new(),
         });
 
         let wire = match from_client {
@@ -159,12 +216,16 @@ impl Transport for Quic {
                     count: payload.len() as u32,
                 },
                 Some(dcid) => {
+                    // Расшифровка нужна двум вопросам — имени и повтору — и зовётся, пока хоть один
+                    // открыт: после ответа цели повтор уликой не бывает, после имени оно известно.
+                    let pieces = match (talk.named.is_none(), talk.answered) {
+                        (false, true) => Vec::new(),
+                        (true, _) | (false, false) => reflex_core::quic::crypto_of(payload),
+                    };
                     // Имя ищется, пока не найдено: куски копятся по датаграммам, и до последнего
-                    // куска склейка честно отдаёт `None`. Найдено — расшифровку больше не зовём:
-                    // она не бесплатна, а в повторах имя то же самое.
+                    // куска склейка честно отдаёт `None`.
                     if talk.named.is_none() {
-                        talk.crypto
-                            .extend(reflex_core::quic::crypto_of(payload));
+                        talk.crypto.extend(pieces.iter().cloned());
                         talk.named =
                             reflex_core::quic::sni_of(&talk.crypto).map(String::into_boxed_str);
                         // Имя найдено — куски больше не нужны: держать их значило бы платить
@@ -173,7 +234,10 @@ impl Transport for Quic {
                             talk.crypto = Vec::new();
                         }
                     }
-                    let repeat = !talk.answered && talk.opened_with == dcid;
+                    let repeat = !talk.answered
+                        && talk.opened_with == dcid
+                        && brings_nothing_new(&talk.covered, &pieces);
+                    talk.covered = widened(&talk.covered, &pieces);
                     if talk.opened_with.is_empty() {
                         talk.opened_with = dcid.to_vec();
                     }
