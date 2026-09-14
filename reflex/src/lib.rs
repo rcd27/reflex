@@ -112,7 +112,9 @@ use reflex_instrument::resolve::ResolutionInstrument;
 /// Слово о разрешении имени — оно и есть словарь цепочки, стоящей на [`Resolve`]; потребителю без
 /// него нечем разобрать сказанное.
 pub use reflex_instrument::resolve::{Erasure, Resolved};
-use reflex_instrument::detect::{ChokedInstrument, RstInstrument, ThrottledInstrument};
+use reflex_instrument::detect::{
+    ChokedInstrument, RstInstrument, SynDropInstrument, ThrottledInstrument,
+};
 use reflex_instrument::retransmit::RetransmitInstrument;
 pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 pub use smallvec::{smallvec, SmallVec};
@@ -938,21 +940,24 @@ impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Retransmit {
     }
 }
 
-/// Блэкхол по имени остаётся дверью потребителя, но за ней стоит КРАЙ — тот же `EdgeSilence`:
-/// «соединения не было» есть его ветка `up.packets == 0`. Имя прибора называет ПРЕДМЕТ, не
-/// реализацию, потому цепочка потребителя не меняется.
+/// Блэкхол живёт В ПРОВОДЕ: улика — повтор `SYN` того же разговора без рукопожатия, и судят его
+/// НАШИ часы (RTO клиента), а не возраст потока из conntrack.
 ///
-/// Часы при этом сменились честно: проводной ловил повтор `SYN` (RTO клиента, сотни мс), краевой
-/// ловит возраст потока. Предмет тот же — адрес молчит; ранняя реакция на быстром повторе уходит, и
-/// это цена переезда, названная вслух.
-impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
+/// # Почему не край (14.09.2026)
+///
+/// Прибор стоял краевым `EdgeSilence`, и цена переезда была названа как «ранняя реакция уходит».
+/// Не названа была вторая, дороже: край судит по ВОЗРАСТУ, а возраст берётся из штампа conntrack.
+/// Ядро боевой коробки (OpenWrt 6.12.71) собрано без `CONFIG_NF_CONNTRACK_TIMESTAMP` — возраста нет,
+/// приговор недостижим, и ловушка молчала по построению: 11 454 стука к дата-центрам Телеграма, ни
+/// одного `Blackhole`. На стенде ядро штамп даёт, и разницы не было видно. Предмет «адрес молчит»
+/// выражается проводом без всякого ядра — туда он и вернулся.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
     type Word = Distress;
-    type Home = MarkWriter;
-    fn place(self, layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
-        Placed::AtEdge(Box::new(AtEdge {
-            machine: EdgeSilence::<E>::new(BLACKHOLE_WINDOW, layout),
-            alphabet: PhantomData,
-        }))
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, SeenTcp, _, Distress, Distress>(
+            SynDropInstrument::new(),
+        ))
     }
     fn window(&self) -> Duration {
         BLACKHOLE_WINDOW
@@ -1376,11 +1381,12 @@ impl<C: Bordered, T: Transport, S> Detecting<C, T, MarkWriter, S> {
     ///     .from(Tcp)
     ///     .extract(Sni)
     ///     .detect(Silence::after(std::time::Duration::from_secs(5)))
-    ///     .detect(SynDrop::unreachable())   // второй писатель марки — цепочка не соберётся
+    ///     .detect(Silence::after(std::time::Duration::from_secs(9)))   // второй писатель марки — цепочка не соберётся
     ///     .on(|_, _| {});
     /// ```
     ///
-    /// — а писатель рядом с не-писателем собирается, в любом порядке:
+    /// — а писатель рядом с не-писателем собирается, в любом порядке (`SynDrop` с 14.09.2026
+    /// проводной и марку не пишет — он рядом с краевым тоже законен):
     ///
     /// ```
     /// use reflex::*;
@@ -1394,6 +1400,7 @@ impl<C: Bordered, T: Transport, S> Detecting<C, T, MarkWriter, S> {
     ///     .from(Tcp)
     ///     .extract(Sni)
     ///     .detect(Retransmit::unanswered())
+    ///     .detect(Silence::after(std::time::Duration::from_secs(5)))
     ///     .detect(SynDrop::unreachable())
     ///     .on(|_, _| {});
     /// ```

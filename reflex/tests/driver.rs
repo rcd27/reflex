@@ -386,10 +386,11 @@ fn памятка_доезжает_до_терминала_одним_слово
     let paper = Paper::new().then_packet(syn(40001)).then_stop();
     let applied = paper.applied();
 
+    // Пример краевого писателя памятки — `Silence`: `SynDrop` с 14.09.2026 проводной и в марку не пишет.
     engine(paper)
         .from(Tcp)
         .extract(Sni)
-        .detect(SynDrop::unreachable())
+        .detect(Silence::after(Duration::from_secs(1)))
         .on(|_, _| {})
         .run();
 
@@ -414,10 +415,11 @@ fn без_края_памятка_не_рождается() {
         .then_stop();
     let applied = paper.applied();
 
+    // Краевой пример — `Silence`: `SynDrop` с 14.09.2026 проводной, и памятки не пишет вовсе.
     engine(paper)
         .from(Tcp)
         .extract(Sni)
-        .detect(SynDrop::unreachable())
+        .detect(Silence::after(Duration::from_secs(1)))
         .on(|_, _| {})
         .run();
 
@@ -453,6 +455,39 @@ fn a_repeated_syn_without_handshake_is_named_blackhole_through_the_facade() {
             .iter()
             .any(|word| matches!(word, Distress::Blackhole { .. })),
         "повтор SYN без рукопожатия прошёл фасад и не назван: {words:?}"
+    );
+}
+
+/// D2-тер. ПОВТОР СТУКА НАЗЫВАЕТСЯ И БЕЗ КРАЯ — ТАК УСТРОЕНА КОРОБКА.
+///
+/// Ядро канарейки (OpenWrt 6.12.71) собрано без `CONFIG_NF_CONNTRACK_TIMESTAMP`: возраста потока у
+/// края нет, а краевой `EdgeSilence` без возраста приговора не выносит никогда. На ловушке SYN это
+/// давало немоту по построению — 11 454 стука к дата-центрам Телеграма, ни одного `Blackhole`
+/// (14.09.2026). Повтор стука виден по НАШИМ часам, край ему не нужен.
+#[test]
+fn a_repeated_syn_without_an_edge_is_still_named_blackhole() {
+    let (said, heard) = std::sync::mpsc::sync_channel::<Distress>(8);
+    let paper = Paper::new()
+        .edging(None)
+        .then_packet(syn(40001))
+        .then_packet_after(Duration::from_secs(1), syn(40001))
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(SynDrop::unreachable())
+        .on(move |_target, distress| {
+            let _sent = said.try_send(distress);
+        })
+        .run();
+
+    let words: Vec<Distress> = heard.try_iter().collect();
+    assert!(
+        words
+            .iter()
+            .any(|word| matches!(word, Distress::Blackhole { .. })),
+        "без края повтор SYN не назван: {words:?}"
     );
 }
 
