@@ -424,6 +424,39 @@ fn без_края_памятка_не_рождается() {
     assert_eq!(taken(applied), [PaperAnswer::Pass], "запоминать нечего");
 }
 
+/// D2-бис. ПОВТОР СТУКА БЕЗ РУКОПОЖАТИЯ ДОХОДИТ ДО ПРИБОРА ТОГО ЖЕ РАЗГОВОРА И НАЗЫВАЕТСЯ.
+///
+/// Прибор (`SynDropInstrument`) проверен в изоляции, фасад — только на одиночном стуке. Клетка
+/// «второй `SYN` той же четвёрки через всю цепочку» не проверялась ничем — и ровно она немая в бою:
+/// канарейка 14.09.2026, 194 разговора дома к дата-центрам Телеграма в `SYN_SENT`, очередь ловушки
+/// приняла 11 454 стука, ни одного `Blackhole`.
+#[test]
+fn a_repeated_syn_without_handshake_is_named_blackhole_through_the_facade() {
+    let (said, heard) = std::sync::mpsc::sync_channel::<Distress>(8);
+    let paper = Paper::new()
+        .then_packet(syn(40001))
+        .then_packet_after(Duration::from_secs(1), syn(40001))
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(SynDrop::unreachable())
+        .on(move |_target, distress| {
+            let _sent = said.try_send(distress);
+        })
+        .run();
+
+    let words: Vec<Distress> = heard.try_iter().collect();
+    assert!(
+        words
+            .iter()
+            .any(|word| matches!(word, Distress::Blackhole { .. })),
+        "повтор SYN без рукопожатия прошёл фасад и не назван: {words:?}"
+    );
+}
+
+
 /// D3. ОТКАЗ ВЕРДИКТА не отменяет прошедших букв: приборы уже посчитали пакет. Цена названа в
 /// докблоке `Running::run` обеими половинами — здесь проверяется лишь то, что цикл жив и буквы не
 /// потеряны.
