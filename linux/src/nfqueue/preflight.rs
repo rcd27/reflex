@@ -313,6 +313,207 @@ fn check_kernel_module() -> Result<(), PreflightError> {
     }
 }
 
+/// ЧТО МАШИНА УМЕЕТ — одна возможность ядра, четыре клетки.
+///
+/// «Выключено» и «нет в ядре» лечатся разным (строка sysctl против другого образа), а для продукта
+/// значат одно — возможности нет. Потому строка сверки площадок их сливает ([`Fact::usable`]), а
+/// строка человеку различает ([`Fact::said`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fact {
+    /// Есть и работает — проверено делом или ключом.
+    Held,
+    /// Есть, но выключено: чинится настройкой.
+    Off,
+    /// Нет в ядре: чинится модулем или другим ядром.
+    Absent,
+    /// Посмотреть не удалось — судить не о чем, и молчать об этом нельзя.
+    Unknown,
+}
+
+impl Fact {
+    pub fn usable(self) -> &'static str {
+        match self {
+            Fact::Held => "да",
+            Fact::Off | Fact::Absent => "нет",
+            Fact::Unknown => "?",
+        }
+    }
+
+    pub fn said(self) -> &'static str {
+        match self {
+            Fact::Held => "есть",
+            Fact::Off => "выключено",
+            Fact::Absent => "нет в ядре",
+            Fact::Unknown => "не видно",
+        }
+    }
+}
+
+/// ОПИСЬ МАШИНЫ — ВСЕ ПРЕДПОСЫЛКИ РАЗОМ, А НЕ ДО ПЕРВОЙ БЕДЫ.
+///
+/// # Чем оплачено (накат 0.9.28 на канарейку, 14.09.2026)
+///
+/// Лечение, прошедшее полную приёмку на стенде, на коробке ответило `Kernel(-22)`: в образе нет
+/// `nf_conntrack_netlink`, у хоста стенда он есть. [`check`] этого не видел по построению — он
+/// останавливается на первой беде, модуль ctnetlink не спрашивает вовсе, а о приложении вида
+/// соединения к пакету очереди судит по конфигу ядра, которого на коробке нет, и неизвестность
+/// пропускает как норму. Тот же модуль регистрирует хук `NFQA_CT`, так что краевые приборы коробки
+/// были немы с первого дня — а узнали мы это накатом, а не строкой на старте.
+///
+/// Владелец: «нужен шаг prerequisites, тогда стенд и коробка теряют разрыв». Опись и есть этот шаг:
+/// одна строка [`Survey::line`], снятая одним кодом на обеих площадках, сравнивается как текст.
+///
+/// ВОЗМОЖНОСТИ ПРОБУЮТСЯ ДЕЛОМ, где это можно: ctnetlink — настоящим дампом, очередь и conntrack —
+/// их файлами в `/proc` (модуль, вшитый в ядро, в `/proc/modules` не значится).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Survey {
+    pub queue: Fact,
+    pub conntrack: Fact,
+    pub ctnetlink: Fact,
+    pub ct_in_queue: Fact,
+    pub accounting: Fact,
+    pub timestamps: Fact,
+}
+
+impl Survey {
+    /// Строка сверки площадок. Формат — контракт с `lab/accept.sh` и `lab/box-prerequisites.txt`.
+    pub fn line(&self) -> String {
+        format!(
+            "очередь={} conntrack={} ctnetlink={} ct_в_очереди={} учёт={} штамп={}",
+            self.queue.usable(),
+            self.conntrack.usable(),
+            self.ctnetlink.usable(),
+            self.ct_in_queue.usable(),
+            self.accounting.usable(),
+            self.timestamps.usable()
+        )
+    }
+}
+
+impl fmt::Display for Survey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "очередь ядра: {} · conntrack: {} · ctnetlink (nf_conntrack_netlink): {} · вид соединения \
+             в пакете очереди (NFQA_CT): {} · учёт conntrack: {} · штамп conntrack: {}",
+            self.queue.said(),
+            self.conntrack.said(),
+            self.ctnetlink.said(),
+            self.ct_in_queue.said(),
+            self.accounting.said(),
+            self.timestamps.said()
+        )
+    }
+}
+
+pub fn survey() -> Survey {
+    let ctnetlink = ctnetlink_of(
+        crate::conntrack::Dump::open().and_then(|door| door.entries().map(|_seen| ())),
+    );
+    Survey {
+        queue: present("/proc/net/netfilter/nfnetlink_queue"),
+        conntrack: present("/proc/sys/net/netfilter/nf_conntrack_max"),
+        ctnetlink,
+        ct_in_queue: ct_in_queue_of(ctnetlink, glue_ct()),
+        accounting: fact_of(sysctl("nf_conntrack_acct")),
+        timestamps: fact_of(sysctl("nf_conntrack_timestamp")),
+    }
+}
+
+fn present(path: &str) -> Fact {
+    match fs::metadata(path) {
+        Ok(_found) => Fact::Held,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Fact::Absent,
+        Err(_unreadable) => Fact::Unknown,
+    }
+}
+
+/// ОТВЕТ ДАМПА — В ФАКТ. EINVAL приходит из `nfnetlink_rcv_msg`, когда подсистема ctnetlink не
+/// зарегистрирована (модуля нет, автозагрузка не нашла); EPROTONOSUPPORT — когда нет nfnetlink вовсе.
+///
+/// ЦЕНА НАЗВАНА: EINVAL бывает и от кривого запроса. Запрос дампа здесь без атрибутов, и в ctnetlink
+/// 6.8 и 6.12 на этом пути EINVAL не рождается — сверено по исходникам.
+fn ctnetlink_of(answer: Result<(), crate::conntrack::DumpError>) -> Fact {
+    match answer {
+        Ok(()) => Fact::Held,
+        Err(crate::conntrack::DumpError::Kernel(code)) if code == -libc::EINVAL => Fact::Absent,
+        Err(crate::conntrack::DumpError::Socket(code)) if code == libc::EPROTONOSUPPORT => {
+            Fact::Absent
+        }
+        Err(_other) => Fact::Unknown,
+    }
+}
+
+/// Хук, которым очередь прикладывает `NFQA_CT`, регистрирует модуль ctnetlink — без него вида нет
+/// ТОЧНО, что бы ни говорил конфиг. С ним решает опция сборки, а её без конфига не узнать.
+fn ct_in_queue_of(ctnetlink: Fact, glue: Glue) -> Fact {
+    match (ctnetlink, glue) {
+        (Fact::Absent, _any_glue) => Fact::Absent,
+        (Fact::Held, Glue::On) => Fact::Held,
+        (Fact::Held, Glue::Off) => Fact::Absent,
+        (Fact::Held, Glue::Unknown) | (Fact::Off, _) | (Fact::Unknown, _) => Fact::Unknown,
+    }
+}
+
+fn fact_of(knob: Knob) -> Fact {
+    match knob {
+        Knob::On => Fact::Held,
+        Knob::Off => Fact::Off,
+        Knob::Absent => Fact::Absent,
+    }
+}
+
+#[cfg(test)]
+mod survey_tests {
+    use super::*;
+    use crate::conntrack::DumpError;
+
+    #[test]
+    fn a_missing_ctnetlink_is_absent_not_unknown() {
+        assert_eq!(ctnetlink_of(Ok(())), Fact::Held);
+        assert_eq!(ctnetlink_of(Err(DumpError::Kernel(-22))), Fact::Absent);
+        assert_eq!(ctnetlink_of(Err(DumpError::Recv(4))), Fact::Unknown);
+    }
+
+    #[test]
+    fn without_ctnetlink_the_queue_never_carries_the_connection() {
+        assert_eq!(ct_in_queue_of(Fact::Absent, Glue::On), Fact::Absent);
+        assert_eq!(ct_in_queue_of(Fact::Held, Glue::On), Fact::Held);
+        assert_eq!(ct_in_queue_of(Fact::Held, Glue::Unknown), Fact::Unknown);
+    }
+
+    /// Предмет владельца: стенд с ctnetlink и коробка без него обязаны дать РАЗНЫЕ строки, а
+    /// выключенный штамп стенда и отсутствующий ключ коробки — одинаковые.
+    #[test]
+    fn the_parity_line_tells_the_stand_from_the_box() {
+        let stand = Survey {
+            queue: Fact::Held,
+            conntrack: Fact::Held,
+            ctnetlink: Fact::Held,
+            ct_in_queue: Fact::Unknown,
+            accounting: Fact::Held,
+            timestamps: Fact::Off,
+        };
+        let the_box = Survey {
+            ctnetlink: Fact::Absent,
+            ct_in_queue: Fact::Absent,
+            timestamps: Fact::Absent,
+            ..stand
+        };
+        assert_ne!(stand.line(), the_box.line());
+        assert_eq!(
+            Survey {
+                ctnetlink: Fact::Held,
+                ct_in_queue: Fact::Unknown,
+                ..the_box
+            }
+            .line(),
+            stand.line(),
+            "выключенное и несобранное для сверки одно"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
