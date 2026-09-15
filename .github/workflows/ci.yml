@@ -27,8 +27,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Привилегий не требует: боевые стенды живут отдельно (`examples/*/lab/`) и в CI не гоняются —
-      # им нужен реальный ТСПУ, которого у раннера нет. Здесь проверяется дерево, а не мир.
+      # Боевые стенды живут отдельно (`examples/*/lab/`) и в CI не гоняются — им нужен реальный ТСПУ,
+      # которого у раннера нет. Здесь проверяется дерево, а не мир.
+      #
+      # СВОЁ СЕТЕВОЕ ПРОСТРАНСТВО всё же нужно: три витнеса ядра (`os/tests/netlink_link_event.rs`,
+      # `linux/tests/steer_path.rs`, `reflex/tests/steer_gate.rs`) переисполняют себя под
+      # `unshare -Ur --net`. Ubuntu 24.04 запрещает это непривилегированному процессу через AppArmor
+      # (`unshare: write failed /proc/self/uid_map: Operation not permitted`), и CI был красным с
+      # первого прогона 10.09.2026 — а за упавшим первым бинарником `telling` и `quic` ниже не
+      # запускались НИ РАЗУ. Запрет снимается на раннере, а не в тестах: пропуск при отказе
+      # `unshare` превратил бы витнес в украшение, и зелёный прогон ничего бы не свидетельствовал.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo test --workspace
       # ЧЕРНОВАЯ ДВЕРЬ ЗА ФИЧЕЙ (`telling`) гоняется ОТДЕЛЬНЫМ шагом: `--workspace` чужих фич не
       # включает, и дверь, не попавшая в прогон, тихо сгнила бы — ровно как сгнила четвёртая дверь

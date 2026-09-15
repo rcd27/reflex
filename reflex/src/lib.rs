@@ -153,7 +153,7 @@ pub use nfqueue::{LocalNfqueue, Nfqueue, NfqueueCarrier, INJECT_MARK, UNSTEERABL
 /// пространства и разведены: предмет один, а `reflex::pcap::Recording` рядом с `reflex::pcap(…)`
 /// читается как одно имя в двух ролях, а не как два разных.
 pub use pcap::{pcap, Recording};
-/// Запись провода самим носителем — вторая половина двери записи: [`pcap`] читает то, что
+/// Запись провода самим носителем — вторая половина двери записи: [`pcap()`] читает то, что
 /// [`Recorder`] пишет.
 pub mod record;
 pub use record::{Record, Recorder};
