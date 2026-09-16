@@ -479,7 +479,7 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                 let next = match input {
                     // Повтор — тот же спрос.
                     SeenTcp::Anywhere(Seen::Sent { count })
-                    | SeenTcp::Anywhere(Seen::Resent { count }) => Self {
+                    | SeenTcp::Anywhere(Seen::Resent { count, .. }) => Self {
                         up: self.up + count as u64,
                         asked_ever: true,
                         ..self
@@ -715,7 +715,7 @@ impl reflex_core::mealy::Mealy for ChokedInstrument {
                 let waiting = Self { asked_at, ..self };
                 let next = match input {
                     // Повтор — спрос наравне с первой просьбой.
-                    Seen::Sent { count } | Seen::Resent { count } => Self {
+                    Seen::Sent { count } | Seen::Resent { count, .. } => Self {
                         sent: waiting.sent + count as u64,
                         ..waiting
                     },
@@ -881,7 +881,13 @@ mod silence_tests {
                 ),
                 (None, 500),
                 // Повтор той же просьбы: ответа не было. Часы молчания он двигать не смеет.
-                (Some(Seen::Resent { count: 517 }), 1_000),
+                (
+                    Some(Seen::Resent {
+                        count: 517,
+                        from: 0,
+                    }),
+                    1_000,
+                ),
                 (None, 1_600),
             ],
         );

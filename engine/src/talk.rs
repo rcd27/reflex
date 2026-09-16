@@ -101,7 +101,7 @@ fn heads(payload: &[u8], from_client: bool, out: (bool, bool)) -> bool {
 
 /// Общая часть обоих алфавитов — байты и голова потока. Одна на два протокола: факт один (человек
 /// попросил, цель отдала). Пустой сегмент без флагов — чистый `ACK`, события из него нет.
-fn anywhere(payload: &[u8], from_client: bool, repeat: bool, head: bool) -> Option<Seen> {
+fn anywhere(payload: &[u8], from_client: bool, repeat: bool, head: bool, from: u32) -> Option<Seen> {
     match (!payload.is_empty(), head, from_client) {
         // Голова потока — отдельным фактом, не вдобавок к объёму (тот же сегмент, названный так,
         // чтобы опознание его увидело). Двух событий на сегмент не выпускаем — объём посчитался бы
@@ -113,6 +113,7 @@ fn anywhere(payload: &[u8], from_client: bool, repeat: bool, head: bool) -> Opti
         (true, false, true) => Some(match repeat {
             true => Seen::Resent {
                 count: payload.len() as u32,
+                from,
             },
             false => Seen::Sent {
                 count: payload.len() as u32,
@@ -160,7 +161,7 @@ fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> 
         _ if wire.closes && wire.payload.is_empty() => Some(SeenTcp::closed(from_client)),
         // Остаток назван явно, не `_`: новый флаг в разборе сломает эту строку, а не проскочит молча.
         (false, false, false) => {
-            anywhere(wire.payload, from_client, repeat, head).map(SeenTcp::Anywhere)
+            anywhere(wire.payload, from_client, repeat, head, wire.header.seq).map(SeenTcp::Anywhere)
         }
     }
 }
@@ -237,7 +238,8 @@ impl Talks {
                 from_client_seen,
             },
         );
-        anywhere(datagram.payload, from_client, false, head)
+        // Повтора здесь нет по построению (`false`), и место в потоке не читается — ноль не улика.
+        anywhere(datagram.payload, from_client, false, head, 0)
     }
 
     /// Разговора больше нет — память о нём уходит. Зовётся и на открытии: четвёрка переиспользуется,
@@ -551,7 +553,7 @@ mod tests {
         assert_eq!(talks.len(), 1);
         assert!(
             talks.read(&tcp(1000, b"hello", true))
-                == Some(SeenTcp::Anywhere(Seen::Resent { count: 5 })),
+                == Some(SeenTcp::Anywhere(Seen::Resent { count: 5, from: 1000 })),
             "повтор не узнан — граница разговора не запомнилась"
         );
 
