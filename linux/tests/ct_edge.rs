@@ -25,6 +25,7 @@ fn view(down: u64, up: u64, expires_in_secs: u64, tcp: Option<CtTcp>) -> CtView 
         expires_in: Some(Duration::from_secs(expires_in_secs)),
         tcp,
         mark: 0,
+        dst: reflex_linux::conntrack::CtDst::Unknown,
     }
 }
 

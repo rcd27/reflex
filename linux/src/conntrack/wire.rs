@@ -34,6 +34,28 @@ pub struct Entry {
     /// Состояние по мнению ядра. Нужно тому, кто решает, какую запись можно забыть без вреда:
     /// `SynSent` — рукопожатия не было, рвать нечего.
     pub tcp: Option<CtTcp>,
+    /// Переписан ли адрес назначения. Решение «увести» действует на НОВЫЙ разговор (NAT решается на
+    /// первом пакете), и только этот бит отличает разговор, уже уведённый, от висящего на прежнем пути.
+    pub dst: CtDst,
+}
+
+/// Судьба адреса назначения по мнению ЯДРА (`IPS_DST_NAT` в `CTA_STATUS`). `Unknown` — статуса в записи
+/// не было: «не переписан» было бы ложью, неотличимой от правды.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CtDst {
+    #[default]
+    Unknown,
+    Kept,
+    Rewritten,
+}
+
+impl CtDst {
+    fn of_status(status: u32) -> CtDst {
+        match status & IPS_DST_NAT {
+            0 => CtDst::Kept,
+            _rewritten => CtDst::Rewritten,
+        }
+    }
 }
 
 /// TCP-состояние разговора по мнению ЯДРА (из `CTA_PROTOINFO`). Свой автомат TCP не нужен — ядро
@@ -105,10 +127,14 @@ pub struct CtView {
     pub expires_in: Option<Duration>,
     pub tcp: Option<CtTcp>,
     pub mark: u32,
+    pub dst: CtDst,
 }
 
 const NFGEN: usize = 4;
 const CTA_TUPLE_ORIG: u16 = 1;
+const CTA_STATUS: u16 = 3;
+/// `IPS_DST_NAT_BIT = 5` в `enum ip_conntrack_status` (`nf_conntrack_common.h`).
+const IPS_DST_NAT: u32 = 1 << 5;
 const CTA_MARK: u16 = 8;
 const CTA_COUNTERS_ORIG: u16 = 9;
 const CTA_COUNTERS_REPLY: u16 = 10;
@@ -318,6 +344,10 @@ pub fn view_of(body: &[u8]) -> CtView {
             tcp: tcp_of(value),
             ..built
         },
+        CTA_STATUS => CtView {
+            dst: be32_at(value, 0).map(CtDst::of_status).unwrap_or(built.dst),
+            ..built
+        },
         CTA_ID => CtView {
             id: be32_at(value, 0).unwrap_or(built.id),
             ..built
@@ -335,6 +365,7 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
         reply_counts: view.up,
         mark: view.mark,
         tcp: view.tcp,
+        dst: view.dst,
     })
 }
 
