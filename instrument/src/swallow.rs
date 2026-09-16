@@ -166,8 +166,14 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
             }
             // ЦЕЛЬ ОТДАЛА БАЙТЫ — сегмент прошёл, счёт с нуля. Иначе долгая закачка с редкими
             // потерями однажды дала бы ложную тревогу.
+            //
+            // СВЕЖИЕ БАЙТЫ КЛИЕНТА — ТОЖЕ ПРОХОД (#332): клиент пошёл дальше, значит повторённый
+            // сегмент дошёл. На заливке цель отвечает голыми подтверждениями, событий из них нет, и
+            // без этого счёт копил повторы разных сегментов часами — долгий туннель рвался на
+            // обычной потере. Заморозка так не выглядит: окно стоит, нового клиент не шлёт.
             Some(Seen::Received { .. })
             | Some(Seen::Restated { .. })
+            | Some(Seen::Sent { .. })
             | Some(Seen::Payload {
                 from_client: false, ..
             }) => (
@@ -179,10 +185,9 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
                 SmallVec::new(),
                 (),
             ),
-            // Прочее счёта не трогает: свежая просьба клиента — не повтор, прощание кончает
-            // разговор, а повтор при МЁРТВОЙ цели есть предмет прибора повтора, не наш.
+            // Прочее счёта не трогает: прощание кончает разговор, а повтор при МЁРТВОЙ цели есть
+            // предмет прибора повтора, не наш.
             Some(Seen::Resent { .. })
-            | Some(Seen::Sent { .. })
             | Some(Seen::Closed { .. })
             | Some(Seen::Payload {
                 from_client: true, ..
@@ -353,6 +358,53 @@ mod tests {
             instrument.step(letter(resent(), 4, now + Duration::from_millis(250)));
 
         assert!(said.is_empty(), "после прохода сегмента счёт начинается заново");
+    }
+
+    /// СВЕЖИЕ БАЙТЫ КЛИЕНТА МЕЖДУ ПОВТОРАМИ — ПРОХОД, А НЕ ПРОГЛАТЫВАНИЕ (#332).
+    ///
+    /// Долгая заливка (VPN-туннель через коробку, большой запрос) с редкими потерями: цель отвечает
+    /// голыми подтверждениями, событий из них нет, и счёт без этого правила копил повторы РАЗНЫХ
+    /// сегментов сколько угодно долго. Второй повтор — «проглочено», обрыв, `ECONNRESET` у
+    /// человека: 67 обрывов туннеля за полчаса на канарейке 16.09.
+    #[test]
+    fn fresh_bytes_from_the_client_between_repeats_mean_the_segment_passed() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) = instrument.step(letter(resent(), 3, now));
+        let (instrument, _, ()) = instrument.step(letter(
+            Some(Seen::Sent { count: 1400 }),
+            40,
+            now + Duration::from_millis(900),
+        ));
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 60, now + Duration::from_secs(4)));
+
+        assert!(
+            said.is_empty(),
+            "клиент пошёл дальше новыми байтами — прежний сегмент прошёл, второй повтор о другом"
+        );
+    }
+
+    /// КОНТРОЛЬ: ЗАЛИВКА ВСТАЛА ПОСЛЕ ДОСТАВКИ — по-прежнему беда. Без этой половины предыдущий
+    /// тест зелен и на приборе, который замолчал у всякого разговора, успевшего хоть что-то послать.
+    #[test]
+    fn repeats_after_progress_with_no_fresh_bytes_are_still_swallowed() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) =
+            instrument.step(letter(Some(Seen::Sent { count: 1400 }), 40, now));
+        let (instrument, _, ()) =
+            instrument.step(letter(resent(), 41, now + Duration::from_millis(300)));
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 42, now + Duration::from_millis(900)));
+
+        assert_eq!(
+            said.as_slice(),
+            [Distress::Swallowed { after_ms: 600 }],
+            "клиент гоняет один кусок и нового не шлёт — сегмент не проходит"
+        );
     }
 
     /// Своя слепота счёт гасит: дыра могла забрать ответ цели, и повтор через неё — не улика пути.
