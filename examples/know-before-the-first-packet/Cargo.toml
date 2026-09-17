@@ -1,0 +1,13 @@
+[package]
+name = "know-before-the-first-packet"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Use-case: знание, которого провод не несёт, — решение о семействе имён до первого пакета"
+
+[dependencies]
+reflex = { path = "../../reflex", features = ["telling"] }
+
+[[bin]]
+name = "know-before-the-first-packet"
+path = "src/main.rs"
