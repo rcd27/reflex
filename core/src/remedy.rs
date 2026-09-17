@@ -20,6 +20,14 @@
 //! `Pending` — всё прочее, включая «отдал больше крохи, но не донёс»: медленно ли, оборвано ли — из счёта байт
 //! не различить, и снимать увод по такому было бы гаданием.
 //!
+//! # Отказ — ещё и ДОЛЯ, и она старше «донесено» (поле .8, 17.09.2026)
+//!
+//! Кэш провайдера через контур: 237 уведённых разговоров, медиана ответа 216 байт, но редкие отвечают ~6 КБ
+//! (отказ после рукопожатия). «Все крохи» такой узел не ловило, а порог «донесено» засчитывал 6 КБ лечением.
+//! Поэтому отказ — и когда крох среди говоривших и проживших терпение не меньше `refused_at_least` и их доля не
+//! меньше `refused_share_pct`, и в этом случае он решает раньше «донесено»: одиночный ответ не отменяет ряда
+//! отказов. Страница через контур этого не заденет — у неё крох нет.
+//!
 //! # Молчащий клиент — не отказ сервера (стенд, 17.09.2026)
 //!
 //! Первая редакция судила все лечимые разговоры и сняла увод с `www.youtube.com` и `i.ytimg.com`: браузер
@@ -45,6 +53,10 @@ pub struct Patience {
     pub carried_bytes: u64,
     /// Не меньше стольких байт запроса — клиент говорил.
     pub spoken_bytes: u64,
+    /// Ряд отказов: не меньше стольких крох среди говоривших и проживших терпение…
+    pub refused_at_least: usize,
+    /// …и их доля не меньше стольких процентов.
+    pub refused_share_pct: usize,
 }
 
 /// Что показали лечимые разговоры.
@@ -67,11 +79,21 @@ pub fn remedy(treated: &[Treated], patience: Patience) -> Remedy {
     let all_crumbs = spoken
         .iter()
         .all(|one| one.reply_bytes <= patience.crumb_bytes);
-    let lived = spoken.iter().any(|one| one.age_ms >= patience.age_ms);
-    match (carried, all_crumbs && lived) {
-        (true, _) => Remedy::Cured,
-        (false, true) => Remedy::Refused,
-        (false, false) => Remedy::Pending,
+    let lived: Vec<&&Treated> = spoken
+        .iter()
+        .filter(|one| one.age_ms >= patience.age_ms)
+        .collect();
+    let crumbs = lived
+        .iter()
+        .filter(|one| one.reply_bytes <= patience.crumb_bytes)
+        .count();
+    let a_row_of_refusals = crumbs >= patience.refused_at_least
+        && crumbs * 100 >= patience.refused_share_pct * lived.len();
+    match (a_row_of_refusals, carried, all_crumbs && !lived.is_empty()) {
+        (true, _, _) => Remedy::Refused,
+        (false, true, _) => Remedy::Cured,
+        (false, false, true) => Remedy::Refused,
+        (false, false, false) => Remedy::Pending,
     }
 }
 
@@ -84,7 +106,34 @@ mod tests {
         crumb_bytes: 1_024,
         carried_bytes: 512_000,
         spoken_bytes: 512,
+        refused_at_least: 3,
+        refused_share_pct: 75,
     };
+
+    #[test]
+    fn a_row_of_crumbs_refuses_even_beside_a_rare_answer_after_the_handshake() {
+        // .8, 90 мин: кэш провайдера через контур — ответы 216 байт подряд и редкий ~6 КБ отказа после рукопожатия.
+        let treated = [one(30, 216), one(30, 216), one(30, 216), one(20, 5_980)];
+        assert_eq!(remedy(&treated, FIELD), Remedy::Refused);
+    }
+
+    #[test]
+    fn a_page_through_the_contour_is_never_refused() {
+        // Страница: ответы по килобайтам, крох среди говоривших нет — отказом это быть не может.
+        let treated = [one(10, 45_000), one(10, 12_000), one(10, 6_000)];
+        assert_ne!(remedy(&treated, FIELD), Remedy::Refused);
+    }
+
+    #[test]
+    fn a_minority_of_crumbs_does_not_refuse_a_working_node() {
+        let treated = [
+            one(30, 216),
+            one(30, 2_000_000),
+            one(30, 900_000),
+            one(30, 40_000),
+        ];
+        assert_eq!(remedy(&treated, FIELD), Remedy::Cured);
+    }
 
     /// Разговор, где клиент сказал приветствие TLS (≈ 2,4 КБ вверх, как на .8).
     fn one(age_s: u64, reply_bytes: u64) -> Treated {
