@@ -5,10 +5,12 @@
 
 mod dump;
 mod edge;
+mod paths;
 mod wire;
 
 pub use dump::{Dump, DumpError};
 pub use edge::{CtEdge, TimeoutBase};
+pub use paths::{paths, Paths};
 pub use wire::{
     chunk_of, entry_of, view_of, Chunk, Counts, CtDst, CtEnds, CtTcp, CtView, Entry, Tuple,
 };
