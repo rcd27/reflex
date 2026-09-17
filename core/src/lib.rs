@@ -32,6 +32,7 @@ pub mod mealy;
 pub mod meter;
 pub mod notice;
 pub mod parse;
+pub mod remedy;
 pub mod serves;
 // СКЛЕЙКА ПО СДВИГАМ — один закон на QUIC и на TLS поверх TCP. Не под фичей: зависимостей нет, а
 // нужен он обоим.
