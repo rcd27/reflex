@@ -12,8 +12,8 @@
 
 mod paper;
 
-use paper::{log, request, taken, Paper, PaperAnswer};
-use reflex::telling::Telling;
+use paper::{dns_query, log, request, taken, Paper, PaperAnswer};
+use reflex::telling::{Known, Telling, Unknowable};
 use reflex::*;
 use reflex_core::mark::{Marked, Region};
 
@@ -216,4 +216,132 @@ fn значение_шире_области_не_кладётся_вовсе() {
         !telling.tell("example.com", 0b1_0000),
         "пятый бит — отказ, а не обрезание"
     );
+}
+
+// ─── ИЗВЕСТНОЕ ЗАРАНЕЕ (#336) ─────────────────────────────────────────────────────────────────
+
+const STRAIGHT: u32 = 0b0001;
+const CONTOUR: u32 = 0b1100;
+
+fn priors() -> Telling {
+    Telling::over(leg())
+        .knowing(Known::suffixes(["gosuslugi.ru", "yandex.ru"]).marked(STRAIGHT))
+        .and_then(|telling| {
+            telling.knowing(Known::suffixes(["chatgpt.com", "music.yandex.ru"]).marked(CONTOUR))
+        })
+        .expect("прайоры помещаются в область и не спорят друг с другом")
+}
+
+/// Цепочка имён, как у продукта: ключ — имя из вопроса, и марка ложится на сам вопрос.
+fn asked(telling: Telling, name: &str) -> Vec<u32> {
+    let paper = Paper::new().then_packet(dns_query(40001, name)).then_stop();
+    let applied = paper.applied();
+    engine(paper)
+        .from(Udp)
+        .extract(Sni)
+        .detect(Resolve::names())
+        .telling(telling)
+        .heard()
+        .expect("бумажная цепочка поднимается")
+        .for_each(drop);
+    read(marks(&taken(applied)))
+}
+
+fn read(written: Vec<u32>) -> Vec<u32> {
+    written
+        .iter()
+        .map(|mark| Marked::read(&leg(), *mark))
+        .collect()
+}
+
+#[test]
+fn a_known_name_is_led_from_its_very_first_packet() {
+    assert_eq!(asked(priors(), "ab.chatgpt.com"), vec![CONTOUR]);
+    assert_eq!(asked(priors(), "www.gosuslugi.ru"), vec![STRAIGHT]);
+}
+
+#[test]
+fn a_suffix_covers_its_subdomains_and_not_its_lookalikes() {
+    let priors = priors();
+
+    assert_eq!(priors.known("gosuslugi.ru"), Some(STRAIGHT));
+    assert_eq!(priors.known("lk.gosuslugi.ru"), Some(STRAIGHT));
+    assert_eq!(priors.known("notgosuslugi.ru"), None);
+    assert_eq!(priors.known("gosuslugi.ru.example.com"), None);
+}
+
+#[test]
+fn the_longest_suffix_decides() {
+    let priors = priors();
+
+    assert_eq!(priors.known("mail.yandex.ru"), Some(STRAIGHT));
+    assert_eq!(priors.known("api.music.yandex.ru"), Some(CONTOUR));
+}
+
+#[test]
+fn what_is_known_does_not_yield_to_what_is_told() {
+    let priors = priors();
+
+    assert!(!priors.tell("www.gosuslugi.ru", CONTOUR));
+    assert_eq!(asked(priors, "www.gosuslugi.ru"), vec![STRAIGHT]);
+}
+
+#[test]
+fn an_address_answered_for_a_known_name_is_known_too() {
+    let priors = priors();
+    let paper = Paper::new().then_packet(request(40001)).then_stop();
+    let applied = paper.applied();
+    let chain = engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Always))
+        .telling(priors.clone())
+        .heard()
+        .expect("бумажная цепочка поднимается");
+
+    assert!(priors.tell("93.184.216.34", CONTOUR));
+    assert_eq!(
+        priors.bind("93.184.216.34", "www.gosuslugi.ru"),
+        Some(STRAIGHT)
+    );
+    assert!(!priors.tell("93.184.216.34", CONTOUR));
+    chain.for_each(drop);
+
+    assert_eq!(priors.known("93.184.216.34"), Some(STRAIGHT));
+    assert_eq!(read(marks(&taken(applied))), vec![STRAIGHT]);
+}
+
+#[test]
+fn an_address_shared_by_two_known_names_follows_the_first_declared() {
+    let priors = priors();
+
+    assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(CONTOUR));
+    assert_eq!(priors.bind("104.18.32.47", "gosuslugi.ru"), Some(STRAIGHT));
+    assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(STRAIGHT));
+    assert_eq!(priors.known("104.18.32.47"), Some(STRAIGHT));
+}
+
+#[test]
+fn an_address_of_an_unknown_name_stays_unknown() {
+    let priors = priors();
+
+    assert_eq!(priors.bind("93.184.216.34", "example.com"), None);
+    assert_eq!(priors.known("93.184.216.34"), None);
+    assert!(priors.tell("93.184.216.34", CONTOUR));
+}
+
+#[test]
+fn a_prior_wider_than_the_region_is_refused() {
+    let refused = Telling::over(leg()).knowing(Known::suffixes(["chatgpt.com"]).marked(0b1_0000));
+
+    assert!(matches!(refused, Err(Unknowable::Unheld(0b1_0000))));
+}
+
+#[test]
+fn one_name_cannot_be_known_two_ways() {
+    let refused = Telling::over(leg())
+        .knowing(Known::suffixes(["yandex.ru"]).marked(STRAIGHT))
+        .and_then(|telling| telling.knowing(Known::suffixes(["yandex.ru"]).marked(CONTOUR)));
+
+    assert!(matches!(refused, Err(Unknowable::Twice(name)) if name == "yandex.ru"));
 }

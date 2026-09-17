@@ -2476,10 +2476,7 @@ struct Turning<C: Bordered, T: Transport, S> {
     /// Внеполосная дверь и ДОМ РЕШЕНИЙ ПО КЛЮЧУ. Дом здесь, а не в `Alive`: решение не наблюдение
     /// и приборам не достаётся — оно живёт до вердикта и читается им.
     #[cfg(feature = "telling")]
-    telling: Option<(
-        crate::telling::Mailbox,
-        HashMap<String, reflex_core::mark::Marked>,
-    )>,
+    telling: Option<crate::telling::Home>,
 }
 
 impl<C, T, S> Turning<C, T, S>
@@ -2576,7 +2573,7 @@ where
             #[cfg(feature = "telling")]
             // ПОДПИСКА, А НЕ САМА РУЧКА: ящик заводится здесь, при постройке цепочки, и потому
             // решение достаётся КАЖДОЙ цепочке потребителя, а не той, чей оборот случился раньше.
-            telling: telling.map(|handle| (handle.subscribe(), HashMap::new())),
+            telling: telling.map(|handle| handle.subscribe()),
         })
     }
 
@@ -2613,10 +2610,8 @@ where
         // двигает — оно не наблюдение провода, и узел, рождённый чужим решением, был бы скрытым
         // входом для приборов молчания (см. докблок `telling`: место на ленте — следующий срез).
         #[cfg(feature = "telling")]
-        if let Some((handle, decisions)) = self.telling.as_mut() {
-            for told in handle.drain() {
-                decisions.insert(told.target, told.decided);
-            }
+        if let Some(home) = self.telling.as_mut() {
+            home.collect();
         }
         let Turning {
             carrier,
@@ -2628,7 +2623,7 @@ where
         } = self;
         // Дом решений — только на чтение внутри решения о вердикте.
         #[cfg(feature = "telling")]
-        let decisions = self.telling.as_ref().map(|(_handle, decisions)| decisions);
+        let home = self.telling.as_ref();
     // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
     // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
     // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
@@ -2683,10 +2678,10 @@ where
         // Ярлык цели снимается ДО того, как `whose` уедет в раздачу: решение адресовано ключу, а
         // владение ключом уходит вместе с буквой.
         #[cfg(feature = "telling")]
-        let decided: Option<reflex_core::mark::Marked> = decisions.and_then(|decisions| {
+        let decided: Option<reflex_core::mark::Marked> = home.and_then(|home| {
             whose
                 .as_ref()
-                .and_then(|(_flow, key)| decisions.get(&label(key)).copied())
+                .and_then(|(_flow, key)| home.decided(&label(key)))
         });
         #[cfg(not(feature = "telling"))]
         let decided: Option<reflex_core::mark::Marked> = None;

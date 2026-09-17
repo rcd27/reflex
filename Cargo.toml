@@ -69,5 +69,6 @@ members = [
     "examples/certify-replays",
     "examples/replay-recording",
     "examples/second-order",
+    "examples/know-before-the-first-packet",
 ]
 # linux-ebpf is NOT a workspace member — it compiles to BPF target separately
