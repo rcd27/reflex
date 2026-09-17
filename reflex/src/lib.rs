@@ -1199,6 +1199,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             #[cfg(feature = "telling")]
             telling: None,
             severing: None,
+            naming: None,
             transport: PhantomData,
         }
     }
@@ -1285,10 +1286,31 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     /// ПРАВИЛО ОБРЫВА для двери показаний: на какое слово рвать. `None` — не просили, и показания
     /// остаются чистым наблюдением.
     severing: Option<Severing<C::Carrier, S>>,
+    /// Куда говорить имя разговора, если просили ([`Detecting::naming`]).
+    naming: Option<reflex_core::Tap<Named>>,
     transport: PhantomData<fn() -> T>,
 }
 
+/// ИМЯ РАЗГОВОРА: как назвалась его цель (SNI, `Initial`, вопрос DNS). Говорится один раз — когда
+/// разговор впервые получил имя. Момент — носителя, не потребителя.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub flow: Flow,
+    pub name: Box<str>,
+    pub at: Instant,
+}
+
 impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
+    /// ГОВОРИТЬ ИМЯ РАЗГОВОРА (#337 nevod). Разбор имени уже в горячем пути; дверь отдаёт его тому, кто
+    /// видит разговор иначе — conntrack знает путь и байты, но не знает, кому они. Канал не ждёт:
+    /// полный канал теряет имя, а не задерживает пакет.
+    pub fn naming(self, tap: reflex_core::Tap<Named>) -> Detecting<C, T, H, S> {
+        Detecting {
+            naming: Some(tap),
+            ..self
+        }
+    }
+
     /// Тело установки, общее обеим дверям: дом меняется ТИПОМ, работа одна.
     fn add<P, H2: MarkHome>(mut self, detector: P) -> Detecting<C, T, H2, S>
     where
@@ -1308,6 +1330,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             #[cfg(feature = "telling")]
             telling: self.telling,
             severing: self.severing,
+            naming: self.naming,
             transport: PhantomData,
         }
     }
@@ -2505,6 +2528,7 @@ where
             about,
             #[cfg(feature = "telling")]
             telling,
+            naming,
             ..
         } = chain;
         let name = recipe.name();
@@ -2555,6 +2579,7 @@ where
             tape: Tape::new(),
             certify,
             about,
+            naming,
             idle,
         };
         let state = T::State::default();
@@ -2771,6 +2796,8 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
     /// что зовётся на закрытии узла — среди букв, а не после них.
     about: Option<(Fold<S>, TargetVoice<S>)>,
+    /// Куда говорить имя разговора — один раз, когда ключ цели впервые стал именем.
+    naming: Option<reflex_core::Tap<Named>>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
     idle: Duration,
 }
@@ -2841,7 +2868,19 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                         memo = remembered.or(memo);
                         signals.extend(spoken);
                     }
-                    self.targets.insert(*flow, key.clone());
+                    let was = self.targets.insert(*flow, key.clone());
+                    match (self.naming.as_ref(), was, key) {
+                        (Some(tap), None | Some(TargetKey::Unnamed(_)), TargetKey::Named(name)) => {
+                            let _lost_when_full = tap.offer(Named {
+                                flow: *flow,
+                                name: name.clone(),
+                                at,
+                            });
+                        }
+                        (None, _, _)
+                        | (Some(_), Some(TargetKey::Named(_)), _)
+                        | (Some(_), _, TargetKey::Unnamed(_)) => (),
+                    }
                     (vec![(key.clone(), *flow, signals)], seen)
                 }
                 // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
