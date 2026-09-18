@@ -212,7 +212,7 @@ fn moments_never_decrease_across_the_whole_stream() {
 /// плюс шаг»: тогда каждый пакет продлевал бы ожидание, и тик уезжал бы вправо тем сильнее, чем
 /// плотнее трафик — часы приборов молчания зависели бы от трафика, что §8 запрещает.
 #[test]
-fn срок_есть_момент_следующего_узла() {
+fn the_deadline_is_the_moment_of_the_next_node() {
     let start = Instant::now();
     let every = Duration::from_millis(100);
     let seam = Interleave::started(start, every);
@@ -226,7 +226,7 @@ fn срок_есть_момент_следующего_узла() {
 /// Нулевой шаг — отсутствие сетки: узла не будет никогда. Два места описывают один закон — `next_node`
 /// и `nodes_up_to` — и оба обязаны сказать одно: при нулевом шаге сетки нет, какая бы точка ни спросила.
 #[test]
-fn нулевой_шаг_даёт_отсутствие_сетки() {
+fn a_zero_step_means_there_is_no_grid_at_all() {
     let start = Instant::now();
     let seam = Interleave::started(start, Duration::ZERO);
 

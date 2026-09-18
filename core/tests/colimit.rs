@@ -25,7 +25,7 @@ fn flow(n: u32) -> Flow {
 /// Кратность гасит ХРАНИЛИЩЕ: повтор разговора заменяет его слово, а не множит. Без этого свёртка
 /// считала бы один разговор дважды, и «молчит доля» врала бы тем сильнее, чем чаще мы наблюдаем.
 #[test]
-fn повтор_разговора_заменяет_слово_а_не_множит() {
+fn seeing_a_conversation_again_replaces_its_word_rather_than_multiplying_it() {
     let now = Instant::now();
     let mut layer: Layer<Conversation, Target, &str> = Layer::new();
     layer.saw(target(), flow(1), "молчит", now);
@@ -45,7 +45,7 @@ fn повтор_разговора_заменяет_слово_а_не_множ�
 /// Цель без слов — тоже молчание. Отличается от «цели не знаем»: слой у неё есть, слов в нём нет,
 /// и свёртке пустое множество не показываем — иначе «молчат все» ответило бы «да» на пустоте.
 #[test]
-fn цель_с_пустым_слоем_молчит() {
+fn a_target_whose_layer_emptied_out_yields_no_word() {
     let now = Instant::now();
     let mut layer: Layer<Conversation, Target, u8> = Layer::new();
     layer.saw(target(), flow(1), 1, now);
@@ -62,7 +62,7 @@ fn цель_с_пустым_слоем_молчит() {
 /// Свёртка видит МНОЖЕСТВО: порядок перечисления на вывод не влияет. Иначе один и тот же набор
 /// наблюдений давал бы разные слова о цели по прихоти планировщика.
 #[test]
-fn порядок_прихода_не_виден_свёртке() {
+fn the_order_of_arrival_is_invisible_to_the_join() {
     let now = Instant::now();
     let sum = |words: &[&u8]| Some(words.iter().copied().sum::<u8>());
 
@@ -80,7 +80,7 @@ fn порядок_прихода_не_виден_свёртке() {
 /// Доля — законная свёртка: как ОПЕРАЦИЯ она не идемпотентна, но она ФУНКЦИЯ МНОЖЕСТВА, а кратность
 /// уже снята хранилищем. Свобода свёртки богаче join'а §5, и дедуп есть её цена.
 #[test]
-fn доля_законная_свёртка() {
+fn a_share_is_a_lawful_join() {
     let now = Instant::now();
     let mut layer: Layer<Conversation, Target, bool> = Layer::new();
     layer.saw(target(), flow(1), true, now);
@@ -101,7 +101,7 @@ fn доля_законная_свёртка() {
 /// Пустой слой слова не рождает: «сказать нечего» и «свелось в ничто» — разные вещи, и свёртке
 /// пустого множества не показываем.
 #[test]
-fn пустой_слой_молчит() {
+fn an_empty_layer_yields_no_word() {
     let layer: Layer<Conversation, Target, u8> = Layer::new();
     assert_eq!(layer.join(&target(), |w| Some(w.len())), None);
 }
@@ -110,7 +110,7 @@ fn пустой_слой_молчит() {
 /// свёртка над оставшимися даёт новое слово сама — отдельного срока у цели нет, он стал бы сроком
 /// ГОДНОСТИ, то есть суждением.
 #[test]
-fn затихший_разговор_уходит_и_меняет_слово_о_цели() {
+fn a_conversation_gone_quiet_leaves_and_changes_the_word_about_the_target() {
     let t0 = Instant::now();
     let mut layer: Layer<Conversation, Target, bool> = Layer::new();
     layer.saw(target(), flow(1), true, t0);
@@ -126,7 +126,7 @@ fn затихший_разговор_уходит_и_меняет_слово_о_
 
 /// Цель, у которой не осталось разговоров, исчезает целиком: пустых слоёв не копим.
 #[test]
-fn цель_без_разговоров_снимается() {
+fn a_target_with_no_conversations_left_is_dropped() {
     let t0 = Instant::now();
     let mut layer: Layer<Conversation, Target, bool> = Layer::new();
     layer.saw(target(), flow(1), true, t0);
@@ -142,7 +142,7 @@ fn цель_без_разговоров_снимается() {
 
 /// Разные цели не смешиваются: слой одной не виден свёртке другой.
 #[test]
-fn слои_разных_целей_не_смешиваются() {
+fn layers_of_different_targets_do_not_mix() {
     let now = Instant::now();
     let other = TargetKey::Unnamed(Addr(0x5DB8_D822));
     let mut layer: Layer<Conversation, Target, u8> = Layer::new();
@@ -158,7 +158,7 @@ fn слои_разных_целей_не_смешиваются() {
 /// выглядела бы молчащей минуту; порядок хранения при этом не наш, значит «какое попало» тоже
 /// негодно.
 #[test]
-fn возраст_цели_по_самому_свежему_слову() {
+fn the_age_of_a_target_comes_from_its_freshest_word() {
     let t0 = Instant::now();
     let mut layer: Layer<Conversation, Target, u8> = Layer::new();
     layer.saw(target(), flow(1), 1, t0);
@@ -175,7 +175,7 @@ fn возраст_цели_по_самому_свежему_слову() {
 /// Цели без слов возраста нет: «сказать нечего» — не «сказано давно». Верни здесь ноль или `now` —
 /// и потребитель принял бы пустоту за свежее наблюдение.
 #[test]
-fn у_цели_без_слов_возраста_нет() {
+fn a_target_without_words_has_no_age() {
     let t0 = Instant::now();
     let mut layer: Layer<Conversation, Target, u8> = Layer::new();
     layer.saw(target(), flow(1), 1, t0);

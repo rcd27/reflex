@@ -64,7 +64,7 @@ fn waiting_is_allowed_where_the_region_tolerates_it() {
 /// Ключ цели расслоён: имя, если цепочка его дала, иначе адрес. Плоский адрес был бы ложью — он
 /// утверждает, что имя есть всегда, а `Awaited ⊑ Silent ⊑ Spoken` говорит обратное.
 #[test]
-fn целевой_ключ_несёт_имя_или_адрес() {
+fn a_target_key_carries_either_a_name_or_an_address() {
     use reflex_core::types::Addr;
     use reflex_core::word::{Base, Target, TargetKey};
 

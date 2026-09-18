@@ -9,7 +9,7 @@ use reflex_core::DetectorEvent;
 
 /// Дыра несёт свой момент — иначе её нельзя поставить в последовательность.
 #[test]
-fn дыра_несёт_момент() {
+fn a_gap_carries_its_own_moment() {
     let at = Instant::now();
     let torn: DetectorEvent<()> = DetectorEvent::Torn { at };
     assert_eq!(torn.at(), at);
@@ -18,7 +18,7 @@ fn дыра_несёт_момент() {
 /// Дыра двигает сетку так же, как непонятое: шов про МОМЕНТЫ, не про содержимое. Не двигай она
 /// сетку — поток из одних дыр не закрывал бы окон, и молчание стало бы неотличимо от «пакетов нет».
 #[test]
-fn перешагнутые_узлы_выходят_перед_дырой() {
+fn the_nodes_a_gap_stepped_over_come_out_before_it() {
     let start = Instant::now();
     let seam = Interleave::started(start, Duration::from_millis(100));
     let (_seam, letters) = seam.torn::<()>(start + Duration::from_millis(250));

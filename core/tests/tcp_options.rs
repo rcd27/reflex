@@ -25,7 +25,7 @@ use reflex_core::types::TcpOptions;
 /// после вида, нулевая длина, длина сверх буфера. Подборка «подозрительных» ловит ровно то, что
 /// подозревали; перебор — всё.
 #[test]
-fn разбор_тотален_на_всех_коротких_входах() {
+fn parsing_is_total_on_every_short_input() {
     for first in 0u8..=255 {
         let _ = TcpOptions::parse(&[first]);
         for second in 0u8..=255 {
@@ -50,7 +50,7 @@ fn разбор_тотален_на_всех_коротких_входах() {
 /// и разбор обязан вернуть пустоту. Это сильнее, чем «сломанная длина игнорируется»: проверяется
 /// ОТСУТСТВИЕ выдумки на всех коротких входах разом, а не на трёх выбранных.
 #[test]
-fn на_коротком_входе_ни_одна_опция_не_рождается() {
+fn on_a_short_input_no_option_is_ever_born() {
     for first in 0u8..=255 {
         for second in 0u8..=255 {
             let read = TcpOptions::parse(&[first, second]);
@@ -66,7 +66,7 @@ fn на_коротком_входе_ни_одна_опция_не_рождает
 /// ИЗВЕСТНЫЕ ОПЦИИ ЧИТАЮТСЯ, И ЧИТАЮТСЯ BIG-ENDIAN. Порядок байт — обещание проводу (RFC 793), а не
 /// наш выбор: прочти иначе, и 1460 станет 45 061.
 #[test]
-fn известные_опции_читаются_как_на_проводе() {
+fn known_options_are_read_exactly_as_they_lie_on_the_wire() {
     let mss = TcpOptions::parse(&[2, 4, 0x05, 0xB4]);
     assert_eq!(mss.mss, Some(1460), "MSS читается big-endian");
 
@@ -98,7 +98,7 @@ fn известные_опции_читаются_как_на_проводе() {
 ///
 /// А вот опция неизвестного ВИДА с честной длиной пропускается: длина ей верит, шаг известен.
 #[test]
-fn испорченное_обрывает_разбор_а_неизвестное_пропускается() {
+fn a_malformed_option_stops_the_parse_while_an_unknown_one_is_skipped() {
     let after_broken = TcpOptions::parse(&[2, 0, 3, 3, 7]);
     assert_eq!(
         after_broken.window_scale, None,

@@ -57,7 +57,7 @@ fn declared_with_guard() -> Vec<(String, bool)> {
 /// правило соблюдено не будет. Это тот же род проверки, что `scripts/canon.sh` для канона: не
 /// «утверждение верно», а «утверждение вообще предъявлено».
 #[test]
-fn у_каждой_способности_есть_свой_гейт_заявления() {
+fn every_capability_has_its_own_gate_on_claiming_it() {
     let declared = declared_with_guard();
 
     let naked: Vec<&str> = declared
@@ -81,7 +81,7 @@ fn у_каждой_способности_есть_свой_гейт_заявл�
 /// не значащая. Число сверяется с объявлениями, найденными НЕЗАВИСИМО: по вхождениям `pub trait
 /// Can` в том же тексте.
 #[test]
-fn разбор_нашёл_все_объявления_а_не_молча_ноль() {
+fn the_scan_found_every_declaration_and_not_a_silent_zero() {
     let source =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capability.rs"))
             .expect("исходник способностей читается");

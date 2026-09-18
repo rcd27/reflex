@@ -13,7 +13,7 @@ use reflex_core::types::EtherType;
 /// ИМЕНОВАНЫ РОВНО ТРИ КОДА, И РОВНО ТЕ. Числа взяты из реестра IANA напрямую, независимо от
 /// реализации: два способа сказать одно, и расхождение между ними — находка.
 #[test]
-fn именованы_ровно_три_кода_остальные_шестьдесят_пять_тысяч_чужие() {
+fn exactly_three_codes_are_named_and_the_other_sixty_five_thousand_are_foreign() {
     for code in 0u16..=u16::MAX {
         let named = match code {
             0x0800 => Some(EtherType::Ipv4),
@@ -34,7 +34,7 @@ fn именованы_ровно_три_кода_остальные_шестьд
 /// подменяется по дороге» — ошибка в любой строке краснит его, включая ту, что осталась бы без
 /// своего теста.
 #[test]
-fn круг_кодов_замкнут_на_всех_значениях() {
+fn the_round_trip_of_codes_closes_on_every_value() {
     for code in 0u16..=u16::MAX {
         assert_eq!(
             EtherType::from_u16(code).to_u16(),

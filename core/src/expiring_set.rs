@@ -143,7 +143,7 @@ mod tests {
     const TTL: Duration = Duration::from_secs(600);
 
     #[test]
-    fn отметка_живёт_ttl_и_снимается_после() {
+    fn a_mark_lives_for_its_ttl_and_is_swept_after() {
         let t0 = Instant::now();
         let mut set = ExpiringSet::new(TTL, 8);
         assert_eq!(set.mark("87.245.200.1", t0), Marking::Fresh);
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn продление_отодвигает_истечение() {
+    fn renewal_pushes_the_expiry_further_out() {
         let t0 = Instant::now();
         let mut set = ExpiringSet::new(TTL, 8);
         // ПЕРВАЯ ОТМЕТКА ТОЖЕ УТВЕРЖДАЕТСЯ, а не только вторая: бросить её исход значило бы
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn чтение_не_продлевает() {
+    fn reading_does_not_renew() {
         // Чтение НЕ продлевает — закон легко прочитать наоборот, оттого сторожим (ударение переехало
         // сюда из имени). Если бы обращение продлевало, выздоровевшая, но популярная цель осталась бы
         // отмеченной навсегда. Здесь читаем часто — и всё равно истекаем.
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn переполнение_потолка_есть_событие_а_не_тишина() {
+    fn overflowing_the_ceiling_is_an_event_not_silence() {
         let t0 = Instant::now();
         let mut set = ExpiringSet::new(TTL, 2);
         assert_eq!(set.mark("a", t0), Marking::Fresh);
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn истёкшая_отметка_ставится_заново_а_не_продлевается() {
+    fn an_expired_mark_is_set_anew_rather_than_renewed() {
         // Продлить истёкшее — воскресить его: срок пошёл бы от воскрешения, и цель, о которой
         // молчали дольше окна, осталась бы неуслышанной навсегда.
         let t0 = Instant::now();
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn чтение_видит_срок_без_подметания() {
+    fn reading_sees_the_deadline_without_a_sweep() {
         // Срок исполняется сам. Пока он жил только в `sweep`, закон был объявлен здесь, а
         // исполнялся дисциплиной вызывающего — и не позвавший подметание получал набор, у
         // которого срок не наступает НИКОГДА.
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn потолок_считает_живых_а_не_призраков() {
+    fn the_ceiling_counts_the_living_not_the_ghosts() {
         // Иначе отказ значил бы «тесно ПАМЯТИ О МЁРТВЫХ», а прочитан был бы как «тесно живым»:
         // набор перестал бы принимать новое, имея место.
         let t0 = Instant::now();
@@ -253,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn sweep_возвращает_только_истёкшие() {
+    fn sweep_returns_only_what_has_expired() {
         let t0 = Instant::now();
         let mut set = ExpiringSet::new(TTL, 8);
         assert_eq!(set.mark("старая", t0), Marking::Fresh);

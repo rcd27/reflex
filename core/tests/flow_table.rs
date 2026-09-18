@@ -240,7 +240,7 @@ fn normalize_reverses_high_port_source() {
 /// Держать исчерпанный разговор до истечения `idle_timeout` значит копить улику из чужих пауз и
 /// занимать память тем, чего уже нет. Прежде так и было: приборы прощание слушали, память — нет.
 #[test]
-fn машина_объявившая_конец_уходит_не_дожидаясь_простоя() {
+fn a_machine_that_declared_the_end_leaves_without_waiting_out_the_idle_timeout() {
     #[derive(Debug, Clone, Default)]
     struct Farewell {
         done: bool,
@@ -273,20 +273,20 @@ fn машина_объявившая_конец_уходит_не_дожидая
     let mut table: FlowTable<Farewell, Flow> =
         FlowTable::new(Duration::from_secs(3600), 1024, |_flow| Farewell::default());
 
-    let живой = make_segment(40000, 443, TcpFlags::ACK);
-    table.process(normalize_flow(живой.flow()), &живой, Instant::now());
+    let alive = make_segment(40000, 443, TcpFlags::ACK);
+    table.process(normalize_flow(alive.flow()), &alive, Instant::now());
     assert_eq!(table.flow_count(), 1, "разговор идёт — машина на месте");
 
-    let сброс = make_segment(40000, 443, TcpFlags::RST);
-    table.process(normalize_flow(сброс.flow()), &сброс, Instant::now());
+    let reset = make_segment(40000, 443, TcpFlags::RST);
+    table.process(normalize_flow(reset.flow()), &reset, Instant::now());
     assert_eq!(
         table.flow_count(),
         1,
         "сброс концом не объявлен: поддельный RST — предмет наблюдения, а не конец предмета"
     );
 
-    let прощание = make_segment(40000, 443, TcpFlags::FIN);
-    let (said, _) = table.process(normalize_flow(прощание.flow()), &прощание, Instant::now());
+    let farewell = make_segment(40000, 443, TcpFlags::FIN);
+    let (said, _) = table.process(normalize_flow(farewell.flow()), &farewell, Instant::now());
     assert_eq!(said.as_slice(), &[Count(1)], "последнее слово сказано");
     assert_eq!(
         table.flow_count(),
@@ -305,11 +305,11 @@ fn машина_объявившая_конец_уходит_не_дожидая
 /// принять новое сделал бы полную таблицу слепой к происходящему сейчас — и тем прочнее, чем
 /// дольше она живёт.
 #[test]
-fn потолок_держит_память_конечной_когда_все_говорят() {
-    const ПОТОЛОК: usize = 64;
+fn the_ceiling_keeps_memory_finite_even_when_nobody_falls_silent() {
+    const CEILING: usize = 64;
     let t0 = Instant::now();
     let mut table: FlowTable<RstCounter, Flow> =
-        FlowTable::new(Duration::from_secs(3600), ПОТОЛОК, |_key: &Flow| {
+        FlowTable::new(Duration::from_secs(3600), CEILING, |_key: &Flow| {
             RstCounter { count: 0 }
         });
 
@@ -325,14 +325,14 @@ fn потолок_держит_память_конечной_когда_все_�
 
     assert_eq!(
         table.flow_count(),
-        ПОТОЛОК,
+        CEILING,
         "потолок держит: без него вошли бы все тысяча"
     );
 
-    let забытые = table.forgotten();
+    let forgotten = table.forgotten();
     assert_eq!(
-        забытые.len(),
-        1000 - ПОТОЛОК,
+        forgotten.len(),
+        1000 - CEILING,
         "каждая утрата названа: снимали ЖИВЫХ, и молчание о них неотличимо от «разговора не было»"
     );
 

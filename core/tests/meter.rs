@@ -347,19 +347,19 @@ fn a_moment_lands_in_the_bucket_that_holds_it() {
 /// «на `max(1)`» — то есть нулевое окно, означающее БЕСКОНЕЧНЫЙ темп, выдавало большое конечное
 /// число, неотличимое от настоящего замера.
 #[test]
-fn темп_в_единицах_человека_считается_одним_местом() {
-    let за_секунду = Pace {
+fn the_pace_in_human_units_is_computed_in_exactly_one_place() {
+    let over_a_second = Pace {
         bytes: 40_000,
         over_nanos: 1_000_000_000,
     };
-    assert_eq!(за_секунду.per_second(), Some(40_000));
+    assert_eq!(over_a_second.per_second(), Some(40_000));
 
-    let за_полсекунды = Pace {
+    let over_half_a_second = Pace {
         bytes: 40_000,
         over_nanos: 500_000_000,
     };
     assert_eq!(
-        за_полсекунды.per_second(),
+        over_half_a_second.per_second(),
         Some(80_000),
         "та же сумма за вдвое меньшее окно — вдвое больший темп"
     );
@@ -378,17 +378,17 @@ fn темп_в_единицах_человека_считается_одним_�
 /// ТОЧНОСТЬ ДРОБИ НЕ ТЕРЯЕТСЯ ТАМ, ГДЕ ЦЕЛОЧИСЛЕННОЕ ЧАСТНОЕ ЕЁ ТЕРЯЛО: два байта за три
 /// наносекунды быстрее одного за две, хотя частное у обоих — ноль.
 #[test]
-fn дробь_различает_темпы_которые_частное_схлопывает_в_ноль() {
-    let быстрее = Pace {
+fn the_fraction_tells_apart_paces_that_integer_division_collapses_to_zero() {
+    let faster = Pace {
         bytes: 2,
         over_nanos: 3,
     };
-    let медленнее = Pace {
+    let slower = Pace {
         bytes: 1,
         over_nanos: 2,
     };
 
-    assert!(быстрее > медленнее, "перекрёстное умножение: 2·2 > 1·3");
-    assert_eq!(быстрее.per_second(), Some(666_666_666));
-    assert_eq!(медленнее.per_second(), Some(500_000_000));
+    assert!(faster > slower, "перекрёстное умножение: 2·2 > 1·3");
+    assert_eq!(faster.per_second(), Some(666_666_666));
+    assert_eq!(slower.per_second(), Some(500_000_000));
 }

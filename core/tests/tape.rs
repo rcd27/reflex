@@ -180,7 +180,7 @@ fn an_answer_moves_the_grid_but_not_the_silence() {
 /// попавшейся машине — она получила бы чужое наблюдение и стала бы машиной на двух ключах, то есть
 /// двумя машинами (§4).
 #[test]
-fn отклик_адресован_машине_своего_ключа() {
+fn an_answer_is_addressed_to_the_machine_of_its_own_key() {
     let start = Instant::now();
     let (_seam, letters) =
         Interleave::started(start, STEP).answered::<u8, u32, &str>(42, "блок", start);
@@ -200,7 +200,7 @@ fn отклик_адресован_машине_своего_ключа() {
 /// вход, и буква, не сказавшая, чья она, легла бы в первую попавшуюся машину: восьмой закон
 /// свидетельствовал бы об одной общей машине вместо семьи (§4).
 #[test]
-fn наблюдение_провода_несёт_адрес_своей_машины() {
+fn an_observation_from_the_wire_carries_the_address_of_its_machine() {
     let start = Instant::now();
     let packet: TapeLetter<u8, u32, &str> = TapeLetter::Event {
         to: To::One(42),
@@ -220,7 +220,7 @@ fn наблюдение_провода_несёт_адрес_своей_маши
 /// не из чего, разобрать не смогли. Слей их в одно — и переигровка либо съела бы тик одной машиной,
 /// либо потеряла бы фанаут, а какое из двух, решал бы уже читатель кода.
 #[test]
-fn у_тика_и_непонятого_ключа_нет_но_по_разным_причинам() {
+fn neither_a_tick_nor_an_unread_letter_has_a_key_but_for_different_reasons() {
     let start = Instant::now();
     let tick: TapeLetter<u8, u32, &str> = TapeLetter::Event {
         to: To::Each,
@@ -250,7 +250,7 @@ fn у_тика_и_непонятого_ключа_нет_но_по_разным_
 /// Машина одна и та же, лента та же — значит и последовательность высказываний та же. Это и есть
 /// предмет восьмого закона (§10): не сравнение лент, а сверка ИСХОДОВ двух прогонов одной ленты.
 #[test]
-fn переигровка_повторяет_исходы_живого_прогона() {
+fn a_replay_reproduces_the_outcomes_of_the_live_run() {
     let start = Instant::now();
     let mut tape: Tape<u8, u32, &str> = Tape::new();
 
@@ -296,7 +296,7 @@ fn переигровка_повторяет_исходы_живого_прог�
 /// глушит — иначе она слала бы RST заново и спрашивала повторно, то есть не переигрывала бы, а
 /// повторяла, и восьмой закон проверял бы не то.
 #[test]
-fn переигровка_не_трогает_мир() {
+fn a_replay_does_not_touch_the_world() {
     assert!(
         Mode::Live.touches_the_world(),
         "живой прогон исполняет команды"

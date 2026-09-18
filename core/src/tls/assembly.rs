@@ -170,8 +170,8 @@ impl RecordAssembler {
     ) -> (Self, SmallVec<[Assembly; 2]>) {
         // Сравнение по ПРОЛЁТУ, а не по равенству seq голове: клиент повторяет и хвостовой
         // сегмент тоже, и он законная часть той же потери.
-        let внутри = chunk.seq.wrapping_sub(seq) < len as u32;
-        match внутри {
+        let within = chunk.seq.wrapping_sub(seq) < len as u32;
+        match within {
             true => {
                 let nth = retransmits + 1;
                 (

@@ -21,7 +21,7 @@ use reflex_core::types::{IpProtocol, Protocol};
 /// Ожидание записано числами RFC 790 напрямую, независимо от реализации (она — `match` по тем же
 /// числам). Два способа сказать одно; расхождение между ними есть находка.
 #[test]
-fn именованы_ровно_три_кода_и_остальные_двести_пятьдесят_три_чужие() {
+fn exactly_three_codes_are_named_and_the_other_two_hundred_fifty_three_are_foreign() {
     for code in 0u8..=255 {
         let named = match code {
             1 => Some(IpProtocol::Icmp),
@@ -44,7 +44,7 @@ fn именованы_ровно_три_кода_и_остальные_двес�
 /// дороге». Ошибка в любой строке таблицы краснит его, включая ту, которую забыли бы покрыть
 /// отдельным тестом.
 #[test]
-fn круг_кодов_замкнут_на_всех_значениях() {
+fn the_round_trip_of_codes_closes_on_every_value() {
     for code in 0u8..=255 {
         assert_eq!(
             IpProtocol::from_u8(code).to_u8(),
@@ -60,7 +60,7 @@ fn круг_кодов_замкнут_на_всех_значениях() {
 /// строку. Тест держит только то, чего тип не держит, — какие именно это буквы: их читают глазами
 /// в логе, и смена молча перетасовала бы вывод.
 #[test]
-fn наш_словарь_печатается_своими_именами() {
+fn our_own_vocabulary_prints_under_its_own_names() {
     assert_eq!(format!("{}", Protocol::Tcp), "TCP");
     assert_eq!(format!("{}", Protocol::Udp), "UDP");
     assert_ne!(

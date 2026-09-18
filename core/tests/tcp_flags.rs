@@ -28,7 +28,7 @@ fn every_value() -> impl Iterator<Item = TcpFlags> {
 /// Порядок не алфавитный и не битовый: он читательский (`SA` привычнее `AS`), и потому обязан быть
 /// закреплён — иначе первая же правка перетасует вывод, на который смотрят глазами в логе.
 #[test]
-fn печать_есть_буквы_взведённых_битов_в_читательском_порядке() {
+fn printing_is_the_letters_of_the_set_bits_in_reading_order() {
     for value in every_value() {
         let bits = value.bits();
         let expected: String = [
@@ -58,7 +58,7 @@ fn печать_есть_буквы_взведённых_битов_в_чита�
 /// этого не замечал. Здесь краснеет сразу: перебор идёт по `TcpFlags::all()`, а не по списку в
 /// тесте, и новичок попадает в него сам.
 #[test]
-fn каждый_флаг_печатается_своей_буквой_и_буквы_различны() {
+fn every_flag_prints_as_its_own_letter_and_the_letters_differ() {
     let mut seen: Vec<String> = Vec::new();
     for flag in TcpFlags::all().iter() {
         let printed = format!("{flag}");
@@ -88,7 +88,7 @@ fn каждый_флаг_печатается_своей_буквой_и_бук�
 /// Ожидание записано сырыми битами, потому что реализация написана через `contains`: два разных
 /// способа сказать одно, и расхождение между ними — находка, а не шум.
 #[test]
-fn предикаты_отвечают_своему_имени_на_всех_значениях() {
+fn the_predicates_answer_to_their_own_names_on_every_value() {
     for value in every_value() {
         let bits = value.bits();
         assert_eq!(value.is_syn(), bits & 0x12 == 0x02, "is_syn на {bits:#04x}");
@@ -113,7 +113,7 @@ fn предикаты_отвечают_своему_имени_на_всех_з�
 /// истину на `SYN+ACK`. Здесь предмет — их ВЗАИМНОЕ отношение, то самое, на котором стоит счёт
 /// открытых разговоров.
 #[test]
-fn открытие_разговора_и_ответ_на_него_не_совпадают_ни_на_одном_значении() {
+fn opening_a_conversation_and_answering_it_never_coincide_on_any_value() {
     for value in every_value() {
         assert!(
             !(value.is_syn() && value.is_syn_ack()),

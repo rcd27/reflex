@@ -137,7 +137,7 @@ fn flow() -> Flow {
 }
 
 /// Минимальный кадр IPv4+TCP заданной ДЛИНЫ (L3+L4+нагрузка) — ровно то, что очередь ядра кладёт
-/// в руки: без Ethernet. Длина, не нагрузка, — предмет теста «местный_край_считает_кадры».
+/// в руки: без Ethernet. Длина, не нагрузка, — предмет теста «the_local_edge_counts_frames_not_payload».
 fn frame_of_len(flags: u8, total: usize) -> Vec<u8> {
     assert!(total >= 40, "меньше заголовков IPv4+TCP не бывает");
     let mut packet = vec![0u8; total];
@@ -169,7 +169,7 @@ fn a_syn() -> Vec<u8> {
     frame_of_len(0x02, 40)
 }
 
-/// Ответ цели на рукопожатие: `SYN+ACK` — тоже несёт флаг `SYN` (докблок `syn_ack_тоже_несёт_флаг_syn`
+/// Ответ цели на рукопожатие: `SYN+ACK` — тоже несёт флаг `SYN` (докблок `syn_ack_carries_the_syn_flag_too`
 /// называет, почему это не мелочь).
 fn a_synack() -> Vec<u8> {
     frame_of_len(0x12, 40)
@@ -180,7 +180,7 @@ fn a_synack() -> Vec<u8> {
 /// Счёт ведётся в КАДРАХ — так велит закон `EdgeView` (Д6). Считай `Local` нагрузку, порог
 /// «клиент отдал запрос» завысился бы на заголовок каждого пакета.
 #[test]
-fn местный_край_считает_кадры() {
+fn the_local_edge_counts_frames_not_payload() {
     let mut local = Local::new(Paper::new());
     local.saw_down(a_frame_of(1500));
     local.saw_down(a_frame_of(1500));
@@ -193,7 +193,7 @@ fn местный_край_считает_кадры() {
 /// Возраст потока, начатого до нас, неизвестен. `None`, а не ноль: ноль означал бы «только что
 /// открылся», и прибор тишины подтвердил бы дроп на живом разговоре. Это предел НОСИТЕЛЯ, не закона.
 #[test]
-fn возраст_потока_начатого_до_нас_неизвестен() {
+fn the_age_of_a_flow_that_began_before_us_is_unknown() {
     let mut local = Local::new(Paper::new());
     local.saw_down(a_mid_stream_ack()); // не SYN: начала мы не видели
 
@@ -203,7 +203,7 @@ fn возраст_потока_начатого_до_нас_неизвестен
 /// Памятка ложится домой ТЕМ ЖЕ словом, что и вердикт, и читается обратно маркой — интерфейс тот
 /// же, что у ct_mark. Куда легли 32 бита, фасад не знает и знать не должен.
 #[test]
-fn памятка_ложится_домой_и_читается_маркой() {
+fn the_memo_lands_home_and_is_read_back_as_a_mark() {
     let mut local = Local::new(Paper::new());
     local.saw_down(a_syn());
     local.apply_answer(flow(), Local::<Paper>::remember(0xABCD, true));
@@ -214,10 +214,10 @@ fn памятка_ложится_домой_и_читается_маркой() {
 // ─── Дополнительные тесты (не из брифа): полный шов Serves/Terminal ─────────────────────────────
 
 /// Разговор, у которого `SYN` в поле зрения БЫЛ, получает возраст: `Some`. Пара к
-/// «возраст_потока_начатого_до_нас_неизвестен» — показывает, что там `None` не заглушка на каждый
+/// «the_age_of_a_flow_that_began_before_us_is_unknown» — показывает, что там `None` не заглушка на каждый
 /// случай, а честный ответ ровно там, где начала не видели.
 #[test]
-fn возраст_потока_с_увиденным_syn_известен() {
+fn the_age_of_a_flow_whose_syn_we_saw_is_known() {
     let mut local = Local::new(Paper::new());
     local.saw_down(a_syn());
 
@@ -228,7 +228,7 @@ fn возраст_потока_с_увиденным_syn_известен() {
 /// не только через ручной `saw_down`. Направление читается из адресов кадра (клиент → цель), а не
 /// объявляется вызывающим: в прогоне `serve` получает пакет с носителя, а не тестовую пометку.
 #[test]
-fn serve_считает_кадр_и_кладёт_память_в_дом() {
+fn serve_counts_the_frame_and_puts_the_memory_in_its_home() {
     let mut local = Local::new(Paper::with_packet(a_syn()));
 
     let outcome = local.serve(Instant::now(), |_held, _edge| {
@@ -249,7 +249,7 @@ fn serve_считает_кадр_и_кладёт_память_в_дом() {
 /// Отказ (`Answer::Stop`) доходит до носителя ЕГО словом отказа, не словом пропуска: гейт `Local`
 /// в самом деле разбирает решение и переводит его в чужой словарь, а не пропускает всё молчанием.
 #[test]
-fn serve_переводит_отказ_в_c_слово_отказа() {
+fn serve_translates_a_refusal_into_the_carriers_own_word_for_refusal() {
     let paper = Paper::with_packet(a_syn());
     let applied = paper.applied();
     let mut local = Local::new(paper);
@@ -269,7 +269,7 @@ fn serve_переводит_отказ_в_c_слово_отказа() {
 /// `Paper::Edge = LocalEdge`, мутация ПРОЙДЁТ компилятор) — `seen` станет `None`, и `expect` ниже
 /// покраснеет.
 #[test]
-fn serve_подаёт_свой_край_а_не_обёрнутого() {
+fn serve_hands_the_decision_its_own_edge_not_the_wrapped_one() {
     let mut local = Local::new(Paper::with_packet(a_syn()));
     let mut seen: Option<LocalEdge> = None;
 
@@ -307,7 +307,7 @@ fn serve_подаёт_свой_край_а_не_обёрнутого() {
 /// порог тишины. Ложных подтверждений это не создаёт: поток, которого не было, не заводит `SYN+ACK`
 /// без своего `SYN`, а поток, что был, получает возраст с точностью, которой достаточно порогу.
 #[test]
-fn syn_ack_тоже_несёт_флаг_syn() {
+fn syn_ack_carries_the_syn_flag_too() {
     // Клиентского `SYN` в поле зрения НЕ БЫЛО — только ответ цели. Гейт `if syn && ...` не смотрит
     // на направление, и `SYN+ACK` взводит `opened` не хуже клиентского `SYN`.
     let mut local = Local::new(Paper::new());

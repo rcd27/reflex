@@ -36,7 +36,7 @@ fn recorded(start: Instant) -> Tape<u8, u32, &'static str> {
 /// Она читает только буквы: момент берёт из события, ничего своего не спрашивает. Два прогона одной
 /// ленты обязаны согласиться — и согласие это есть то, ради чего весь драйвер строился.
 #[test]
-fn чистая_машина_переигрывается() {
+fn a_pure_machine_replays_itself() {
     let tape = recorded(Instant::now());
 
     // Прогон: машина говорит момент каждой буквы провода — всё из буквы, ничего извне.
@@ -61,13 +61,13 @@ fn чистая_машина_переигрывается() {
 /// Машина о нём в своём алфавите не заявляла, и потому её решение перестаёт быть восстановимым:
 /// запись есть, а что по ней случится — не предскажешь.
 #[test]
-fn скрытый_вход_ловится_как_нестабильность() {
+fn a_hidden_input_is_caught_as_instability() {
     let tape = recorded(Instant::now());
 
-    let mut прогонов = 0u32;
+    let mut runs = 0u32;
     let run = |_mode: Mode, letters: &[TapeLetter<u8, u32, &str>]| -> Vec<u32> {
-        прогонов += 1;
-        letters.iter().map(|_letter| прогонов).collect()
+        runs += 1;
+        letters.iter().map(|_letter| runs).collect()
     };
 
     assert_eq!(
@@ -82,7 +82,7 @@ fn скрытый_вход_ловится_как_нестабильность() 
 /// Как `Invalid` у семи прочих законов: поломку стенда нельзя предъявлять как нарушение
 /// способности.
 #[test]
-fn пустая_лента_не_приговор() {
+fn an_empty_tape_is_not_a_verdict() {
     let tape: Tape<u8, u32, &str> = Tape::new();
     let run = |_mode: Mode, _letters: &[TapeLetter<u8, u32, &str>]| -> Vec<u8> { Vec::new() };
 
@@ -94,15 +94,15 @@ fn пустая_лента_не_приговор() {
 /// Машина, замолчавшая на переигровке, разошлась там, где перестала говорить: молчание не
 /// «совпадение по всем сравнённым», а отсутствие слова, которое было.
 #[test]
-fn замолчавшая_на_переигровке_машина_нестабильна() {
+fn a_machine_that_falls_silent_on_replay_is_unstable() {
     let tape = recorded(Instant::now());
 
-    let mut прогонов = 0u32;
+    let mut runs = 0u32;
     let run = |_mode: Mode, letters: &[TapeLetter<u8, u32, &str>]| -> Vec<u8> {
-        прогонов += 1;
-        match прогонов {
+        runs += 1;
+        match runs {
             1 => letters.iter().map(|_| 1u8).collect(),
-            _замолчала => Vec::new(),
+            _fell_silent => Vec::new(),
         }
     };
 
@@ -117,7 +117,7 @@ fn замолчавшая_на_переигровке_машина_нестаб�
 /// Оплачено ошибкой: на стенде с живым ядром окно ленты набралось из одних узлов сетки, живых машин в нём
 /// не было, и под вердиктом «воспроизведено» спокойно прошла мутация «переигровка читает часы».
 #[test]
-fn молчание_обоих_прогонов_не_свидетельство() {
+fn silence_in_both_runs_is_not_evidence() {
     let tape = recorded(Instant::now());
 
     let mute = |_mode: Mode, _letters: &[TapeLetter<u8, u32, &str>]| -> Vec<u8> { Vec::new() };

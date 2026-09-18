@@ -40,8 +40,8 @@ impl Pace {
     ///
     /// ```
     /// use reflex_core::meter::Pace;
-    /// let за_секунду = Pace { bytes: 40_000, over_nanos: 1_000_000_000 };
-    /// assert_eq!(за_секунду.per_second(), Some(40_000));
+    /// let over_a_second = Pace { bytes: 40_000, over_nanos: 1_000_000_000 };
+    /// assert_eq!(over_a_second.per_second(), Some(40_000));
     ///
     /// let нулевое_окно = Pace { bytes: 1, over_nanos: 0 };
     /// assert_eq!(нулевое_окно.per_second(), None, "бесконечный темп числом не назвать");

@@ -74,7 +74,7 @@ fn packet(input: u8) -> DetectorEvent<Beat> {
 }
 
 #[test]
-fn оба_слушателя_говорят_каждый_своим_словом() {
+fn both_listeners_speak_each_in_its_own_word() {
     let (_, (left, right), _) = Rst.and(Rst).step(packet(1));
     assert_eq!(&left[..], &[Sig(7)], "левое звено сказало своё");
     assert_eq!(
@@ -85,7 +85,7 @@ fn оба_слушателя_говорят_каждый_своим_словом
 }
 
 #[test]
-fn вложение_комбинаторов_выводится_без_единой_аннотации() {
+fn nested_combinators_are_inferred_without_a_single_annotation() {
     // САМОЕ ХРУПКОЕ ДЛЯ ВЫВОДА: комбинатор над комбинатором, да ещё и над одной из сторон
     // произведения. Если форма выражена неверно, падает именно здесь, а не на одиночном звене.
     let (_, (left, right), _) = Rst
@@ -100,10 +100,10 @@ fn вложение_комбинаторов_выводится_без_един�
 }
 
 #[test]
-fn тождество_нейтрально_и_в_этой_форме() {
+fn identity_is_neutral_in_this_form_too() {
     // Второй закон категории на алфавите детектора: `f ∘ id` даёт то же, что `f`.
     use reflex_core::mealy::Id;
-    let (_, прямо, _) = Rst.step(packet(1));
-    let (_, через_тождество, _) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
-    assert_eq!(прямо, через_тождество, "тождество ничего не изменило");
+    let (_, directly, _) = Rst.step(packet(1));
+    let (_, through_identity, _) = Id::<DetectorEvent<Beat>>::new().then(Rst).step(packet(1));
+    assert_eq!(directly, through_identity, "тождество ничего не изменило");
 }

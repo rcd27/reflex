@@ -246,7 +246,7 @@ pub trait CanAsk: crate::held::Terminal {
 /// Раздельные слова допускали бы «ответили, но не запомнили» — состояние осталось бы прошлым при
 /// отпущенном пакете. Канон §5. Ассоциированная функция: ответ можно собрать до открытия калитки.
 ///
-/// Сторож: `памятка_ложится_домой_и_читается_маркой` (`core/tests/local.rs`),
+/// Сторож: `the_memo_lands_home_and_is_read_back_as_a_mark` (`core/tests/local.rs`),
 /// `kernel_remembers_what_was_told` (`core/tests/certify_remembering.rs`).
 ///
 /// Заявить, не назвав слова памяти, нельзя:

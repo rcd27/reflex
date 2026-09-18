@@ -168,7 +168,7 @@ fn every_taken_packet_gets_exactly_one_answer() {
 /// Закон шва: не возвращаться раньше срока, кроме как с работой. Не будь его, ведущий цикл
 /// крутился бы вхолостую на пустой очереди — и завёл бы своё ожидание мимо шва, что и случилось.
 #[test]
-fn пустой_носитель_держит_срок() {
+fn an_empty_carrier_waits_out_the_deadline() {
     let mut carrier = Memo::empty();
     let until = Instant::now() + Duration::from_millis(50);
 
@@ -180,7 +180,7 @@ fn пустой_носитель_держит_срок() {
 
 /// Работа не ждёт срока: пакет отдаётся сразу, иначе задержка решения равнялась бы шагу сетки.
 #[test]
-fn работа_возвращается_сразу() {
+fn work_comes_back_at_once() {
     let mut carrier = Memo::with_one_packet();
     let until = Instant::now() + Duration::from_secs(60);
 
@@ -195,7 +195,7 @@ fn работа_возвращается_сразу() {
 /// копия сна. Дыра была именно тут: `NfqueueBackend`, `Waited::Ready => self.recv() == Err(_)`,
 /// возвращался немедленно, в обход срока.
 #[test]
-fn ошибка_приёма_тоже_держит_срок() {
+fn a_receive_error_waits_out_the_deadline_too() {
     let mut carrier = Memo::with_broken_receive();
     let until = Instant::now() + Duration::from_millis(50);
 

@@ -37,7 +37,7 @@ fn hello(domain: &str) -> Vec<u8> {
 /// РАЗБОР ТОТАЛЕН: на любых байтах — значение, а не паника. Перебором всех входов до двух байт и
 /// всех троек с правдоподобным началом записи, а не подборкой подозрительных.
 #[test]
-fn разбор_тотален_на_всех_коротких_входах() {
+fn parsing_is_total_on_every_short_input() {
     for first in 0u8..=255 {
         let _ = TlsRecord::parse(&[first]);
         let _ = sni(&[first]);
@@ -68,7 +68,7 @@ fn разбор_тотален_на_всех_коротких_входах() {
 /// Сильнее прежних `too_short` и `empty`: проверяется отсутствие выдумки на ВСЕХ коротких входах
 /// разом, а не на двух выбранных. Имя, взятое из ниоткуда, адресовало бы наблюдение чужой цели.
 #[test]
-fn на_коротком_входе_имя_не_рождается() {
+fn on_a_short_input_no_name_is_ever_born() {
     for first in 0u8..=255 {
         for second in 0u8..=255 {
             let bytes = [first, second];
@@ -95,7 +95,7 @@ fn на_коротком_входе_имя_не_рождается() {
 /// читатель — тот, кто правит ClientHello на проводе, и без заявленной `CanRewrite` править запись
 /// нечем, а `span` показывает на байты, которых никто не может тронуть.
 #[test]
-fn диапазон_имени_указывает_на_его_байты() {
+fn the_span_of_the_name_points_at_its_own_bytes() {
     for domain in ["rutracker.org", "a.b", "очень-длинное-имя-цели.example.com"]
     {
         let bytes = hello(domain);
@@ -116,7 +116,7 @@ fn диапазон_имени_указывает_на_его_байты() {
 /// `session_id` приходит от клиента и содержит что угодно, и байтовый поиск нашёл бы там первое
 /// совпадение. Тогда ключ области `Target` (§4) стал бы выдумываемым снаружи.
 #[test]
-fn приманка_в_session_id_не_уводит_разбор() {
+fn a_decoy_in_the_session_id_does_not_lead_the_parse_astray() {
     let real = "rutracker.org";
     let decoy = "example.com";
 
@@ -167,7 +167,7 @@ fn приманка_в_session_id_не_уводит_разбор() {
 /// ЗАПИСЬ РАЗБИРАЕТСЯ В СВОЙ ВИД, И ВИД НЕ ПУТАЕТСЯ. Здесь остаются именно те случаи, что
 /// различают ВЕТКИ разбора: у каждой свой исход, и слить их нельзя.
 #[test]
-fn запись_разбирается_в_свой_вид() {
+fn a_record_is_parsed_into_its_own_content_type() {
     let handshake = hello("rutracker.org");
     let parsed = TlsRecord::parse(&handshake).expect("запись разобрана");
     assert_eq!(parsed.content_type, TlsContentType::Handshake);
@@ -204,7 +204,7 @@ fn запись_разбирается_в_свой_вид() {
 
 /// СКОЛЬКО ЕЩЁ ЖДАТЬ — вопрос о ГРАНИЦЕ записи, и ответ на него значение, а не догадка.
 #[test]
-fn нужда_записи_называет_недостачу() {
+fn the_need_of_a_record_names_what_is_missing() {
     let full = hello("rutracker.org");
     assert!(matches!(record_need(&full), RecordNeed::Complete { .. }));
 
