@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn честный_путь_свидетельствуется() {
+    fn an_honest_steer_path_is_witnessed() {
         assert_eq!(
             judged(LEG, &both(Went::Device(LEG)), &home(Went::Local)),
             Ok(())
@@ -173,7 +173,7 @@ mod tests {
 
     /// Ночь 13.09: правило `ipproto tcp` — TCP в ноге, UDP идти некуда.
     #[test]
-    fn путь_под_один_l4_не_свидетельствуется() {
+    fn a_path_for_only_one_l4_is_not_witnessed() {
         let tcp_only = [
             (Protocol::Tcp, Went::Device(LEG)),
             (Protocol::Udp, Went::Refused(101)),
@@ -189,7 +189,7 @@ mod tests {
 
     /// Ушло в устройство, но не в ногу — тоже не путь увода.
     #[test]
-    fn чужое_устройство_не_нога() {
+    fn another_device_is_not_the_leg() {
         assert!(matches!(
             judged(LEG, &both(Went::Device(LEG + 1)), &home(Went::Local)),
             Err(Unsteerable::Uncovered { .. })
@@ -198,7 +198,7 @@ mod tests {
 
     /// Ночь 13.09: свой адрес с меткой уехал в ногу — машина отрезана.
     #[test]
-    fn утечка_своего_адреса_не_свидетельствуется() {
+    fn a_leaking_local_address_is_not_witnessed() {
         assert_eq!(
             judged(LEG, &both(Went::Device(LEG)), &home(Went::Device(LEG))),
             Err(Unsteerable::LocalLeaks {
@@ -211,7 +211,7 @@ mod tests {
 
     /// Не на чем проверить утечку — отказ, не пропуск: цена ложного пропуска — сама машина.
     #[test]
-    fn без_своих_адресов_свидетель_слеп_и_отказывает() {
+    fn without_local_addresses_the_witness_is_blind_and_refuses() {
         assert_eq!(
             judged(LEG, &both(Went::Device(LEG)), &[]),
             Err(Unsteerable::Blind)

@@ -564,7 +564,7 @@ mod tests {
     /// приборов: «выключено» — наблюдение, «ключа нет» — другое наблюдение, и слить их значит
     /// выдать одно за другое. Чем это оплачено — докблок `Knob` (один раз, там, где живёт форма).
     #[test]
-    fn выключенное_и_несобранное_лечатся_разным() {
+    fn switched_off_and_not_built_in_are_cured_differently() {
         let off = format!("{}", PreflightError::NoTimestamps);
         let absent = format!("{}", PreflightError::NoTimestampsKey);
 
@@ -592,7 +592,7 @@ mod tests {
     /// считать выключенным. Файла с таким именем не существует ни на одной машине, потому
     /// `Absent` здесь проверяется настоящим чтением, а не подделкой.
     #[test]
-    fn ключа_которого_нет_читается_как_отсутствие() {
+    fn a_knob_that_does_not_exist_reads_as_absent() {
         assert_eq!(sysctl("nf_conntrack_нет_такого_ключа"), Knob::Absent);
     }
 }
@@ -607,7 +607,7 @@ mod glue_tests {
     /// и отказывать по нечитаемому файлу значило бы не пускать на машины, где всё в порядке, —
     /// судить о подопытном по беде стенда (§7).
     #[test]
-    fn неизвестность_не_есть_отказ() {
+    fn not_knowing_is_not_a_refusal() {
         assert!(
             matches!(check_glue(Glue::Unknown), Ok(())),
             "не смогли посмотреть — не повод не пустить"
@@ -625,7 +625,7 @@ mod glue_tests {
     /// человека грузить уже загруженный модуль значит потратить его вечер; потому сообщение
     /// прямо говорит, что перезагрузка модуля НЕ поможет.
     #[test]
-    fn отказ_по_glue_называет_своё_лечение_а_не_чужое() {
+    fn the_glue_refusal_names_its_own_cure_not_a_neighbours() {
         let said = format!("{}", PreflightError::NoConntrackGlue);
         assert!(
             said.contains("CONFIG_NETFILTER_NETLINK_GLUE_CT"),
@@ -645,7 +645,7 @@ mod glue_tests {
     /// Тест держит не свойство мира, а то, что ЧТЕНИЕ РАБОТАЕТ: сломай путь — и `glue_ct` начнёт
     /// всегда отвечать `Unknown`, то есть проверка станет вечно зелёной и бесполезной.
     #[test]
-    fn чтение_конфига_ядра_живо_а_не_всегда_unknown() {
+    fn reading_the_kernel_config_is_alive_not_always_unknown() {
         assert_ne!(
             glue_ct(),
             Glue::Unknown,

@@ -466,7 +466,7 @@ mod tests {
     /// НАШУ команду (`NLMSG_ERROR`), не дыра о потере пакетов: та ловится раньше, в `after_recv`.
     /// Прежний фасад пропускал такие сообщения — тем же словом отвечаем и здесь.
     #[test]
-    fn протокольный_отказ_и_конец_пачки_читаются_пустотой() {
+    fn a_protocol_refusal_and_the_end_of_a_batch_read_as_nothing() {
         assert!(matches!(taken(Incoming::Failed(105)), Taken::Nothing));
         assert!(matches!(taken(Incoming::Done), Taken::Nothing));
         assert!(matches!(
@@ -480,7 +480,7 @@ mod tests {
     /// случай, и уход от него был предметом переезда). Прочий отказ `recv()` — обычная тишина, не
     /// дыра: смешивать причины было бы недоверенным сравнением через необъявленный разрыв.
     #[test]
-    fn переполнение_recv_читается_дырой_а_прочий_отказ_пустотой() {
+    fn a_recv_overrun_reads_as_a_tear_and_any_other_refusal_as_nothing() {
         assert!(matches!(
             after_recv(Err(QueueError::Overrun)),
             AfterRecv::Torn

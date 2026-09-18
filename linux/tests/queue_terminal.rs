@@ -63,7 +63,7 @@ fn packet_without_ct() -> Packet {
 /// Край спрашивается у носителя сообщения. `None` — поток ещё не в conntrack (первый `SYN` вне
 /// таблицы): «не считали», а не «не ответила» (§7). Ноль здесь соврал бы о тишине.
 #[test]
-fn край_берётся_у_носителя_а_вне_учтённый_поток_даёт_none() {
+fn the_edge_comes_from_the_carrier_and_an_uncounted_flow_yields_none() {
     let base = TimeoutBase {
         syn_sent: Duration::from_secs(120),
         established: Duration::from_secs(432000),

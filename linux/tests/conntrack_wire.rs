@@ -90,7 +90,7 @@ fn one_record() -> Vec<u8> {
 }
 
 #[test]
-fn zapis_razbiraetsya_tselikom() {
+fn a_record_is_parsed_whole() {
     let done: Vec<u8> = one_record()
         .into_iter()
         .chain(message(DONE, Vec::new()))
@@ -113,30 +113,30 @@ fn zapis_razbiraetsya_tselikom() {
 /// ПОРЦИЯ БЕЗ `NLMSG_DONE` — НЕ КОНЕЦ. Дамп приходит несколькими порциями, и остановка по пустоте
 /// читала бы обрыв как конец: записи, не поместившиеся в буфер, пропали бы молча.
 #[test]
-fn portsiya_bez_done_prosit_prodolzheniya() {
+fn a_chunk_without_done_asks_for_a_continuation() {
     assert!(matches!(chunk_of(&one_record()), Chunk::More(found) if found.len() == 1));
 }
 
 #[test]
-fn pustoy_bufer_ne_konets_a_prodolzhenie() {
+fn an_empty_buffer_is_not_the_end_but_a_continuation() {
     assert_eq!(chunk_of(&[]), Chunk::More(Vec::new()));
 }
 
 #[test]
-fn otkaz_yadra_ne_vydayotsya_za_pustoy_damp() {
+fn a_kernel_refusal_is_not_passed_off_as_an_empty_dump() {
     let refused: Vec<u8> = message(ERROR, (-1i32).to_ne_bytes().to_vec());
     assert_eq!(chunk_of(&refused), Chunk::Failed(-1));
 }
 
 /// Подтверждение (`NLMSG_ERROR` с нулём) — это конец дампа, а не отказ.
 #[test]
-fn podtverzhdenie_est_konets() {
+fn an_acknowledgement_is_the_end() {
     let ack: Vec<u8> = message(ERROR, 0i32.to_ne_bytes().to_vec());
     assert_eq!(chunk_of(&ack), Chunk::Done(Vec::new()));
 }
 
 #[test]
-fn oborvannyy_zagolovok_ne_ronyaet_razbor() {
+fn a_torn_header_does_not_crash_the_parse() {
     let torn: Vec<u8> = one_record().into_iter().take(9).collect();
     assert_eq!(chunk_of(&torn), Chunk::More(Vec::new()));
 }
@@ -148,7 +148,7 @@ fn oborvannyy_zagolovok_ne_ronyaet_razbor() {
 /// обрыв порции читается как «дамп кончился» — записи следующих порций пропадают, а прибор при этом
 /// рапортует успехом.
 #[test]
-fn oborvannyy_done_ne_chitaetsya_kak_konets_dampa() {
+fn a_torn_done_does_not_read_as_the_end_of_the_dump() {
     let done = message(DONE, Vec::new());
     let lying: Vec<u8> = 9999u32
         .to_ne_bytes()
@@ -160,7 +160,7 @@ fn oborvannyy_done_ne_chitaetsya_kak_konets_dampa() {
 
 /// Та же ложь на записи: за буфер разбор не уходит.
 #[test]
-fn dlina_bolshe_bufera_ostanavlivaet_obhod() {
+fn a_length_beyond_the_buffer_stops_the_walk() {
     let record = one_record();
     let lying: Vec<u8> = 9999u32
         .to_ne_bytes()
@@ -171,7 +171,7 @@ fn dlina_bolshe_bufera_ostanavlivaet_obhod() {
 }
 
 #[test]
-fn oborvannyy_vlozhennyy_atribut_ne_ronyaet_sosedey() {
+fn a_torn_nested_attribute_does_not_ruin_its_neighbours() {
     let torn_inside = message(
         CT_NEW,
         nfgen()
@@ -195,7 +195,7 @@ fn oborvannyy_vlozhennyy_atribut_ne_ronyaet_sosedey() {
 }
 
 #[test]
-fn neznakomyy_atribut_ne_meshaet_sosedyam() {
+fn an_unknown_attribute_does_not_disturb_its_neighbours() {
     let with_stranger = message(
         CT_NEW,
         nfgen()
@@ -219,7 +219,7 @@ fn neznakomyy_atribut_ne_meshaet_sosedyam() {
 }
 
 #[test]
-fn dve_zapisi_podryad_ne_slivayutsya() {
+fn two_records_in_a_row_do_not_merge() {
     let two: Vec<u8> = one_record()
         .into_iter()
         .chain(message(
@@ -249,8 +249,8 @@ fn dve_zapisi_podryad_ne_slivayutsya() {
 /// сравнивал бы кортежи с выдуманным и не знал, что сравнивает с пустотой (§7 — незнание обитаемо,
 /// молчаливая порча нет).
 #[test]
-fn запись_без_четвёрки_не_строится_нулевой() {
-    let без_кортежа = message(
+fn a_record_without_a_tuple_is_not_built_as_zeros() {
+    let without_tuple = message(
         CT_NEW,
         nfgen()
             .into_iter()
@@ -260,7 +260,7 @@ fn запись_без_четвёрки_не_строится_нулевой() {
             .collect(),
     );
 
-    let done: Vec<u8> = без_кортежа
+    let done: Vec<u8> = without_tuple
         .clone()
         .into_iter()
         .chain(message(DONE, Vec::new()))
@@ -275,12 +275,12 @@ fn запись_без_четвёрки_не_строится_нулевой() {
     }
 
     // И та же запись РЯДОМ С ЦЕЛОЙ не мешает целой доехать: пропускается одна, не порция.
-    let обе: Vec<u8> = без_кортежа
+    let both_of_them: Vec<u8> = without_tuple
         .into_iter()
         .chain(one_record())
         .chain(message(DONE, Vec::new()))
         .collect();
-    match chunk_of(&обе) {
+    match chunk_of(&both_of_them) {
         Chunk::Done(found) => assert_eq!(found.len(), 1, "целая запись дошла, пустая — нет"),
         other => panic!("ожидался конец дампа, пришло {other:?}"),
     }

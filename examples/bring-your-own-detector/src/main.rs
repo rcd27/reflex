@@ -175,7 +175,7 @@ mod tests {
     /// Половина первая: прибор ВООБЩЕ УМЕЕТ высказаться. Без неё второй тест зелен и на приборе,
     /// который молчит всегда, — а такой прибор проверяет не закон, а собственную немоту.
     #[test]
-    fn терпение_кончается_и_прибор_говорит() {
+    fn patience_runs_out_and_the_probe_speaks() {
         let t0 = Instant::now();
         let (probe, _, _) = Impatient::default().step(asked(t0));
         let (_, said, _) = probe.step(tick(t0 + Duration::from_millis(3500)));
@@ -187,7 +187,7 @@ mod tests {
     /// пройти мимо нас, и молчать о собственной слепоте значило бы выдать её за молчание сети.
     /// Окно доказуемой тишины начинается с момента обнаружения дыры, и трёх секунд в нём ещё нет.
     #[test]
-    fn дыра_носителя_не_становится_уликой_против_цели() {
+    fn a_carrier_tear_does_not_become_evidence_against_the_target() {
         let t0 = Instant::now();
         let (probe, _, _) = Impatient::default().step(asked(t0));
         let (probe, said, _) = probe.step(DetectorEvent::Torn {

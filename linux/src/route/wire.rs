@@ -159,7 +159,7 @@ mod tests {
     /// Свой адрес читается своим ДАЖЕ с устройством в ответе: ядро отдаёт `lo`, и индекс без типа
     /// сказал бы «ушёл в устройство».
     #[test]
-    fn свой_адрес_читается_по_типу_а_не_по_устройству() {
+    fn a_local_address_is_read_from_the_route_type_not_from_the_device() {
         assert_eq!(went_of(&route_reply(RTN_LOCAL, Some(1))), Went::Local);
         assert_eq!(went_of(&route_reply(1, Some(7))), Went::Device(7));
         assert_eq!(
@@ -171,7 +171,7 @@ mod tests {
 
     /// `ENETUNREACH` приходит отрицательным в `NLMSG_ERROR`; клетка несёт его положительным.
     #[test]
-    fn отказ_маршрутизатора_есть_клетка_а_не_пустота() {
+    fn a_router_refusal_is_its_own_cell_not_emptiness() {
         assert_eq!(
             went_of(&reply(NLMSG_ERROR, &(-101i32).to_ne_bytes())),
             Went::Refused(101)
@@ -187,7 +187,7 @@ mod tests {
     /// Порт уходит big-endian, метка — в порядке хоста: у rtnetlink они РАЗНЫЕ, и перепутанный порт
     /// спросил бы ядро о чужом разговоре, получив честный ответ на не тот вопрос.
     #[test]
-    fn вопрос_несёт_протокол_порт_и_метку_в_их_порядке_байтов() {
+    fn the_question_carries_proto_port_and_mark_each_in_its_own_byte_order() {
         let asked = route_request(
             Ipv4Addr::new(198, 51, 100, 1),
             0x10000,
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn дамп_адресов_собирается_до_конца_и_берёт_свой_а_не_соседский() {
+    fn the_address_dump_is_gathered_to_the_end_and_takes_ours_not_the_neighbours() {
         let portion: Vec<u8> = [
             address_reply(IFA_LOCAL, [127, 0, 0, 1]),
             address_reply(IFA_ADDRESS, [192, 168, 77, 1]),

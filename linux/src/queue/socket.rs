@@ -121,7 +121,7 @@ mod dropped_tests {
     /// шестом (дропы очереди) читался бы как «мы не роняли», а `4242` в восьмом — как непрерывная
     /// потеря.
     #[test]
-    fn седьмое_поле_есть_наши_потери() {
+    fn the_seventh_field_is_our_own_losses() {
         assert_eq!(dropped_in(REAL, 200), Some(740));
         assert_eq!(dropped_in(REAL, 201), Some(0), "чужая очередь своё число");
     }
@@ -129,14 +129,14 @@ mod dropped_tests {
     /// Очереди нет в файле — `None`, а не ноль: ноль означал бы «смотрели, потерь не было», и
     /// движок объявил бы себя непогрешимым там, где просто не смотрел (§7).
     #[test]
-    fn незнакомая_очередь_даёт_незнание_а_не_ноль() {
+    fn an_unknown_queue_yields_not_knowing_not_zero() {
         assert_eq!(dropped_in(REAL, 999), None);
         assert_eq!(dropped_in("", 200), None);
     }
 
     /// Строка испорчена — тоже незнание. Разбор, отдающий ноль на мусоре, врал бы тем же способом.
     #[test]
-    fn испорченная_строка_даёт_незнание() {
+    fn a_corrupted_line_yields_not_knowing() {
         assert_eq!(
             dropped_in("200 12345 17", 200),
             None,

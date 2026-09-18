@@ -10,12 +10,12 @@ use reflex_core::types::Protocol;
 use reflex_linux::route::{witness, Unsteerable, Went};
 
 const IN_NETNS: &str = "REFLEX_LINUX_STEER_IN_NETNS";
-const CASE: &str = "путь_увода_свидетельствует_ядро_и_краснеет_на_обеих_бедах";
+const CASE: &str = "the_steer_path_is_witnessed_by_the_kernel_and_reddens_on_both_troubles";
 const MARK: u32 = 0x10000;
 const RULE: &str = "fwmark 0x10000/0x10000 lookup 100";
 
 #[test]
-fn путь_увода_свидетельствует_ядро_и_краснеет_на_обеих_бедах() {
+fn the_steer_path_is_witnessed_by_the_kernel_and_reddens_on_both_troubles() {
     match std::env::var(IN_NETNS) {
         Ok(_) => inside_fresh_netns(),
         Err(_) => reexec_inside_netns(),
