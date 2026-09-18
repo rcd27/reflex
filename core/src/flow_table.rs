@@ -26,6 +26,18 @@ pub struct FlowTable<D, K> {
     machines: HashMap<K, D>,
     last_seen: HashMap<K, Instant>,
     idle_timeout: Duration,
+    /// Потолок — ТРЕТИЙ рубеж уборки, и он нужен даже там, где есть часы. Срок снимает
+    /// ЗАМОЛЧАВШИХ; против тысячи одновременно говорящих он бессилен, а память конечна независимо
+    /// от того, богат ли алфавит буквой конца. Замерено: без потолка таблица приняла сто тысяч
+    /// живых разговоров, не возразив ни разу.
+    capacity: usize,
+    /// Ключи, снятые ПО ЁМКОСТИ и ещё не объявленные наружу.
+    ///
+    /// Утрата по ёмкости — иного рода, чем по букве и по сроку: те снимают мёртвое (факт о мире),
+    /// эта снимает ЖИВОЕ, потому что место кончилось у нас (факт о нас — то же различение, что
+    /// `Expiry::Idle` и `Expiry::Ceiling` в [`crate::timeout`]). Молчаливая, она неотличима от
+    /// «разговора не было»: прибор просто больше не увидит цели и решит, что та замолчала.
+    forgotten: Vec<K>,
     make: Box<dyn Fn(&K) -> D + Send>,
 }
 
@@ -38,11 +50,17 @@ where
 {
     /// `idle_timeout` — сколько машина ключа может молчать до эвикта на тике. Иначе затихший ключ
     /// тикается вечно (утечка + спам наблюдаемости). Задаётся по окну детектора (напр. 2×).
-    pub fn new(idle_timeout: Duration, make: impl Fn(&K) -> D + Send + 'static) -> Self {
+    pub fn new(
+        idle_timeout: Duration,
+        capacity: usize,
+        make: impl Fn(&K) -> D + Send + 'static,
+    ) -> Self {
         Self {
             machines: HashMap::new(),
             last_seen: HashMap::new(),
             idle_timeout,
+            capacity,
+            forgotten: Vec::new(),
             make: Box::new(make),
         }
     }
@@ -72,9 +90,50 @@ where
             false => {
                 self.machines.insert(key.clone(), machine);
                 self.last_seen.insert(key, at);
+                self.make_room();
             }
         }
         (said, noted)
+    }
+
+    /// Освободить место, если ключей больше потолка: уходит САМЫЙ ДАВНИЙ по последнему
+    /// наблюдению. Не случайный и не новейший: давний ближе всех к тому, чтобы уйти по сроку, и
+    /// ошибка вытеснения стоит на нём меньше всего.
+    ///
+    /// Свежий разговор входит ВСЕГДА — отказ принять новое сделал бы полную таблицу слепой к
+    /// происходящему сейчас, и чем дольше она живёт, тем прочнее (тот же довод, по которому
+    /// `dns::cache` освобождает место, а не отвергает ответ).
+    ///
+    /// Снятый ключ кладётся в [`FlowTable::forgotten`] — объявление наружу; здесь его не
+    /// выбрасывают, потому что утрата живого обязана быть названа.
+    fn make_room(&mut self) {
+        while self.machines.len() > self.capacity {
+            let oldest = self
+                .last_seen
+                .iter()
+                .min_by_key(|(_, seen)| **seen)
+                .map(|(key, _)| key.clone());
+            match oldest {
+                None => return,
+                Some(key) => {
+                    self.machines.remove(&key);
+                    self.last_seen.remove(&key);
+                    self.forgotten.push(key);
+                }
+            }
+        }
+    }
+
+    /// Забрать объявления об утрате ПО ЁМКОСТИ — ключи, снятые живыми, потому что место кончилось.
+    ///
+    /// Объявление приходит ПОЗЖЕ самой утраты (её делает горячий путь, читают на тике), и это тот
+    /// же порядок, что у дыры носителя: `DetectorEvent::Torn` несёт момент ОБНАРУЖЕНИЯ, а не
+    /// потери, потому что другого взять неоткуда. Цена та же и называется так же: между снятием и
+    /// объявлением прибор считает цель молчащей.
+    #[must_use = "утрата живого, брошенная молча, неотличима от того, что разговора не было: \
+                  прибор решит, что цель замолчала, и объявит беду по собственной забывчивости"]
+    pub fn forgotten(&mut self) -> Vec<K> {
+        std::mem::take(&mut self.forgotten)
     }
 
     /// Буква БЕЗ АДРЕСА — во все живые машины; наружу по паре с каждой, помеченной её ключом. Пара
@@ -194,7 +253,7 @@ mod tests {
         };
 
         let now = Instant::now();
-        let mut table: FlowTable<Counter, Flow> = FlowTable::new(IDLE, |_key| Counter(0));
+        let mut table: FlowTable<Counter, Flow> = FlowTable::new(IDLE, 1024, |_key| Counter(0));
 
         let said = |table: &mut FlowTable<Counter, Flow>, port| {
             let d = datagram(port);
@@ -258,7 +317,7 @@ mod tests {
     #[test]
     fn idle_flow_evicted_and_stops_ticking() {
         let t0 = Instant::now();
-        let mut ft: FlowTable<TickPing, Flow> = FlowTable::new(IDLE, |_| TickPing);
+        let mut ft: FlowTable<TickPing, Flow> = FlowTable::new(IDLE, 1024, |_| TickPing);
         feed(&mut ft, seg(), t0);
         assert_eq!(ft.flow_count(), 1);
         let out = ft.each(node(t0 + WINDOW));
@@ -275,7 +334,7 @@ mod tests {
     #[test]
     fn active_flow_not_evicted() {
         let t0 = Instant::now();
-        let mut ft: FlowTable<TickPing, Flow> = FlowTable::new(IDLE, |_| TickPing);
+        let mut ft: FlowTable<TickPing, Flow> = FlowTable::new(IDLE, 1024, |_| TickPing);
         feed(&mut ft, seg(), t0);
         feed(&mut ft, seg(), t0 + WINDOW);
         let out = ft.each(node(t0 + WINDOW + Duration::from_secs(1)));

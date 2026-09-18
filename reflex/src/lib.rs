@@ -2355,7 +2355,7 @@ fn replay<W: Clone + 'static, S: Word + Clone + PartialEq + 'static>(
 
     let templates: Vec<Box<dyn Probe<W, S>>> =
         seeds.iter().map(|probe| probe.clone_box()).collect();
-    let mut table = FlowTable::<Probes<W, S>, Flow>::new(idle, move |_flow| {
+    let mut table = FlowTable::<Probes<W, S>, Flow>::new(idle, CONVERSATIONS, move |_flow| {
         Probes(templates.iter().map(|probe| probe.clone_box()).collect())
     });
     let mut targets: HashMap<Flow, TargetKey<Box<str>>> = HashMap::new();
@@ -2405,6 +2405,18 @@ fn replay<W: Clone + 'static, S: Word + Clone + PartialEq + 'static>(
     }
     said
 }
+
+/// ПОТОЛОК ОДНОВРЕМЕННЫХ РАЗГОВОРОВ — третий рубеж уборки рядом с прощанием и сроком (§12.6).
+///
+/// Нужен даже при живых часах: срок снимает ЗАМОЛЧАВШИХ, а против тысячи одновременно говорящих
+/// он бессилен — скан портов, раздача торрента, ботнет за одним NAT. Замерено на пустой таблице:
+/// без потолка она принимает сто тысяч разговоров, не возразив ни разу.
+///
+/// ВЫБРАННОЕ число, замера в дереве нет — сказано, чтобы не принять его за установленное. Восемь
+/// тысяч разговоров покрывают домашний сегмент с запасом; цена одного — состояние приборов
+/// цепочки, десятки байт. Утрата по этому рубежу ОБЪЯВЛЯЕТСЯ (`FlowTable::forgotten`), потому что
+/// снимается живое: молча она неотличима от того, что разговора не было.
+const CONVERSATIONS: usize = 8192;
 
 /// Шаг СЕТКИ — как часто закрывается окно, по которому судят приборы. Не «как часто будим»: сроком
 /// сна распоряжается носитель ([`Serves::serve`]), а сетка — предмет наблюдения, и её шаг не
@@ -2487,7 +2499,8 @@ where
         Err(report) => return report,
     };
     while turning.pump(voice) {}
-    Report::finished(turning.name, turning.certified)
+    let forgotten = turning.alive.forgotten;
+    Report::finished(turning.name, turning.certified, forgotten)
 }
 
 /// ПРОГОН, ОСТАНОВЛЕННЫЙ МЕЖДУ ОБОРОТАМИ.
@@ -2582,7 +2595,7 @@ where
             .collect();
         let templates = park.per_flow;
         let alive: Alive<C, T, S> = Alive {
-            table: FlowTable::new(idle, move |_flow| {
+            table: FlowTable::new(idle, CONVERSATIONS, move |_flow| {
                 Probes(templates.iter().map(|probe| probe.clone_box()).collect())
             }),
             // Приборы КРАЯ живут одним экземпляром на весь движок: их состояние не здесь, а в марке
@@ -2591,6 +2604,7 @@ where
             layer: Layer::new(),
             targets: HashMap::new(),
             tape: Tape::new(),
+            forgotten: 0,
             certify,
             about,
             naming,
@@ -2808,6 +2822,10 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Окно ленты: пишется, только когда закон предъявляется — даром лента стоила бы клона слова
     /// провода на каждый пакет.
     tape: Recorded<C, T>,
+    /// Сколько разговоров снято ЖИВЫМИ, потому что упёрлись в потолок ([`CONVERSATIONS`]).
+    /// Ненулевое значение — не беда сети, а весть о НАС: движку тесно, и часть целей он перестал
+    /// наблюдать, ничего о них не сказав. Уезжает в [`Report::forgotten`].
+    forgotten: usize,
     certify: bool,
     /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
     /// что зовётся на закрытии узла — среди букв, а не после них.
@@ -3000,6 +3018,11 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
 
     /// Имя уходит вместе с ключом: зеркалим эвикт таблицы, чтобы карта не росла.
     fn forget_evicted(&mut self) {
+        // УТРАТА ПО ЁМКОСТИ ЗАБИРАЕТСЯ И СЧИТАЕТСЯ, а не отбрасывается: снимали ЖИВЫХ, и молчание
+        // о них неотличимо от «разговора не было» — прибор решил бы, что цель замолчала, и
+        // объявил беду по нашей забывчивости. Число уезжает в [`Report::forgotten`] — значением,
+        // как и свидетельство §10, а не строкой в логе.
+        self.forgotten += self.table.forgotten().len();
         let Alive { targets, table, .. } = self;
         targets.retain(|flow, _| table.get(flow).is_some());
     }
@@ -3061,6 +3084,8 @@ pub struct Report {
     /// ЗНАЧЕНИЕМ, а не строкой в логе: закон, который нельзя предъявить вызывающему, проверяется
     /// только глазами человека, читающего вывод, — то есть не проверяется.
     certified: Option<Replayed>,
+    /// Сколько разговоров снято живыми по потолку памяти — см. [`Report::forgotten`].
+    forgotten: usize,
 }
 
 impl Report {
@@ -3069,17 +3094,30 @@ impl Report {
             name,
             why: Some(why),
             certified: None,
+            forgotten: 0,
         }
     }
 
     /// Носитель сказал, что работы больше не будет никогда, и цикл вышел. Отдельно от «не
     /// открылся» (§7: «не смотрели» ≠ «смотрели и кончилось»).
-    fn finished(name: String, certified: Option<Replayed>) -> Report {
+    fn finished(name: String, certified: Option<Replayed>, forgotten: usize) -> Report {
         Report {
             name,
             why: None,
             certified,
+            forgotten,
         }
+    }
+
+    /// Сколько разговоров движок перестал наблюдать ЖИВЫМИ, упёршись в потолок памяти
+    /// ([`CONVERSATIONS`]). Не беда сети, а весть о нас: часть целей осталась без присмотра, и
+    /// приборы о них ничего не сказали — ни хорошего, ни плохого.
+    ///
+    /// Значением, а не строкой в логе, по той же причине, что и [`Report::certified`]: факт,
+    /// который нельзя предъявить вызывающему, проверяется только глазами человека, читающего
+    /// вывод, — то есть не проверяется.
+    pub fn forgotten(&self) -> usize {
+        self.forgotten
     }
 
     /// Чем кончилось свидетельство восьмого закона (§10). `None` — не просили: клетка «не

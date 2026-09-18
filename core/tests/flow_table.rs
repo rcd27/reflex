@@ -75,7 +75,7 @@ const IDLE: Duration = Duration::from_secs(3600);
 /// Единственная дверь к конструктору: правка сигнатуры трогает одно место, а не рассыпанные по
 /// файлу вызовы.
 fn new_table() -> FlowTable<RstCounter, Flow> {
-    FlowTable::new(IDLE, |_key: &Flow| RstCounter { count: 0 })
+    FlowTable::new(IDLE, 1024, |_key: &Flow| RstCounter { count: 0 })
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn машина_объявившая_конец_уходит_не_дожидая
     }
 
     let mut table: FlowTable<Farewell, Flow> =
-        FlowTable::new(Duration::from_secs(3600), |_flow| Farewell::default());
+        FlowTable::new(Duration::from_secs(3600), 1024, |_flow| Farewell::default());
 
     let живой = make_segment(40000, 443, TcpFlags::ACK);
     table.process(normalize_flow(живой.flow()), &живой, Instant::now());
@@ -292,5 +292,52 @@ fn машина_объявившая_конец_уходит_не_дожидая
         table.flow_count(),
         0,
         "предмет исчерпан — память освобождена сразу, а не через час простоя"
+    );
+}
+
+/// ПОТОЛОК ДЕРЖИТ ПАМЯТЬ КОНЕЧНОЙ ДАЖЕ ТОГДА, КОГДА НИКТО НЕ МОЛЧИТ.
+///
+/// Срок снимает ЗАМОЛЧАВШИХ, и против потока говорящих он бессилен: скан портов, раздача торрента,
+/// ботнет за одним NAT. Замер на таблице без потолка: сто тысяч разговоров вошли, не встретив
+/// возражения — то есть «память конечна» держалось лишь тем, что ключи вовремя затихают.
+///
+/// Свежий разговор входит ВСЕГДА, место освобождает самый давний по последнему наблюдению: отказ
+/// принять новое сделал бы полную таблицу слепой к происходящему сейчас — и тем прочнее, чем
+/// дольше она живёт.
+#[test]
+fn потолок_держит_память_конечной_когда_все_говорят() {
+    const ПОТОЛОК: usize = 64;
+    let t0 = Instant::now();
+    let mut table: FlowTable<RstCounter, Flow> =
+        FlowTable::new(Duration::from_secs(3600), ПОТОЛОК, |_key: &Flow| {
+            RstCounter { count: 0 }
+        });
+
+    // Тысяча разговоров, и ни один не молчит дольше часа: сроку снимать нечего.
+    for n in 0..1000u16 {
+        let seg = make_segment(10_000 + n, 443, TcpFlags::ACK);
+        table.process(
+            normalize_flow(seg.flow()),
+            &seg,
+            t0 + Duration::from_millis(n as u64),
+        );
+    }
+
+    assert_eq!(
+        table.flow_count(),
+        ПОТОЛОК,
+        "потолок держит: без него вошли бы все тысяча"
+    );
+
+    let забытые = table.forgotten();
+    assert_eq!(
+        забытые.len(),
+        1000 - ПОТОЛОК,
+        "каждая утрата названа: снимали ЖИВЫХ, и молчание о них неотличимо от «разговора не было»"
+    );
+
+    assert!(
+        table.forgotten().is_empty(),
+        "объявления забирают один раз — второй раз говорить не о чем"
     );
 }

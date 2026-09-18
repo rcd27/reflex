@@ -111,6 +111,12 @@ enum LocalEvent {
 /// Конца этот счёт не объявляет: он видит кадры и марку, а прощание не различает — область
 /// убирается сроком (§12.6). Заяви он конец по догадке, разговор снимался бы с учёта по признаку,
 /// которого носитель не наблюдает.
+/// Потолок разговоров местного счёта. ВЫБРАННОЕ число, замера в дереве нет — сказано, чтобы не
+/// принять его за установленное: столько одновременных разговоров держит домашний маршрутизатор с
+/// запасом, а память под запись счёта — десятки байт. Переполнение не отказ: место освобождает
+/// самый давний, и об этом говорится (`FlowTable::forgotten`).
+const CONVERSATIONS: usize = 8192;
+
 impl crate::detector::Ended for Counts {}
 
 impl Mealy for Counts {
@@ -326,7 +332,7 @@ impl<C> Local<C> {
     pub fn with_idle(carrier: C, idle: Duration) -> Local<C> {
         Local {
             carrier,
-            table: FlowTable::new(idle, |_flow| Counts::default()),
+            table: FlowTable::new(idle, CONVERSATIONS, |_flow| Counts::default()),
         }
     }
 
