@@ -158,30 +158,44 @@ where
     /// целей, ленту), — он стал бы значим молча. Оттого сказано «не определён», а не «не важен».
     pub fn each(&mut self, letter: DetectorEvent<In>) -> Vec<(K, (D::Out, D::Log))> {
         let at = letter.at();
-        let keys: Vec<K> = self.machines.keys().cloned().collect();
-        let mut spoken = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some(machine) = self.machines.remove(&key) {
-                let (machine, said, noted) = machine.step(letter.clone());
-                spoken.push((key.clone(), (said, noted)));
-                match self.is_idle(&key, at) {
-                    true => {
-                        self.last_seen.remove(&key);
-                        self.departed.push((key.clone(), Departure::Idle));
-                    }
-                    false => {
-                        self.machines.insert(key, machine);
-                    }
+        // ОДИН ПРОХОД ПО СЕМЬЕ, а не список ключей и выборка по нему: семья обходится целиком,
+        // значит её можно ОСУШИТЬ и собрать заново. Прежде копировались ВСЕ ключи в отдельный
+        // вектор, а затем каждая машина вынималась и вставлялась обратно по одному.
+        //
+        // ЭТО УПРОЩЕНИЕ, А НЕ УСКОРЕНИЕ, и сказано так потому, что замерено: на входе в 2000
+        // разговоров и 600 узлов сетки разницы во времени прогона нет (0,21 с против 0,21 с, по два
+        // прогона). Шаг машин стоит дороже обхода, и копия ключей в нём тонет. Место, где она могла
+        // бы стоить заметно, — восемь тысяч ЖИВЫХ машин на занятой коробке, — на стенде не
+        // воспроизводится: чтобы столько разговоров были живы одновременно, нужен настоящий
+        // busy-NAT, а не запись.
+        //
+        // Ключ всё же копируется — один раз, в сказанное: пара «кто сказал» уезжает вызывающему, и
+        // отдать её ссылкой некуда (машина к этому моменту уже шагнула). Копия под ВЫХОД законна,
+        // копия под обход была не нужна.
+        let FlowTable {
+            machines,
+            last_seen,
+            idle_timeout,
+            departed,
+            ..
+        } = self;
+        let mut kept = HashMap::with_capacity(machines.len());
+        let mut spoken = Vec::with_capacity(machines.len());
+        for (key, machine) in machines.drain() {
+            let (machine, said, noted) = machine.step(letter.clone());
+            spoken.push((key.clone(), (said, noted)));
+            match idle_by(last_seen, *idle_timeout, &key, at) {
+                true => {
+                    last_seen.remove(&key);
+                    departed.push((key, Departure::Idle));
+                }
+                false => {
+                    kept.insert(key, machine);
                 }
             }
         }
+        *machines = kept;
         spoken
-    }
-
-    fn is_idle(&self, key: &K, at: Instant) -> bool {
-        self.last_seen
-            .get(key)
-            .is_some_and(|seen| at.saturating_duration_since(*seen) >= self.idle_timeout)
     }
 
     pub fn get(&self, key: &K) -> Option<&D> {
@@ -191,6 +205,21 @@ where
     pub fn flow_count(&self) -> usize {
         self.machines.len()
     }
+}
+
+/// КРИТЕРИЙ ПРОСТОЯ — одним местом на всю таблицу. Свободной функцией, а не методом: обход семьи
+/// осушает её и держит поля `self` разъятыми, а метод потребовал бы `&self` целиком и не собрался
+/// бы рядом с этим обходом. Разложить же условие по местам вызова значило бы завести два срока под
+/// одним именем.
+fn idle_by<K: Eq + Hash>(
+    last_seen: &HashMap<K, Instant>,
+    idle_timeout: Duration,
+    key: &K,
+    at: Instant,
+) -> bool {
+    last_seen
+        .get(key)
+        .is_some_and(|seen| at.saturating_duration_since(*seen) >= idle_timeout)
 }
 
 /// Нормализация ключа разговора: направление приводится к одному, чтобы обе стороны легли в одну
