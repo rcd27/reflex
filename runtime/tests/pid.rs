@@ -48,7 +48,7 @@ fn acquire_already_running() {
 
     let err = PidGuard::acquire(path.clone()).unwrap_err();
     match err {
-        PidError::AlreadyRunning(pid) => assert_eq!(pid, std::process::id()),
+        PidError::AlreadyRunning(pid) => assert_eq!(pid, Some(std::process::id())),
         other => panic!("expected AlreadyRunning, got: {other}"),
     }
 }
@@ -125,4 +125,28 @@ fn acquire_corrupted_pid_file() {
 
     drop(guard);
     assert!(!path.exists());
+}
+
+/// НОМЕР, КОТОРЫЙ НЕ ПРОЧЁЛСЯ, НЕ ВЫДАЁТСЯ ЗА НУЛЕВОЙ.
+///
+/// Замок занят живым процессом, а номера в файле нет (демон взял замок и упал до записи; файл
+/// обрезан). Прежде отказ нёс `AlreadyRunning(0)` — выдуманный номер, неотличимый от настоящего:
+/// читатель шёл искать процесс 0. Клетка (§7) говорит ровно то, что есть: держатель живой, номер
+/// неизвестен.
+#[test]
+fn номер_держателя_который_не_прочёлся_остаётся_неизвестным() {
+    let path = temp_pid_path();
+
+    let _held = PidGuard::acquire(path.clone()).unwrap();
+    // Держатель жив, но номер в файле стёрт — ровно то состояние, что бывает при падении между
+    // взятием замка и записью номера.
+    std::fs::write(&path, b"").unwrap();
+
+    match PidGuard::acquire(path.clone()).unwrap_err() {
+        PidError::AlreadyRunning(None) => {}
+        PidError::AlreadyRunning(Some(pid)) => {
+            panic!("номер выдуман там, где его нет: {pid}")
+        }
+        other => panic!("ожидался занятый замок, вышло: {other}"),
+    }
 }

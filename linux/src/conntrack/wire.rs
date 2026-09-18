@@ -359,14 +359,22 @@ pub fn view_of(body: &[u8]) -> CtView {
 
 /// Тело одного сообщения `IPCTNL_MSG_CT_NEW` в запись. Через [`view_of`]: `Entry` — узкий срез вида
 /// (четвёрка V4, счёт, марка), а сам разбор один.
+///
+/// ЗАПИСЬ БЕЗ ЧЕТВЁРКИ НЕ СТРОИТСЯ ВОВСЕ, а не строится нулевой. Прежде здесь стояло
+/// `unwrap_or_default()`, и запись без `CTA_TUPLE_ORIG` (IPv6, обрезанное сообщение) выходила
+/// четвёркой `0.0.0.0:0 → 0.0.0.0:0`, НЕОТЛИЧИМОЙ от настоящей: ищущий свой поток сравнивал бы
+/// кортежи с выдуманным и не знал, что сравнивает с пустотой. Клетка «четвёрки нет» уже есть —
+/// это `None` самой `CtView::tuple` (§7), и здесь она лишь доносится наружу.
 pub fn entry_of(payload: &[u8]) -> Option<Entry> {
-    payload.get(NFGEN..).map(view_of).map(|view| Entry {
-        orig: view.tuple.unwrap_or_default(),
-        orig_counts: view.down,
-        reply_counts: view.up,
-        mark: view.mark,
-        tcp: view.tcp,
-        dst: view.dst,
+    payload.get(NFGEN..).map(view_of).and_then(|view| {
+        Some(Entry {
+            orig: view.tuple?,
+            orig_counts: view.down,
+            reply_counts: view.up,
+            mark: view.mark,
+            tcp: view.tcp,
+            dst: view.dst,
+        })
     })
 }
 

@@ -6,14 +6,21 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum PidError {
-    AlreadyRunning(u32),
+    /// Замок держит живой процесс. Номер — `Option`, а не число: PID из файла мог не прочитаться
+    /// (файл пуст, обрезан, занят на запись), и ноль вместо него был бы выдуманным номером —
+    /// читатель принял бы его за настоящий и пошёл искать несуществующий процесс. «Чей замок,
+    /// неизвестно» — своя клетка (§7), и отказ от этого не перестаёт быть отказом.
+    AlreadyRunning(Option<u32>),
     Io(io::Error),
 }
 
 impl fmt::Display for PidError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AlreadyRunning(pid) => write!(f, "daemon already running (pid {pid})"),
+            Self::AlreadyRunning(Some(pid)) => write!(f, "демон уже работает (pid {pid})"),
+            Self::AlreadyRunning(None) => {
+                write!(f, "демон уже работает, номер процесса не прочитан")
+            }
             Self::Io(e) => write!(f, "pid file error: {e}"),
         }
     }
@@ -61,9 +68,9 @@ impl PidGuard {
             .open(&path)?;
 
         if !try_lock_exclusive(&file)? {
-            // Замок занят живым процессом — читаем PID для понятного сообщения.
-            let pid = read_pid(&mut &file).unwrap_or(0);
-            return Err(PidError::AlreadyRunning(pid));
+            // Замок занят живым процессом — читаем PID для понятного сообщения. Не прочли —
+            // так и скажем: номер неизвестен.
+            return Err(PidError::AlreadyRunning(read_pid(&mut &file)));
         }
 
         // Замок наш — записываем свой PID (информационно).

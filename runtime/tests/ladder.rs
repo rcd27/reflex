@@ -166,12 +166,16 @@ async fn success_does_not_always_halt_and_a_halt_is_not_always_success() {
         Unreachable,
     }
 
-    let climbed = climb(vec!["повторами", "никак"], 1, |candidate: &str| async move {
-        Ok(match candidate {
-            "повторами" => (Found::TakesWithRetries, Climbing::Onward),
-            _ => (Found::Unreachable, Climbing::Halt),
-        })
-    })
+    let climbed = climb(
+        vec!["повторами", "никак"],
+        1,
+        |candidate: &str| async move {
+            Ok(match candidate {
+                "повторами" => (Found::TakesWithRetries, Climbing::Onward),
+                _ => (Found::Unreachable, Climbing::Halt),
+            })
+        },
+    )
     .await;
 
     assert_eq!(
