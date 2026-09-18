@@ -11,19 +11,19 @@
 use reflex::*;
 use std::time::Duration;
 
-fn запись() -> String {
+fn recording() -> String {
     format!(
         "{}/tests/fixtures/stalled-after-reply.pcap",
         env!("CARGO_MANIFEST_DIR")
     )
 }
 
-fn услышано(порог: Duration) -> Vec<Distress> {
+fn heard_with(patience: Duration) -> Vec<Distress> {
     let heard = std::sync::Mutex::new(Vec::new());
-    pcap(запись())
+    pcap(recording())
         .from(Tcp)
         .extract(Sni)
-        .detect(Silence::after(порог))
+        .detect(Silence::after(patience))
         .on(|_target: &str, distress| heard.lock().expect("журнал цел").push(distress))
         .run();
     heard.into_inner().expect("журнал цел")
@@ -31,37 +31,37 @@ fn услышано(порог: Duration) -> Vec<Distress> {
 
 /// ШТАТНАЯ ДВЕРЬ НАЗЫВАЕТ БЕДУ, а не молчит: цель приняла просьбу и не отвечает дольше терпения.
 #[test]
-fn цель_замолчавшая_после_ответа_названа_штатной_дверью() {
-    let сказано = услышано(Duration::from_secs(5));
+fn a_target_that_went_quiet_after_replying_is_named_by_the_regular_door() {
+    let said = heard_with(Duration::from_secs(5));
 
     assert!(
-        matches!(сказано.as_slice(), [Distress::Silence { ms }] if *ms >= 5_000),
-        "19 секунд тишины при ждущем клиенте обязаны быть названы: {сказано:?}"
+        matches!(said.as_slice(), [Distress::Silence { ms }] if *ms >= 5_000),
+        "19 секунд тишины при ждущем клиенте обязаны быть названы: {said:?}"
     );
 }
 
 /// ТЕРПЕНИЕ — ВЕЛИЧИНА ДОМЕННОЙ ЛОГИКИ, и беда называется тем раньше, чем оно короче. Полсекунды
 /// терпения — полсекунды до слова, а не пять секунд ожидания.
 #[test]
-fn короткое_терпение_называет_беду_раньше() {
-    let быстро = услышано(Duration::from_millis(500));
+fn shorter_patience_names_the_trouble_sooner() {
+    let said_quickly = heard_with(Duration::from_millis(500));
 
     assert!(
-        matches!(быстро.as_slice(), [Distress::Silence { ms }] if *ms < 1_000),
-        "при пороге 500 мс слово обязано прийти в пределах секунды: {быстро:?}"
+        matches!(said_quickly.as_slice(), [Distress::Silence { ms }] if *ms < 1_000),
+        "при пороге 500 мс слово обязано прийти в пределах секунды: {said_quickly:?}"
     );
 }
 
 /// СЛОВО ОДНО, А НЕ ДВА: половины двери говорят о разном, и `NoBytes` остаётся за краем —
 /// единственным, кто знает историю разговора до нашего рождения.
 #[test]
-fn половины_двери_не_повторяют_друг_друга() {
-    let сказано = услышано(Duration::from_millis(500));
+fn the_two_halves_of_the_door_do_not_repeat_each_other() {
+    let said = heard_with(Duration::from_millis(500));
 
-    assert_eq!(сказано.len(), 1, "одна беда — одно слово: {сказано:?}");
+    assert_eq!(said.len(), 1, "одна беда — одно слово: {said:?}");
     assert!(
-        !сказано.iter().any(|w| matches!(w, Distress::NoBytes)),
-        "цель отдала сертификат — `NoBytes` о ней был бы ложью: {сказано:?}"
+        !said.iter().any(|w| matches!(w, Distress::NoBytes)),
+        "цель отдала сертификат — `NoBytes` о ней был бы ложью: {said:?}"
     );
 }
 
@@ -75,7 +75,7 @@ mod paper;
 /// `NoBytes` не говорит вовсе, и снятый фильтр там не краснеет — проверка была бы слепа к своему
 /// предмету (§10.7).
 #[test]
-fn когда_цель_молчит_совсем_слово_говорит_только_край() {
+fn when_the_target_is_wholly_silent_only_the_edge_speaks_the_word() {
     use paper::{request, Paper, PaperEdge};
 
     let heard = std::sync::Mutex::new(Vec::new());
@@ -102,14 +102,14 @@ fn когда_цель_молчит_совсем_слово_говорит_то�
     .on(|_t: &str, d| heard.lock().expect("журнал цел").push(d))
     .run();
 
-    let сказано = heard.into_inner().expect("журнал цел");
+    let said = heard.into_inner().expect("журнал цел");
     assert_eq!(
-        сказано.len(),
+        said.len(),
         1,
-        "«не отдала ни байта» — одна беда, и слово о ней одно: {сказано:?}"
+        "«не отдала ни байта» — одна беда, и слово о ней одно: {said:?}"
     );
     assert!(
-        matches!(сказано.as_slice(), [Distress::NoBytes]),
-        "историю разговора называет край: {сказано:?}"
+        matches!(said.as_slice(), [Distress::NoBytes]),
+        "историю разговора называет край: {said:?}"
     );
 }

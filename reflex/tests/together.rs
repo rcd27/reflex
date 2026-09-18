@@ -36,7 +36,7 @@ impl Mealy for Always {
 
 /// ПРЕДМЕТ: показания ДВУХ цепочек приходят одним потоком, в один цикл.
 #[test]
-fn показания_двух_цепочек_приходят_одним_потоком() {
+fn the_readings_of_two_chains_arrive_as_one_stream() {
     let heard: Vec<Note> = together()
         .chain(
             engine(
@@ -74,7 +74,7 @@ fn показания_двух_цепочек_приходят_одним_пот
 /// ПРЕДМЕТ: отказ одной цепочки — ЗНАЧЕНИЕ, а не падение набора. Проглотить его значило бы тихо
 /// уменьшить продукт; уронить набор — потерять работающие цепочки из-за одной.
 #[test]
-fn отказ_одной_цепочки_не_отменяет_прочих() {
+fn the_refusal_of_one_chain_does_not_cancel_the_rest() {
     let together = together()
         // Запись, которой нет: носитель честно не откроется и скажет причину.
         .chain(
@@ -115,7 +115,7 @@ fn отказ_одной_цепочки_не_отменяет_прочих() {
 /// Набор кончается, когда кончились ВСЕ. Иначе цепочка, дочитанная первой, обрывала бы соседку на
 /// полуслове — а у неё свой источник и свой срок.
 #[test]
-fn набор_кончается_когда_кончились_все() {
+fn the_set_ends_when_every_chain_has_ended() {
     let short = Paper::new().then_packet(syn(40004)).then_stop();
     let long = Paper::new()
         .then_packet(syn(40005))
@@ -274,8 +274,8 @@ impl IntoCarrier for Dozes {
 /// поле это означало переполнение очереди ядра и убитый трафик, а здесь означало бы секунды вместо
 /// миллисекунд.
 #[test]
-fn молчащая_цепочка_не_держит_говорящую() {
-    let говорящая = Paper::new()
+fn a_silent_chain_does_not_hold_back_a_talking_one() {
+    let talking = Paper::new()
         .then_packet(syn(40007))
         .then_packet(request(40007))
         .then_packet(request(40007))
@@ -286,7 +286,7 @@ fn молчащая_цепочка_не_держит_говорящую() {
     let heard: Vec<Note> = together()
         .chain(engine(Dozes).from(Tcp).extract(Sni).detect(own(Always)))
         .chain(
-            engine(говорящая)
+            engine(talking)
                 .from(Tcp)
                 .extract(Sni)
                 .detect(paper::Crier::always()),

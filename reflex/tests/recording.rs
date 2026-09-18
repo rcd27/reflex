@@ -87,7 +87,7 @@ fn from_client(seq: u32, flags: TcpFlags, payload: &[u8]) -> Vec<u8> {
 /// Величина `after_ms` взята из ШТАМПОВ ЗАПИСИ (10мс → 310мс), а не из часов прогона: прогон
 /// занимает микросекунды, и совпадение с тремястами доказывает, что время пришло из файла.
 #[test]
-fn повтор_из_записи_доходит_до_прибора_со_временем_файла() {
+fn a_retransmit_from_a_recording_reaches_the_instrument_with_the_time_of_the_file() {
     let hello = reflex_core::tls::build_client_hello("example.com");
     let path = saved(
         "retransmit",
@@ -135,7 +135,7 @@ fn повтор_из_записи_доходит_до_прибора_со_вре
 /// Тем и ценна запись: то же окно на живом проводе стоило бы тридцати секунд ожидания, а здесь
 /// прогон детерминирован целиком — один файл даёт один ответ.
 #[test]
-fn тихий_дроп_из_записи_подтверждается_возрастом_из_файла() {
+fn a_silent_drop_from_a_recording_is_confirmed_by_the_age_taken_from_the_file() {
     let hello = reflex_core::tls::build_client_hello("example.com");
     let path = saved(
         "silence",
@@ -198,7 +198,7 @@ fn тихий_дроп_из_записи_подтверждается_возра
 /// Тест заведён находкой примера: на той же записи цепочка с двумя приборами сказала только
 /// повтор, хотя прибор тишины на ней же в одиночку говорит `NoBytes`.
 #[test]
-fn два_прибора_над_одной_записью_говорят_каждый_своё() {
+fn two_instruments_over_one_recording_each_say_their_own() {
     let hello = reflex_core::tls::build_client_hello("example.com");
     let path = saved(
         "both",
@@ -278,7 +278,7 @@ impl Mealy for Counter {
 /// Фикстура — 15 кадров и 3.5КБ: рукопожатие к своему же серверу на петле, без чужих адресов и без
 /// личных данных. Снята заново командой из докблока `examples/replay-recording`.
 #[test]
-fn запись_снятая_чужими_руками_даёт_настоящее_имя_цели() {
+fn a_recording_captured_by_other_hands_yields_the_real_target_name() {
     let started = std::time::Instant::now();
     let heard = std::sync::Mutex::new(Vec::new());
 
@@ -313,7 +313,7 @@ fn запись_снятая_чужими_руками_даёт_настояще
 ///
 /// Оракул тот же и снят той же командой: OpenSSL, `tcpdump -i any`, подтверждение `tshark`.
 #[test]
-fn запись_снятая_через_any_тоже_даёт_имя_цели() {
+fn a_recording_captured_through_any_yields_the_target_name_too() {
     let heard = std::sync::Mutex::new(Vec::new());
 
     let report = pcap("tests/fixtures/handshake-any.pcap")
@@ -345,7 +345,7 @@ fn запись_снятая_через_any_тоже_даёт_имя_цели() 
 /// Вердикт берётся ЗНАЧЕНИЕМ из отчёта, а не глазами из лога: закон, который нельзя предъявить
 /// вызывающему, проверяется только человеком, читающим вывод, — то есть не проверяется.
 #[test]
-fn восьмой_закон_предъявляется_на_записи() {
+fn the_eighth_law_is_demonstrated_on_a_recording() {
     let report = pcap("tests/fixtures/handshake.pcap")
         .from(Tcp)
         .extract(Sni)
@@ -365,7 +365,7 @@ fn восьмой_закон_предъявляется_на_записи() {
 /// живущий вне его состояния, — то есть имеет вход, которого нет в его алфавите, и два прогона
 /// одной ленты расходятся. Зелёный свидетель, не умеющий покраснеть, хуже отсутствующего.
 #[test]
-fn скрытый_вход_ломает_свидетельство_на_той_же_записи() {
+fn a_hidden_input_breaks_the_testimony_on_the_very_same_recording() {
     let report = pcap("tests/fixtures/handshake.pcap")
         .from(Tcp)
         .extract(Sni)

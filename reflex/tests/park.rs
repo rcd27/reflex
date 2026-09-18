@@ -20,7 +20,7 @@ use reflex::*;
 /// СБРОС СЛЫШЕН. Дверь `Rst::seen()` заведена 11.09.2026; до неё слово `Distress::Rst` в словаре
 /// стояло, а произнести его было некому.
 #[test]
-fn сброс_от_цели_доходит_до_потребителя() {
+fn a_reset_from_the_target_reaches_the_consumer() {
     let said = log::<String>();
     engine(
         Paper::new()
@@ -51,7 +51,7 @@ fn сброс_от_цели_доходит_до_потребителя() {
 ///
 /// Держит первый тест честным: прибор, кричащий всегда, прошёл бы его, не умея различать.
 #[test]
-fn чистый_разговор_сбросом_не_объявляется() {
+fn a_clean_conversation_is_not_announced_as_a_reset() {
     let said = log::<String>();
     engine(
         Paper::new()
@@ -85,7 +85,7 @@ fn чистый_разговор_сбросом_не_объявляется() {
 /// Названо прямо, чтобы зелёный тест не читался шире правды: он держит то, что двери есть и
 /// цепочка с ними строится, — ровно тот дефект, что был найден (механизм есть, двери нет).
 #[test]
-fn двери_величин_есть_и_цепочка_с_ними_строится() {
+fn the_doors_for_quantities_exist_and_a_chain_builds_with_them() {
     engine(Paper::new().then_packet(request(40003)).then_stop())
         .from(Tcp)
         .extract(Sni)
@@ -127,7 +127,7 @@ fn двери_величин_есть_и_цепочка_с_ними_строит
 /// Сам `distress.rs` из произносящих исключён: там слово только объявлено и напечатано, а
 /// объявление словом не является — ровно эту разницу дефект и вскрыл.
 #[test]
-fn каждое_слово_бедствия_имеет_в_парке_того_кто_его_произносит() {
+fn every_word_of_distress_has_someone_in_the_park_who_utters_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("корень воркспейса");
@@ -206,7 +206,7 @@ fn каждое_слово_бедствия_имеет_в_парке_того_к
 /// Способность краснеть показана мутацией: допиши в `lib.rs` любое `reflex_linux::` вне модуля
 /// носителя — и список ниже перестанет быть пустым.
 #[test]
-fn имя_линукс_крейта_не_встречается_в_двери_фасада() {
+fn the_linux_crate_name_never_appears_in_the_facade_door() {
     let facade = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
     )

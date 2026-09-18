@@ -6,10 +6,10 @@
 use reflex::{Cause, IntoCarrier, Nfqueue, UNSTEERABLE};
 
 const IN_NETNS: &str = "REFLEX_STEER_GATE_IN_NETNS";
-const CASE: &str = "носитель_не_поднимается_без_показанного_пути_увода";
+const CASE: &str = "the_carrier_does_not_come_up_without_a_shown_steer_path";
 
 #[test]
-fn носитель_не_поднимается_без_показанного_пути_увода() {
+fn the_carrier_does_not_come_up_without_a_shown_steer_path() {
     match std::env::var(IN_NETNS) {
         Ok(_) => inside_fresh_netns(),
         Err(_) => {

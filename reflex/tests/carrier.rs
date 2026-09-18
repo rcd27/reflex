@@ -5,7 +5,7 @@ use reflex::*;
 /// Раскладка приходит от носителя, а не от цепочки: у очереди 15 наших бит среди чужих, и кто
 /// делит машину с соседом, говорит это здесь.
 #[test]
-fn раскладка_приходит_от_носителя() {
+fn the_layout_comes_from_the_carrier() {
     let default = Nfqueue::queue(200);
     assert_eq!(default.layout().mask(), 0x0FFF_E000);
 
@@ -18,7 +18,7 @@ fn раскладка_приходит_от_носителя() {
 /// Имя носителя — то, чем `Report` назовёт несостоявшийся запуск. Число очереди больше не
 /// единственная форма: у WinDivert его нет вовсе.
 #[test]
-fn носитель_называет_себя_для_отчёта() {
+fn the_carrier_names_itself_for_the_report() {
     assert_eq!(Nfqueue::queue(200).name(), "очередь 200");
 }
 
@@ -28,7 +28,7 @@ fn носитель_называет_себя_для_отчёта() {
 /// построению принимает лишь 15-битное окно с ненулевым тегом (предпосылка кодека `edge.rs`),
 /// и местный носитель делит машину с соседом ровно как ядерный.
 #[test]
-fn местная_очередь_не_требует_учёта_conntrack() {
+fn a_local_queue_does_not_require_conntrack_accounting() {
     let local = Nfqueue::local(201);
     assert_eq!(local.name(), "очередь 201 (местный край)");
     assert_eq!(local.layout().mask(), 0x0FFF_E000);
@@ -46,12 +46,12 @@ fn местная_очередь_не_требует_учёта_conntrack() {
 /// способностей разом, и отсутствие любой — ошибка сборки, не падение теста. Тело пустое нарочно:
 /// предмет здесь — сами границы, а не то, что внутри.
 #[test]
-fn носитель_фасада_держит_всё_что_держит_его_сокет() {
-    fn требует_всё<C>()
+fn the_facade_carrier_holds_everything_its_socket_holds() {
+    fn requires_all<C>()
     where
         C: CanHold + CanRefuse + CanSever + CanInject + CanRemember + CanMark + CanRewrite,
     {
     }
 
-    требует_всё::<NfqueueCarrier>();
+    requires_all::<NfqueueCarrier>();
 }

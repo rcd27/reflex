@@ -84,7 +84,7 @@ impl Mealy for LikePark {
 /// Без него правка проверялась бы только на компиляцию: `.on` в собирающихся тестах не зовётся
 /// никогда, и всякое утверждение внутри него — украшение.
 #[test]
-fn слово_парка_доезжает_до_реакции_вложенным_а_не_подменённым() {
+fn the_word_of_the_park_reaches_the_reaction_nested_and_not_replaced() {
     let heard = log::<Probed>();
     let paper = Paper::new().then_packet(request(40001)).then_stop();
 
@@ -110,7 +110,7 @@ fn слово_парка_доезжает_до_реакции_вложенным
 
 /// Цепочка со СВОИМ словом собирается, и реакция получает именно его.
 #[test]
-fn чужой_прибор_говорит_своим_словом() {
+fn a_foreign_instrument_speaks_its_own_word() {
     let _chain = engine(Nfqueue::queue(1))
         .from(Tcp)
         .extract(Sni)
@@ -123,7 +123,7 @@ fn чужой_прибор_говорит_своим_словом() {
 
 /// Парк и чужой прибор в ОДНОЙ цепочке: `Silence` говорит `Distress`, тот вкладывается в `Probed`.
 #[test]
-fn парк_и_чужой_прибор_уживаются_в_одной_цепочке() {
+fn the_park_and_a_foreign_instrument_share_one_chain() {
     let _chain = engine(Nfqueue::queue(1))
         .from(Tcp)
         .extract(Sni)
@@ -137,7 +137,7 @@ fn парк_и_чужой_прибор_уживаются_в_одной_цепо
 /// Умолчание цело: цепочка из одного парка по-прежнему говорит `Distress`, и подпись реакции
 /// прежняя. Ни один пример не изменился ни строкой — этим правка и доказывается.
 #[test]
-fn парк_без_чужого_прибора_говорит_бедой_как_прежде() {
+fn the_park_without_a_foreign_instrument_still_speaks_distress_as_before() {
     let _chain = engine(Nfqueue::queue(1))
         .from(Tcp)
         .extract(Sni)
@@ -151,7 +151,7 @@ fn парк_без_чужого_прибора_говорит_бедой_как_
 /// разговоры, восстанавливал адрес в обход конструкции — стоком мимо алфавита (§2). Замер:
 /// слушатель канала над сканилкой стратегий, 10.09.
 #[test]
-fn реакция_получает_ключ_разговора_а_не_только_имя_цели() {
+fn the_reaction_receives_the_conversation_key_and_not_only_the_target_name() {
     let seen = log::<u16>();
     let paper = Paper::new()
         .then_packet(request(40001))

@@ -57,7 +57,7 @@ fn marks(applied: &[PaperAnswer]) -> Vec<u32> {
 /// ПРЕДМЕТ: решение, положенное между пакетами, доезжает до вердикта СЛЕДУЮЩЕГО пакета той же цели
 /// — и не задним числом до предыдущего.
 #[test]
-fn решение_читается_вердиктом_следующего_пакета_той_же_цели() {
+fn a_decision_is_read_by_the_verdict_of_the_next_packet_of_the_same_target() {
     let heard = log::<Distress>();
     let telling = Telling::over(leg());
     let posting = telling.clone();
@@ -121,7 +121,7 @@ fn решение_читается_вердиктом_следующего_па�
 /// Половина вторая: пересечение областей — ОТКАЗ ЗАПУСКА, а не тихая порча. Два писателя по одним
 /// битам затирали бы друг друга, и заметно это стало бы по поведению сети, а не по красному тесту.
 #[test]
-fn пересечение_областей_не_даёт_движку_подняться() {
+fn overlapping_regions_do_not_let_the_engine_come_up() {
     // 0x0FFF_E000 — область приборов у раскладки по умолчанию; берём её бит.
     let overlapping = Region::new(0x0FFF_E000).expect("связная область");
 
@@ -211,7 +211,7 @@ fn a_decision_reaches_every_chain_not_only_the_first_asker() {
 /// И третья: значение, не влезающее в объявленную область, НЕ КЛАДЁТСЯ. Обрежь его молча — «нога
 /// 5» стала бы «ногой 1», и узналось бы это по маршруту, а не по отказу.
 #[test]
-fn значение_шире_области_не_кладётся_вовсе() {
+fn a_value_wider_than_its_region_is_not_written_at_all() {
     let telling = Telling::over(leg());
 
     assert!(telling.tell("example.com", 0b1111), "четыре бита влезают");

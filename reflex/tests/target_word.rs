@@ -26,7 +26,7 @@ fn flow(n: u32) -> Flow {
 /// Из одних и тех же наблюдений разные свёртки дают РАЗНЫЕ слова о цели — потому свёртка и не может
 /// принадлежать фреймворку: она описывает угрозу, а угроз много.
 #[test]
-fn свёртка_решает_какое_слово_родится() {
+fn the_fold_decides_which_word_is_born() {
     let now = Instant::now();
     let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
     layer.saw(target(), flow(1), Distress::NoBytes, now);
@@ -59,7 +59,7 @@ fn свёртка_решает_какое_слово_родится() {
 
 /// Двадцать разговоров к одной цели дают ОДНО слово о ней, а не двадцать: в этом и смысл копредела.
 #[test]
-fn много_разговоров_одно_слово_о_цели() {
+fn many_conversations_make_one_word_about_the_target() {
     let now = Instant::now();
     let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
     (1..=20).for_each(|n| layer.saw(target(), flow(n), Distress::NoBytes, now));

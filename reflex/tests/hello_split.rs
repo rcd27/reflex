@@ -51,7 +51,7 @@ fn named(paper: Paper) -> Vec<String> {
 /// ПРЕДМЕТ: приветствие, разложенное по ТРЁМ сегментам, всё равно даёт имя. Имя лежит во втором —
 /// ровно как у живого браузера.
 #[test]
-fn имя_поднимается_из_приветствия_в_нескольких_сегментах() {
+fn the_name_is_lifted_from_a_hello_spread_over_several_segments() {
     let hello = reflex_core::tls::build_client_hello("meduza.io");
     let (first, rest) = hello.split_at(40);
     let (second, third) = rest.split_at(rest.len() / 2);
@@ -78,7 +78,7 @@ fn имя_поднимается_из_приветствия_в_нескольк
 /// Вторая половина: приветствие в ОДНОМ сегменте работает как работало. Без неё первая зелена и на
 /// цепочке, которая сломала короткий случай ради длинного.
 #[test]
-fn короткое_приветствие_в_одном_сегменте_как_прежде() {
+fn a_short_hello_in_a_single_segment_works_as_before() {
     let hello = reflex_core::tls::build_client_hello("example.com");
 
     let said = named(
@@ -97,7 +97,7 @@ fn короткое_приветствие_в_одном_сегменте_как
 /// И третья: ДЫРА в приветствии имени не даёт — но и чужого не выдумывает. Склеенное через дыру
 /// назвало бы ДРУГУЮ цель, а это хуже незнания: в обход уехал бы непричастный.
 #[test]
-fn дыра_в_приветствии_не_рождает_чужого_имени() {
+fn a_hole_in_the_hello_does_not_give_birth_to_a_foreign_name() {
     let hello = reflex_core::tls::build_client_hello("meduza.io");
     let (first, rest) = hello.split_at(40);
     let (_lost, tail) = rest.split_at(rest.len() / 2);
@@ -129,7 +129,7 @@ fn дыра_в_приветствии_не_рождает_чужого_имен�
 /// закон не поверен ни ею, ни сочинённым проводом — и корпус, у которого ОДИН производитель,
 /// проверяет производителя, а не мир.
 #[test]
-fn имя_поднимается_из_живой_записи_с_длинным_приветствием() {
+fn the_name_is_lifted_from_a_live_recording_with_a_long_hello() {
     let heard = std::sync::Mutex::new(Vec::new());
 
     pcap("tests/fixtures/long-hello.pcap")
@@ -162,7 +162,7 @@ fn имя_поднимается_из_живой_записи_с_длинным_
 /// отправляющей машине видит пакет до неё. «Снять браузером» случая не воспроизводит; воспроизводит
 /// его путь с меньшим MSS. Две записи здесь про разное, и обе нужны.
 #[test]
-fn словарь_расширений_браузера_умещается_в_потолок() {
+fn a_browser_extension_dictionary_fits_under_the_ceiling() {
     let heard = std::sync::Mutex::new(Vec::new());
 
     pcap("tests/fixtures/chrome-hello.pcap")
@@ -191,7 +191,7 @@ fn словарь_расширений_браузера_умещается_в_п
 /// НАСТОЯЩЕМ приветствии (1566 байт, взято из живой записи), чтобы отделить «склейка не работает
 /// на такой длине» от «на том вантаже случилось что-то другое».
 #[test]
-fn приветствие_разрезанное_как_на_живом_пути() {
+fn a_hello_cut_the_way_a_live_path_cuts_it() {
     let hello = std::fs::read("tests/fixtures/long-hello.pcap")
         .map(|data| {
             let (frames, _) = reflex_core::pcap::read(&data, std::time::Instant::now());
@@ -244,7 +244,7 @@ fn приветствие_разрезанное_как_на_живом_пути
 /// разу, все беды голым адресом. Разбор был исправен, вход полон (счётчик ядра), различался
 /// только порядок прихода.
 #[test]
-fn хвост_пришедший_раньше_головы_не_хоронит_имя() {
+fn a_tail_that_arrived_before_the_head_does_not_bury_the_name() {
     let hello = reflex_core::tls::build_client_hello("instagram.com");
     let (first, tail) = hello.split_at(40);
 

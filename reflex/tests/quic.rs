@@ -37,7 +37,7 @@ impl Mealy for Always {
 /// (варинты, заголовок, склейка кусков), а целиком — «байты с провода → имя» — ни разу. Механизм
 /// стоял написанным и непредъявленным.
 #[test]
-fn имя_цели_достаётся_из_настоящего_quic_рукопожатия() {
+fn the_target_name_is_lifted_from_a_real_quic_handshake() {
     let heard = std::sync::Mutex::new(Vec::new());
 
     let report = pcap("tests/fixtures/quic-handshake.pcap")
@@ -70,7 +70,7 @@ fn имя_цели_достаётся_из_настоящего_quic_рукоп�
 /// по которой транспорт понадобился. Без этой половины первый тест зелен и на цепочке, которая
 /// слышит всё подряд.
 #[test]
-fn тот_же_файл_на_транспорте_tcp_молчит() {
+fn the_same_file_stays_silent_on_the_tcp_transport() {
     let heard = std::sync::Mutex::new(Vec::new());
 
     pcap("tests/fixtures/quic-handshake.pcap")
@@ -142,17 +142,17 @@ fn seen(state: &mut QuicState, payload: &[u8], dir: Dir) -> Seen {
             .expect("датаграмма даёт общее слово"),
         other => panic!(
             "наблюдение обязано состояться, а вышло другое: {:?}",
-            other.кратко()
+            other.briefly()
         ),
     }
 }
 
-trait Кратко {
-    fn кратко(&self) -> &'static str;
+trait Briefly {
+    fn briefly(&self) -> &'static str;
 }
 
-impl<W> Кратко for Observation<W> {
-    fn кратко(&self) -> &'static str {
+impl<W> Briefly for Observation<W> {
+    fn briefly(&self) -> &'static str {
         match self {
             Observation::Seen(_) => "наблюдение",
             Observation::Unread(_) => "непрочитанное",
@@ -165,7 +165,7 @@ impl<W> Кратко for Observation<W> {
 /// называться своим словом. Клиент, не получивший ответа, шлёт открытие заново; для приборов это
 /// та же улика, что повтор `ClientHello` на TCP.
 #[test]
-fn повтор_открытия_при_молчащей_цели_называется_повтором() {
+fn a_repeated_opening_while_the_target_is_silent_is_named_a_repeat() {
     let initial = real_initial();
     let mut state = QuicState::default();
 
@@ -189,7 +189,7 @@ fn повтор_открытия_при_молчащей_цели_называе
 /// перестаёт. Так выглядит миграция соединения — клиент шлёт `Initial` заново по другому пути, и
 /// обвинять цель за это значило бы выдать штатное поведение за беду.
 #[test]
-fn после_ответа_цели_повтор_уликой_не_является() {
+fn after_the_target_answered_a_repeat_is_no_longer_evidence() {
     let initial = real_initial();
     let mut state = QuicState::default();
 
@@ -315,7 +315,7 @@ fn recording(frames: &[(u32, Vec<u8>)]) -> Vec<u8> {
 /// Признак открытия у QUIC — клиентский `Initial`, ровно как `SYN` у TCP. Здесь он настоящий:
 /// байты взяты из снятого рукопожатия.
 #[test]
-fn краевой_прибор_говорит_и_на_датаграммах() {
+fn the_edge_instrument_speaks_on_datagrams_too() {
     use reflex_core::builder::UdpBuilder;
     use reflex_core::types::Protocol;
 

@@ -11,7 +11,7 @@
 //! низкий.
 
 #[test]
-fn пропускная_способность_цепочки() {
+fn the_throughput_of_a_chain() {
     use reflex::*;
     use reflex_core::builder::TcpBuilder;
     use reflex_core::types::{Flow, Protocol, TcpFlags};

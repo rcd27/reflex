@@ -122,7 +122,7 @@ pub use smallvec::{smallvec, SmallVec};
 /// граница была проверяема ГРЕПОМ: имени линукс-крейта в `lib.rs` не должно встретиться ни разу,
 /// иначе «WinDivert встаёт в ту же дверь» остаётся обещанием, а не свойством.
 ///
-/// Сторож: `имя_линукс_крейта_не_встречается_в_двери_фасада` (`reflex/tests/park.rs`) — греп
+/// Сторож: `the_linux_crate_name_never_appears_in_the_facade_door` (`reflex/tests/park.rs`) — греп
 /// заведён, потому что объявить проверку и не иметь её значит подтвердить класс именем (§10.9).
 ///
 /// `#[cfg(unix)]` СТОИТ НА ВСЁМ МОДУЛЕ, потому что греп мерит СЛЕДСТВИЕ закона (имя не названо), а
@@ -3283,7 +3283,7 @@ mod tests {
     /// строка теряет его, и тогда крафт-SNI, равный записи адреса, схлопнулся бы с настоящей
     /// безымянной целью того же адреса. Имя приходит от противника — коллизия достижима, не редка.
     #[test]
-    fn безымянная_цель_ключуется_адресом_а_не_именем_похожим_на_адрес() {
+    fn an_unnamed_target_is_keyed_by_its_address_and_not_by_a_name_that_looks_like_one() {
         let nameless = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
@@ -3324,7 +3324,7 @@ mod tests {
         }
     }
 
-    fn всегда(_words: &[&Distress]) -> Option<Distress> {
+    fn always(_words: &[&Distress]) -> Option<Distress> {
         Some(Distress::NoBytes)
     }
 
@@ -3332,7 +3332,7 @@ mod tests {
     /// заговорившая одним из двух потоков, не должна выглядеть молчащей полминуты. Без возраста
     /// потребителю нечем отличить новость от того же молчания, о котором уже сказано.
     #[test]
-    fn слово_о_цели_несёт_возраст_свежайшего_наблюдения() {
+    fn the_word_about_a_target_carries_the_age_of_the_freshest_observation() {
         let t0 = Instant::now();
         let key = TargetKey::Named("rutracker.org".into());
         let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
@@ -3344,7 +3344,7 @@ mod tests {
             t0 + Duration::from_secs(20),
         );
 
-        let fold: Fold = Box::new(всегда);
+        let fold: Fold = Box::new(always);
         let said = voiced(
             &mut layer,
             &fold,
@@ -3367,13 +3367,13 @@ mod tests {
     /// нет. Свёртка здесь согласна на что угодно — значит молчание может прийти только оттого, что
     /// сводить стало нечего.
     #[test]
-    fn затихшая_цель_не_говорит() {
+    fn a_target_whose_conversations_went_quiet_says_nothing() {
         let t0 = Instant::now();
         let key = TargetKey::Named("rutracker.org".into());
         let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
         layer.saw(key, flow(1), Distress::NoBytes, t0);
 
-        let fold: Fold = Box::new(всегда);
+        let fold: Fold = Box::new(always);
         assert!(
             voiced(
                 &mut layer,
@@ -3476,7 +3476,7 @@ mod tests {
     /// ЛЕНТА ДВИЖКА ВОСПРОИЗВОДИТСЯ: две пере-подачи одного окна свежей семье говорят одно и то же.
     /// Это и есть предмет §10 — не сравнение лент, а сверка ИСХОДОВ.
     #[test]
-    fn окно_ленты_воспроизводится() {
+    fn a_window_of_the_tape_reproduces() {
         let start = Instant::now();
         let tape = window(start);
         let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Steady)];
@@ -3491,7 +3491,7 @@ mod tests {
     /// закон называет место расхождения. Без этого теста «Reproduced» значил бы лишь то, что мы
     /// дважды позвали одно и то же, а не то, что машина детерминирована.
     #[test]
-    fn скрытый_вход_разводит_прогоны() {
+    fn a_hidden_input_makes_the_runs_diverge() {
         let start = Instant::now();
         let tape = window(start);
         let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Peeking)];
@@ -3509,7 +3509,7 @@ mod tests {
     /// СЛОВО О ЦЕЛИ ТОЖЕ ВОСПРОИЗВОДИТСЯ. Копредел — свежая постройка, и не проверить его
     /// переигровкой значило бы оставить непроверенным ровно то, что мы только что сделали.
     #[test]
-    fn слово_о_цели_входит_в_сказанное() {
+    fn the_word_about_a_target_is_part_of_what_was_said() {
         let start = Instant::now();
         let tape = window(start);
         let seeds: Vec<Box<dyn Probe<Word, Distress>>> = vec![Box::new(Steady)];

@@ -11,7 +11,7 @@ use reflex_linux::nfqueue::{Answer, NfqueueBackend};
 
 /// НАБЛЮДЕНИЕ ОТПУСКАЕТ ПАКЕТ И НЕ РОЖДАЕТ ЭФФЕКТОВ.
 #[test]
-fn наблюдение_отпускает_и_молчит() {
+fn an_observation_releases_the_packet_and_says_nothing() {
     let (word, effects) = emit::<NfqueueBackend>(Act::observe(), &[]);
 
     assert_eq!(word, Answer::Pass, "пакет идёт как шёл");
@@ -23,7 +23,7 @@ fn наблюдение_отпускает_и_молчит() {
 /// Пакет при этом отпускается: обрыв делает инъекция, а не дроп. Команда возвращается, а не
 /// исполняется — иначе переигровка слала бы RST заново, и функтор перестал бы быть функтором.
 #[test]
-fn обрыв_отпускает_пакет_и_возвращает_команду() {
+fn a_sever_releases_the_packet_and_returns_a_command() {
     let syn_ack = tcp_frame();
     let (word, effects) = emit::<NfqueueBackend>(Act::sever(), &syn_ack);
 
@@ -39,7 +39,7 @@ fn обрыв_отпускает_пакет_и_возвращает_команд
 /// `notice` отдаёт `None`, когда формы обрыва на этом наблюдении нет. Пустой список эффектов — не
 /// молчание об ошибке: акт исполнен, сказать оказалось нечем, и слово носителю всё равно есть.
 #[test]
-fn нечем_оборвать_нет_и_команды() {
+fn with_nothing_to_sever_there_is_no_command_either() {
     let (word, effects) = emit::<NfqueueBackend>(Act::sever(), &[0xFF; 8]);
 
     assert_eq!(word, Answer::Pass);
@@ -72,7 +72,7 @@ fn tcp_frame() -> Vec<u8> {
 /// отказа сверена текстом, а не принята на веру: зелёный `compile_fail` без сверки доказывает лишь
 /// «не собралось» — хоть по опечатке.
 #[test]
-fn вопрос_над_очередью_не_собирается() {
+fn a_question_over_the_queue_does_not_compile() {
     let sample = concat!(
         "fn main() {\n",
         "    let _ = reflex::Act::<reflex_linux::nfqueue::NfqueueBackend>::ask(42);\n",
