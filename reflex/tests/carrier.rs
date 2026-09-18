@@ -9,7 +9,9 @@ fn раскладка_приходит_от_носителя() {
     let default = Nfqueue::queue(200);
     assert_eq!(default.layout().mask(), 0x0FFF_E000);
 
-    let shared = Nfqueue::queue(200).marking(0x0000_7FFF, 0b011).expect("15 бит, ненулевой тег");
+    let shared = Nfqueue::queue(200)
+        .marking(0x0000_7FFF, 0b011)
+        .expect("15 бит, ненулевой тег");
     assert_eq!(shared.layout().mask(), 0x0000_7FFF);
 }
 

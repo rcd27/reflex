@@ -10,7 +10,7 @@ mod paper;
 
 use std::time::Duration;
 
-use paper::{request, Crier, PaperEdge, Paper, Ticker};
+use paper::{request, Crier, Paper, PaperEdge, Ticker};
 use reflex::*;
 
 /// Сценарий строится дважды — двум прогонам нужен свой носитель каждому (носитель линеен: его

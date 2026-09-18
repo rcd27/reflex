@@ -34,7 +34,9 @@ fn сброс_от_цели_доходит_до_потребителя() {
     .detect(Rst::seen())
     .on(move |_target, distress| {
         if let Distress::Rst = distress {
-            said.lock().expect("журнал не отравлен").push("rst".to_string());
+            said.lock()
+                .expect("журнал не отравлен")
+                .push("rst".to_string());
         }
     })
     .run();
@@ -63,7 +65,9 @@ fn чистый_разговор_сбросом_не_объявляется() {
     .detect(Rst::seen())
     .on(move |_target, distress| {
         if let Distress::Rst = distress {
-            said.lock().expect("журнал не отравлен").push("rst".to_string());
+            said.lock()
+                .expect("журнал не отравлен")
+                .push("rst".to_string());
         }
     })
     .run();
@@ -127,8 +131,8 @@ fn каждое_слово_бедствия_имеет_в_парке_того_к
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("корень воркспейса");
-    let dictionary = std::fs::read_to_string(root.join("instrument/src/distress.rs"))
-        .expect("словарь читается");
+    let dictionary =
+        std::fs::read_to_string(root.join("instrument/src/distress.rs")).expect("словарь читается");
     let facade = std::fs::read_to_string(root.join("reflex/src/lib.rs")).expect("фасад читается");
 
     // Варианты берутся из САМОГО перечисления, а не из списка в тесте: список разошёлся бы со
@@ -166,7 +170,10 @@ fn каждое_слово_бедствия_имеет_в_парке_того_к
                 std::fs::read_to_string(path)
                     .is_ok_and(|text| text.contains(&format!("Distress::{word}")))
             })
-            .filter_map(|path| path.file_stem().map(|name| name.to_string_lossy().to_string()))
+            .filter_map(|path| {
+                path.file_stem()
+                    .map(|name| name.to_string_lossy().to_string())
+            })
             .collect();
 
         let reachable = spoken_in

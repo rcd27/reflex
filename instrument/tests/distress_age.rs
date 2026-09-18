@@ -11,7 +11,11 @@ fn слово_беды_несёт_возраст_наблюдения() {
     let seen_at = Instant::now();
     let spoken = Distress::NoBytes.aged(seen_at, seen_at + Duration::from_secs(3));
     assert_eq!(spoken.since, Duration::from_secs(3));
-    assert_eq!(spoken.distress, Distress::NoBytes, "сама беда не меняется — к ней добавлен возраст");
+    assert_eq!(
+        spoken.distress,
+        Distress::NoBytes,
+        "сама беда не меняется — к ней добавлен возраст"
+    );
 }
 
 /// Свежесказанное имеет нулевой возраст, а не отсутствующий: ноль — величина, «неизвестно» было бы

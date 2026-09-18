@@ -73,12 +73,11 @@ use reflex_core::certify::replays::replays;
 /// через неё.
 pub use reflex_core::certify::replays::Replayed;
 use reflex_core::colimit::Layer;
-use reflex_core::word::Word;
 use reflex_core::command::InjectablePacket;
 use reflex_core::dns::DnsMessage;
-use reflex_core::edge::EdgeView;
 /// Снимок величин края — реэкспорт: он стоит в подписи [`Whom`] и [`Note`], а дверь у фасада одна.
 pub use reflex_core::edge::Counted;
+use reflex_core::edge::EdgeView;
 use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::held::{Held, Terminal};
@@ -87,6 +86,7 @@ pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 use reflex_core::tls;
+use reflex_core::word::Word;
 use reflex_core::word::{Conversation, Target};
 pub use reflex_core::DetectorEvent;
 use reflex_core::Reads;
@@ -103,17 +103,17 @@ use reflex_engine::Addr;
 /// ради имени поля, уже лежащего у него в руках. Это ломало бы закон фасада «потребитель зависит
 /// от ОДНОГО крейта» тише всего: цепочка собирается, а `let _: ??? = whom.flow` написать нечем.
 pub use reflex_engine::Flow;
+use reflex_instrument::detect::{
+    ChokedInstrument, RstInstrument, SynDropInstrument, ThrottledInstrument,
+};
 use reflex_instrument::edge::{Layout, Memo};
-use reflex_instrument::edge_word::Edged;
 use reflex_instrument::edge_detect::EdgeSilence;
+use reflex_instrument::edge_word::Edged;
 use reflex_instrument::poison::DnsPoisonInstrument;
 use reflex_instrument::resolve::ResolutionInstrument;
 /// Слово о разрешении имени — оно и есть словарь цепочки, стоящей на [`Resolve`]; потребителю без
 /// него нечем разобрать сказанное.
 pub use reflex_instrument::resolve::{Erasure, Resolved};
-use reflex_instrument::detect::{
-    ChokedInstrument, RstInstrument, SynDropInstrument, ThrottledInstrument,
-};
 use reflex_instrument::retransmit::RetransmitInstrument;
 pub use reflex_instrument::wire::{Reading, Seen, SeenTcp};
 pub use smallvec::{smallvec, SmallVec};
@@ -169,7 +169,6 @@ pub use reflex_core::parse::Unread;
 /// то есть дверь была открыта, а ключ от неё лежал внутри. Нашлось при попытке поверить свой же
 /// транспорт: тест не мог назвать тип, который трейт требует.
 pub use reflex_engine::parse::{Datagram, Read};
-
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
 pub use reflex_instrument::distress::{Distress, Voiced};
@@ -590,7 +589,7 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Swallowed {
             Distress,
             Distress,
         >(
-            reflex_instrument::swallow::SwallowInstrument::<E>::new(),
+            reflex_instrument::swallow::SwallowInstrument::<E>::new()
         ))
     }
 }
@@ -1014,9 +1013,11 @@ impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for DnsPoison {
     type Word = Distress;
     type Home = MarkSilent;
     fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>, Distress> {
-        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _, Distress, Distress>(
-            DnsPoisonInstrument::new(),
-        ))
+        Placed::PerFlow(
+            lift::<Wide<DnsMessage, E>, DnsMessage, _, Distress, Distress>(
+                DnsPoisonInstrument::new(),
+            ),
+        )
     }
 }
 
@@ -1025,9 +1026,9 @@ impl<E: Clone + 'static> IntoProbe<Wide<DnsMessage, E>> for Resolve {
     type Word = Resolved;
     type Home = MarkSilent;
     fn place(self, _layout: Layout) -> Placed<Wide<DnsMessage, E>, Resolved> {
-        Placed::PerFlow(lift::<Wide<DnsMessage, E>, DnsMessage, _, Resolved, Resolved>(
-            ResolutionInstrument,
-        ))
+        Placed::PerFlow(
+            lift::<Wide<DnsMessage, E>, DnsMessage, _, Resolved, Resolved>(ResolutionInstrument),
+        )
     }
 }
 
@@ -1455,10 +1456,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// Реакцию на слово о цели требует ТИП: `about` отдаёт [`Folding`], у которого нет `.on` —
     /// цепочка не соберётся, пока не сказано `.on_target`. Иначе потребитель построил бы копредел и
     /// молча уронил его выход: свёл и выбросил.
-    pub fn about(
-        self,
-        fold: impl Fn(&[&S]) -> Option<S> + Send + 'static,
-    ) -> Folding<C, T, H, S> {
+    pub fn about(self, fold: impl Fn(&[&S]) -> Option<S> + Send + 'static) -> Folding<C, T, H, S> {
         Folding {
             detecting: self,
             fold: Box::new(fold),
@@ -1915,7 +1913,10 @@ impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
             None => SmallVec::new(),
             Some(rule) => match (rule.when)(&word) {
                 false => SmallVec::new(),
-                true => (rule.notice)(seen).into_iter().map(Effect::Inject).collect(),
+                true => (rule.notice)(seen)
+                    .into_iter()
+                    .map(Effect::Inject)
+                    .collect(),
             },
         };
         self.said.push_back(Note {
@@ -2630,7 +2631,10 @@ where
         if self.carrier.exhausted() {
             // Источник кончился — судим по набранному окну, даже неполному. Иначе на КОНЕЧНОМ
             // носителе закон молчал бы обо всём прогоне, и молчание читалось бы как согласие.
-            self.certified = self.alive.certified(&self.seeds, true).or(self.certified.take());
+            self.certified = self
+                .alive
+                .certified(&self.seeds, true)
+                .or(self.certified.take());
             return false;
         }
         // ВНЕПОЛОСНОЕ ЗНАНИЕ ЗАБИРАЕТСЯ ПЕРЕД РАБОТОЙ, а не после: решение, положенное автором до
@@ -2652,127 +2656,128 @@ where
         // Дом решений — только на чтение внутри решения о вердикте.
         #[cfg(feature = "telling")]
         let home = self.telling.as_ref();
-    // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
-    // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
-    // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
-    // узлами: спроси о конце ПОСЛЕ неё — и последний узел пропал бы ровно тогда, когда срок
-    // тишины совпал с концом сценария. Живая очередь сюда не приходит никогда: `exhausted` у
-    // неё ложь по построению — ядро конца не обещает.
+        // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
+        // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
+        // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
+        // узлами: спроси о конце ПОСЛЕ неё — и последний узел пропал бы ровно тогда, когда срок
+        // тишины совпал с концом сценария. Живая очередь сюда не приходит никогда: `exhausted` у
+        // неё ложь по построению — ядро конца не обещает.
         // Срок — не узел, а ПРОСЬБА к носителю: столько ждать, если работы нет. Оттого до первой
-    // буквы он берётся у часов цикла, и это законно: часы цикла знают, сколько ждать, и не
-    // знают, что наблюдено.
-    let until = match &*seam {
-        Some(seam) => seam.next_node().unwrap_or_else(|| Instant::now() + TICK),
-        None => Instant::now() + TICK,
-    };
-    // Потолок ожидания, если он задан: в наборе цепочек ждать полный срок на ПУСТОЙ очереди значит
-    // держать соседок, у которых работа есть.
-    let until = match cap {
-        Some(cap) => until.min(cap),
-        None => until,
-    };
-    let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
-    let mut crossed: Option<Instant> = None;
-
-    let outcome = carrier.serve(until, |held, edge| {
-        let at = held.at();
-        let seen = C::shown(held);
-        // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
-        // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
-        let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
-        let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
-        let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::PORT)) {
-            Observation::Seen(observed) => {
-                let (moved, letters) = grid.saw((observed.wire, edge), at);
-                (moved, letters, Some((observed.flow, observed.key)))
-            }
-            // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
-            // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
-            // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
-            // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
-            // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
-            Observation::Unread(why) => {
-                let (moved, letters) = grid.unread(why, at);
-                (moved, letters, None)
-            }
-            // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
-            // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
-            Observation::Foreign => {
-                let (moved, letters) = grid.idle(at);
-                (moved, letters, None)
-            }
+        // буквы он берётся у часов цикла, и это законно: часы цикла знают, сколько ждать, и не
+        // знают, что наблюдено.
+        let until = match &*seam {
+            Some(seam) => seam.next_node().unwrap_or_else(|| Instant::now() + TICK),
+            None => Instant::now() + TICK,
         };
-        *grid = moved;
-        // Ярлык цели снимается ДО того, как `whose` уедет в раздачу: решение адресовано ключу, а
-        // владение ключом уходит вместе с буквой.
-        #[cfg(feature = "telling")]
-        let decided: Option<reflex_core::mark::Marked> = home.and_then(|home| {
-            whose
-                .as_ref()
-                .and_then(|(_flow, key)| home.decided(&label(key)))
-        });
-        #[cfg(not(feature = "telling"))]
-        let decided: Option<reflex_core::mark::Marked> = None;
-        let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
-        crossed = node;
-        // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
-        // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
-        // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
-        // Памятка прибора и решение потребителя живут в РАЗНЫХ областях марки и ложатся ОДНИМ
-        // словом — тем же, каким пакет отпускается. Разведи их по двум путям, и вернулась бы та
-        // болезнь, от которой уходили: «ответили, но не запомнили» (§5, «отпустить и запомнить»
-        // неделимо). Порядок наложений безразличен ровно потому, что области не пересекаются —
-        // и это проверено при постройке, а не здесь, на горячем пути.
-        match (memo, decided) {
-            (Some(memo), Some(decided)) => <C::Carrier as CanRemember>::remember(
-                decided.apply_to(memo.apply_to(mark)),
-                true,
-            ),
-            (Some(memo), None) => <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true),
-            (None, Some(decided)) => {
-                <C::Carrier as CanRemember>::remember(decided.apply_to(mark), true)
+        // Потолок ожидания, если он задан: в наборе цепочек ждать полный срок на ПУСТОЙ очереди значит
+        // держать соседок, у которых работа есть.
+        let until = match cap {
+            Some(cap) => until.min(cap),
+            None => until,
+        };
+        let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
+        let mut crossed: Option<Instant> = None;
+
+        let outcome = carrier.serve(until, |held, edge| {
+            let at = held.at();
+            let seen = C::shown(held);
+            // Марка — то, что край УЖЕ хранит: памятка ляжет в неё read-modify-write, чужие биты
+            // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
+            let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
+            let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
+            let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::PORT)) {
+                Observation::Seen(observed) => {
+                    let (moved, letters) = grid.saw((observed.wire, edge), at);
+                    (moved, letters, Some((observed.flow, observed.key)))
+                }
+                // Кадр БЫЛ, а прочесть его не удалось — третья дверь шва, не тишина. Разница
+                // видимая: `idle` отдал бы одни узлы, и приборы, судящие по ОТСУТСТВИЮ, сочли бы
+                // окно свободным от пропажи; `unread` кладёт в ленту `Opaque { why }`, и на
+                // прячущей букве они слепнут (`DetectorEvent::hides_observation`). Момент кадра —
+                // не срок: обрезанный кадр приходит С РАБОТОЙ, раньше узла.
+                Observation::Unread(why) => {
+                    let (moved, letters) = grid.unread(why, at);
+                    (moved, letters, None)
+                }
+                // Не наш кадр — но момент его прихода СЕТКУ ДВИГАЕТ: иначе поток чужого трафика
+                // выглядел бы тишиной, и приборы молчания подтверждали бы дроп на живой машине.
+                Observation::Foreign => {
+                    let (moved, letters) = grid.idle(at);
+                    (moved, letters, None)
+                }
+            };
+            *grid = moved;
+            // Ярлык цели снимается ДО того, как `whose` уедет в раздачу: решение адресовано ключу, а
+            // владение ключом уходит вместе с буквой.
+            #[cfg(feature = "telling")]
+            let decided: Option<reflex_core::mark::Marked> = home.and_then(|home| {
+                whose
+                    .as_ref()
+                    .and_then(|(_flow, key)| home.decided(&label(key)))
+            });
+            #[cfg(not(feature = "telling"))]
+            let decided: Option<reflex_core::mark::Marked> = None;
+            let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
+            crossed = node;
+            // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
+            // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
+            // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
+            // Памятка прибора и решение потребителя живут в РАЗНЫХ областях марки и ложатся ОДНИМ
+            // словом — тем же, каким пакет отпускается. Разведи их по двум путям, и вернулась бы та
+            // болезнь, от которой уходили: «ответили, но не запомнили» (§5, «отпустить и запомнить»
+            // неделимо). Порядок наложений безразличен ровно потому, что области не пересекаются —
+            // и это проверено при постройке, а не здесь, на горячем пути.
+            match (memo, decided) {
+                (Some(memo), Some(decided)) => <C::Carrier as CanRemember>::remember(
+                    decided.apply_to(memo.apply_to(mark)),
+                    true,
+                ),
+                (Some(memo), None) => {
+                    <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true)
+                }
+                (None, Some(decided)) => {
+                    <C::Carrier as CanRemember>::remember(decided.apply_to(mark), true)
+                }
+                (None, None) => <C::Carrier as CanHold>::release(),
             }
-            (None, None) => <C::Carrier as CanHold>::release(),
+        });
+
+        // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
+        // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
+        //
+        // МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ: ответ несёт его в `Held::at`, дыра — в самом исходе
+        // (`Served::Torn`), тишина — сроком, о котором мы просили и который носитель обязался
+        // выждать. Второго владельца часов у цикла нет.
+        let sown = match outcome {
+            Served::Answered(Ok(_)) => None,
+            Served::Answered(Err(refused)) => {
+                report!("вердикт не ушёл: {:?}", refused.why);
+                None
+            }
+            Served::Torn(at) => Some(
+                seam.get_or_insert_with(|| Interleave::started(at, TICK))
+                    .torn(at),
+            ),
+            // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
+            // некому — живых машин ещё нет.
+            Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
+        };
+        if let Some((moved, letters)) = sown {
+            *seam = Some(moved);
+            let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
+            crossed = node;
         }
-    });
 
-    // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
-    // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
-    //
-    // МОМЕНТ У КАЖДОГО ИСХОДА ОТ НОСИТЕЛЯ: ответ несёт его в `Held::at`, дыра — в самом исходе
-    // (`Served::Torn`), тишина — сроком, о котором мы просили и который носитель обязался
-    // выждать. Второго владельца часов у цикла нет.
-    let sown = match outcome {
-        Served::Answered(Ok(_)) => None,
-        Served::Answered(Err(refused)) => {
-            report!("вердикт не ушёл: {:?}", refused.why);
-            None
+        voice.does(carrier, effects);
+
+        // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
+        if crossed.is_some() {
+            alive.forget_evicted();
+            alive.certified(seeds, false);
         }
-        Served::Torn(at) => Some(
-            seam.get_or_insert_with(|| Interleave::started(at, TICK))
-                .torn(at),
-        ),
-        // Тишина ДО первого наблюдения сетки не заводит: мерить нечего, и адресовать узлы
-        // некому — живых машин ещё нет.
-        Served::Idle | Served::Blind => seam.as_mut().map(|grid| grid.idle(until)),
-    };
-    if let Some((moved, letters)) = sown {
-        *seam = Some(moved);
-        let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
-        crossed = node;
-    }
-
-    voice.does(carrier, effects);
-
-    // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
-    if crossed.is_some() {
-        alive.forget_evicted();
-        alive.certified(seeds, false);
-    }
         true
     }
 }
-
 
 /// ЖИВОЕ СОСТОЯНИЕ ПРОГОНА — всё, чего касается буква. Отдельной вещью, а не россыпью локальных
 /// переменных: букву гоняет ОДНА функция ([`Alive::walk`]), и её девять доводов были бы девятью
@@ -2843,82 +2848,84 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                 | DetectorEvent::Opaque { .. }
                 | DetectorEvent::Torn { .. } => None,
             };
-            let (said, evidence): (
-                Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>)>,
-                &[u8],
-            ) = match (&letter, &whose) {
-                (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
-                    self.recorded(
-                        To::One(Whose {
-                            flow: *flow,
-                            target: key.clone(),
-                        }),
-                        &letter,
-                    );
-                    let (mut signals, ()) = self.table.process(*flow, input, at);
-                    for probe in self.at_edge.iter_mut() {
-                        let (remembered, spoken) = probe.observe(&letter);
-                        // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
-                        // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
-                        // их просто копит) — тогда побеждает сказавший последним. Цена
-                        // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
-                        // не ставит, а гейт на это — отдельное решение, не попутное.
-                        memo = remembered.or(memo);
-                        signals.extend(spoken);
-                    }
-                    let was = self.targets.insert(*flow, key.clone());
-                    match (self.naming.as_ref(), was, key) {
-                        (Some(tap), None | Some(TargetKey::Unnamed(_)), TargetKey::Named(name)) => {
-                            let _lost_when_full = tap.offer(Named {
+            let (said, evidence): (Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>)>, &[u8]) =
+                match (&letter, &whose) {
+                    (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
+                        self.recorded(
+                            To::One(Whose {
                                 flow: *flow,
-                                name: name.clone(),
-                                at,
-                            });
+                                target: key.clone(),
+                            }),
+                            &letter,
+                        );
+                        let (mut signals, ()) = self.table.process(*flow, input, at);
+                        for probe in self.at_edge.iter_mut() {
+                            let (remembered, spoken) = probe.observe(&letter);
+                            // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
+                            // слово. Двух краевых приборов в цепочке ТИП НЕ ЗАПРЕЩАЕТ (`.detect`
+                            // их просто копит) — тогда побеждает сказавший последним. Цена
+                            // названа, а не спрятана: ни одна цепочка парка двух краевых сегодня
+                            // не ставит, а гейт на это — отдельное решение, не попутное.
+                            memo = remembered.or(memo);
+                            signals.extend(spoken);
                         }
-                        (None, _, _)
-                        | (Some(_), Some(TargetKey::Named(_)), _)
-                        | (Some(_), _, TargetKey::Unnamed(_)) => (),
+                        let was = self.targets.insert(*flow, key.clone());
+                        match (self.naming.as_ref(), was, key) {
+                            (
+                                Some(tap),
+                                None | Some(TargetKey::Unnamed(_)),
+                                TargetKey::Named(name),
+                            ) => {
+                                let _lost_when_full = tap.offer(Named {
+                                    flow: *flow,
+                                    name: name.clone(),
+                                    at,
+                                });
+                            }
+                            (None, _, _)
+                            | (Some(_), Some(TargetKey::Named(_)), _)
+                            | (Some(_), _, TargetKey::Unnamed(_)) => (),
+                        }
+                        (vec![(key.clone(), *flow, signals)], seen)
                     }
-                    (vec![(key.clone(), *flow, signals)], seen)
-                }
-                // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
-                // такая пара не возникает: `whose` заполняется ровно там, где буква пакета и
-                // рождается (`Observation::Seen`), а непонятое и чужое дают `Opaque`/`Tick`. Но
-                // ТИП этого не обещает, и ветвь стоит здесь не ради полноты формы: раздай её
-                // «каждой машине» по общему правилу — и байты пакета уехали бы уликой чужим
-                // разговорам, то есть акт, рождённый чужим словом, оборвал бы непричастного (тот
-                // самый закон, что назван абзацем выше). Лента при этом не молчит: буква была, и
-                // `To::Nobody` говорит, что она не досталась никому (§7 — незнание обитаемо).
-                (DetectorEvent::Packet { .. }, None) => {
-                    self.recorded(To::Nobody, &letter);
-                    (Vec::new(), &[][..])
-                }
-                // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
-                // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
-                // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
-                //
-                // ЗАГЛУШКИ `_` ЗДЕСЬ НЕТ НАРОЧНО. Появится в алфавите пятая буква — компилятор
-                // приведёт автора СЮДА, к вопросу «кому она адресована», вместо того чтобы дать
-                // ей молча уехать всем. Дыра (`Torn`) и непонятое (`Opaque`) едут каждому именно
-                // потому, что чьё наблюдение пропало — неизвестно: ослепнуть обязаны все, кто
-                // судит по отсутствию, а не никто.
-                (DetectorEvent::Tick { .. }, _)
-                | (DetectorEvent::Opaque { .. }, _)
-                | (DetectorEvent::Torn { .. }, _) => {
-                    self.recorded(To::Each, &letter);
-                    let heard = self
-                        .table
-                        .each(letter.clone())
-                        .into_iter()
-                        .filter_map(|(flow, (signals, ()))| {
-                            self.targets
-                                .get(&flow)
-                                .map(|key| (key.clone(), flow, signals))
-                        })
-                        .collect();
-                    (heard, &[][..])
-                }
-            };
+                    // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
+                    // такая пара не возникает: `whose` заполняется ровно там, где буква пакета и
+                    // рождается (`Observation::Seen`), а непонятое и чужое дают `Opaque`/`Tick`. Но
+                    // ТИП этого не обещает, и ветвь стоит здесь не ради полноты формы: раздай её
+                    // «каждой машине» по общему правилу — и байты пакета уехали бы уликой чужим
+                    // разговорам, то есть акт, рождённый чужим словом, оборвал бы непричастного (тот
+                    // самый закон, что назван абзацем выше). Лента при этом не молчит: буква была, и
+                    // `To::Nobody` говорит, что она не досталась никому (§7 — незнание обитаемо).
+                    (DetectorEvent::Packet { .. }, None) => {
+                        self.recorded(To::Nobody, &letter);
+                        (Vec::new(), &[][..])
+                    }
+                    // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
+                    // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
+                    // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
+                    //
+                    // ЗАГЛУШКИ `_` ЗДЕСЬ НЕТ НАРОЧНО. Появится в алфавите пятая буква — компилятор
+                    // приведёт автора СЮДА, к вопросу «кому она адресована», вместо того чтобы дать
+                    // ей молча уехать всем. Дыра (`Torn`) и непонятое (`Opaque`) едут каждому именно
+                    // потому, что чьё наблюдение пропало — неизвестно: ослепнуть обязаны все, кто
+                    // судит по отсутствию, а не никто.
+                    (DetectorEvent::Tick { .. }, _)
+                    | (DetectorEvent::Opaque { .. }, _)
+                    | (DetectorEvent::Torn { .. }, _) => {
+                        self.recorded(To::Each, &letter);
+                        let heard = self
+                            .table
+                            .each(letter.clone())
+                            .into_iter()
+                            .filter_map(|(flow, (signals, ()))| {
+                                self.targets
+                                    .get(&flow)
+                                    .map(|key| (key.clone(), flow, signals))
+                            })
+                            .collect();
+                        (heard, &[][..])
+                    }
+                };
             for (key, flow, signals) in said {
                 let named = label(&key);
                 for signal in signals {

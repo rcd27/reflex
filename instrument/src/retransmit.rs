@@ -134,8 +134,9 @@ impl reflex_core::mealy::Mealy for RetransmitInstrument {
             // как «подозрение, не приговор»). Заводить для дыры отдельный запрет, которого нет для
             // равной по силе слепоты `Opaque`, значило бы лечить одно незнание дважды разными
             // законами — вместо одного `LIES` завести два разных источника недосчёта.
-            reflex_core::DetectorEvent::Tick { .. }
-            | reflex_core::DetectorEvent::Opaque { .. } => (self, smallvec::SmallVec::new()),
+            reflex_core::DetectorEvent::Tick { .. } | reflex_core::DetectorEvent::Opaque { .. } => {
+                (self, smallvec::SmallVec::new())
+            }
             // Прячущие буквы ушли выше. Дыра — не «ничего не произошло», а «произошло и до нас не дошло». Прибор судит по
             // ОТСУТСТВИЮ байт вниз, и после объявленной потери отсутствие перестаёт быть
             // наблюдением: ответившая цель выглядит молчащей, а улика ведёт к `Act::sever()` —

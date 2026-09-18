@@ -126,7 +126,12 @@ impl reflex_core::mealy::Mealy for DismissInstrument {
             // ПРОЩАНИЕ. Предмет — только от ЦЕЛИ, только при живой просьбе и только если она не
             // сказала ничего. Клиент, закрывший сам, ни в чём цель не обвиняет.
             Seen::Closed { by_client } => {
-                match (by_client, self.spoke || self.blinded, self.asked, self.fired) {
+                match (
+                    by_client,
+                    self.spoke || self.blinded,
+                    self.asked,
+                    self.fired,
+                ) {
                     (false, false, Some(asked), false) => (
                         DismissInstrument {
                             fired: true,

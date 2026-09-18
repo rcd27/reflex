@@ -194,7 +194,11 @@ impl Serves for PcapFile {
     /// Срок здесь не при чём, и это не нарушение закона шва, а его вырожденный случай: закон
     /// требует «не возвращаться раньше `until`, КРОМЕ КАК С РАБОТОЙ», а у записи работа есть
     /// всегда, пока файл не кончился. Ждать нечего — время едет из кадров, а не от часов.
-    fn serve<F>(&mut self, _until: std::time::Instant, decide: F) -> Served<Delivered<()>, Refused<(), Never>>
+    fn serve<F>(
+        &mut self,
+        _until: std::time::Instant,
+        decide: F,
+    ) -> Served<Delivered<()>, Refused<(), Never>>
     where
         F: FnOnce(&Held<Vec<u8>>, Option<NoEdge>) -> (),
     {
@@ -225,8 +229,12 @@ impl IntoCarrier for Recording {
     type Carrier = Local<PcapFile>;
 
     fn open(self) -> Result<Local<PcapFile>, Cause> {
-        let data = std::fs::read(&self.path)
-            .map_err(|why| Cause(format!("запись не прочитана ({}): {why}", self.path.display())))?;
+        let data = std::fs::read(&self.path).map_err(|why| {
+            Cause(format!(
+                "запись не прочитана ({}): {why}",
+                self.path.display()
+            ))
+        })?;
         // Основание — «сейчас»: абсолютного времени записи приборам не нужно, им нужны ИНТЕРВАЛЫ
         // (окно тишины, возраст разговора), а их `read` сохраняет.
         let (frames, broken) = reflex_core::pcap::read(&data, std::time::Instant::now());

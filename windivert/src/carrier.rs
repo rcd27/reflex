@@ -165,8 +165,14 @@ impl WinDivertHandle {
         let mut recv_len: u32 = 0;
         let mut addr_len = std::mem::size_of::<ffi::WinDivertAddress>() as u32;
 
-        let event =
-            unsafe { ffi::CreateEventW(std::ptr::null_mut(), ffi::TRUE, ffi::FALSE, std::ptr::null()) };
+        let event = unsafe {
+            ffi::CreateEventW(
+                std::ptr::null_mut(),
+                ffi::TRUE,
+                ffi::FALSE,
+                std::ptr::null(),
+            )
+        };
         if event.is_null() {
             // `CreateEventW` не выдал дескриптор — ждать НЕ НА ЧЕМ, ещё до попытки приёма. Ровно
             // смысл `Served::Blind` очереди ядра (там — netlink-сокет не открылся, докблок

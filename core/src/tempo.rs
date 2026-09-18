@@ -8,6 +8,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::meter::Pace;
+
 /// Наблюдение за темпом одного потока. Значение, а не машина с мутацией.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tempo {
@@ -19,8 +21,11 @@ pub struct Tempo {
     window_start: Instant,
     window_units: u64,
     windows: u32,
-    min_rate: Option<u64>,
-    max_rate: u64,
+    /// Темп окна — ТОЧНАЯ ДРОБЬ [`Pace`], а не единиц-в-секунду числом: закон один на дерево
+    /// (`meter`), и целочисленное частное схлопнуло бы «два байта за три наносекунды» и «один за
+    /// две» в общий ноль. В число дробь переводится ровно на выходе ([`Tempo::rate_range`]).
+    min_rate: Option<Pace>,
+    max_rate: Pace,
 }
 
 impl Tempo {
@@ -38,7 +43,11 @@ impl Tempo {
             window_units: 0,
             windows: 0,
             min_rate: None,
-            max_rate: 0,
+            // Нулевой темп — не «медленно», а «байт не было»: дробь 0/окно, а не 0/0.
+            max_rate: Pace {
+                bytes: 0,
+                over_nanos: u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
+            },
         }
     }
 
@@ -92,7 +101,10 @@ impl Tempo {
         match at.saturating_duration_since(self.window_start) >= self.window {
             false => self,
             true => {
-                let rate = self.window_units * 1000 / self.window.as_millis().max(1) as u64;
+                let rate = Pace {
+                    bytes: self.window_units,
+                    over_nanos: u64::try_from(self.window.as_nanos()).unwrap_or(u64::MAX),
+                };
                 Self {
                     window_start: self.window_start + self.window,
                     window_units: 0,
@@ -136,9 +148,13 @@ impl Tempo {
 
     /// Минимальный и максимальный темп по закрытым окнам, единиц в секунду.
     ///
-    /// `None` — ни одно окно не закрылось: наблюдение короче окна, и говорить о темпе нечего.
+    /// `None` — ни одно окно не закрылось (наблюдение короче окна, говорить о темпе нечего) ЛИБО
+    /// окно нулевой длины (темп бесконечен и числом не выражается, [`Pace::per_second`]). Оба
+    /// случая — «числа нет», и оба честнее большого конечного числа, которое давало прежнее
+    /// «делим на `max(1)`».
     pub fn rate_range(&self) -> Option<(u64, u64)> {
-        self.min_rate.map(|min| (min, self.max_rate))
+        let min = self.min_rate?;
+        Some((min.per_second()?, self.max_rate.per_second()?))
     }
 
     /// Сколько окон закрыто. Нужно тому, кто отличает «мерили мало» от «темп ровный».

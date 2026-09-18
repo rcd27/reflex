@@ -12,9 +12,9 @@
 //! Покраснеет он тогда, когда приборы научатся делить марку: тогда и гейт подлежит пересмотру.
 
 use core::time::Duration;
+use reflex_core::edge::EdgeView;
 use reflex_core::mealy::Mealy;
 use reflex_core::DetectorEvent;
-use reflex_core::edge::EdgeView;
 use reflex_instrument::distress::Distress;
 use reflex_instrument::edge::Layout;
 use reflex_instrument::edge_detect::EdgeSilence;
@@ -34,20 +34,40 @@ struct Silent {
 }
 
 impl EdgeView for Silent {
-    fn down_packets(&self) -> Option<u64> { Some(4) }
-    fn down_bytes(&self) -> Option<u64> { Some(1_200) }
-    fn up_packets(&self) -> Option<u64> { Some(0) }
-    fn up_bytes(&self) -> Option<u64> { Some(0) }
-    fn idle(&self) -> Option<Duration> { Some(self.age) }
-    fn age(&self) -> Option<Duration> { Some(self.age) }
-    fn mark(&self) -> u32 { self.mark }
+    fn down_packets(&self) -> Option<u64> {
+        Some(4)
+    }
+    fn down_bytes(&self) -> Option<u64> {
+        Some(1_200)
+    }
+    fn up_packets(&self) -> Option<u64> {
+        Some(0)
+    }
+    fn up_bytes(&self) -> Option<u64> {
+        Some(0)
+    }
+    fn idle(&self) -> Option<Duration> {
+        Some(self.age)
+    }
+    fn age(&self) -> Option<Duration> {
+        Some(self.age)
+    }
+    fn mark(&self) -> u32 {
+        self.mark
+    }
 }
 
-fn packet(mark: u32, age_ms: u64) -> DetectorEvent<Edged<Option<reflex_instrument::wire::Seen>, Option<Silent>>> {
+fn packet(
+    mark: u32,
+    age_ms: u64,
+) -> DetectorEvent<Edged<Option<reflex_instrument::wire::Seen>, Option<Silent>>> {
     DetectorEvent::Packet {
         input: Edged {
             narrow: None,
-            edge: Some(Silent { mark, age: Duration::from_millis(age_ms) }),
+            edge: Some(Silent {
+                mark,
+                age: Duration::from_millis(age_ms),
+            }),
         },
         at: Instant::now(),
     }

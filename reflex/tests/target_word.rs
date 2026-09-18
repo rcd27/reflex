@@ -14,7 +14,10 @@ fn target() -> TargetKey<Box<str>> {
 
 fn flow(n: u32) -> Flow {
     Flow {
-        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        src: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)),
+            40000 + n as u16,
+        ),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
         protocol: Protocol::Tcp,
     }

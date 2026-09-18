@@ -116,7 +116,9 @@ fn вопрос_над_очередью_не_собирается() {
         let mark = format!("\"name\":\"{target}\"");
         manifest
             .lines()
-            .filter(|line| line.contains("\"reason\":\"compiler-artifact\"") && line.contains(&mark))
+            .filter(|line| {
+                line.contains("\"reason\":\"compiler-artifact\"") && line.contains(&mark)
+            })
             .find_map(|line| {
                 let tail = line.split("\"filenames\":[").nth(1)?;
                 tail.split(&[',', ']'][..])
@@ -137,7 +139,10 @@ fn вопрос_над_очередью_не_собирается() {
     };
     let reflex_rlib = artifact("reflex");
     let linux_rlib = artifact("reflex_linux");
-    let deps = linux_rlib.parent().expect("каталог артефактов").to_path_buf();
+    let deps = linux_rlib
+        .parent()
+        .expect("каталог артефактов")
+        .to_path_buf();
 
     let compiled = std::process::Command::new("rustc")
         .arg(&source)

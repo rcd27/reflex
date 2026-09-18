@@ -173,7 +173,11 @@ mod tests {
     /// отвечающий «а не мы ли виноваты»: при заторе стоят ВСЕ, при цензуре — избирательно.
     #[test]
     fn half_the_talks_stalled_is_a_stalled_leg() {
-        assert_eq!(said(10, 5), vec![Leg::Stalled], "ровно половина — уже затор");
+        assert_eq!(
+            said(10, 5),
+            vec![Leg::Stalled],
+            "ровно половина — уже затор"
+        );
         assert_eq!(said(10, 9), vec![Leg::Stalled]);
     }
 

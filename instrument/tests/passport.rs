@@ -25,7 +25,10 @@ fn declared() -> (BTreeSet<String>, BTreeSet<String>) {
     let mut instruments = BTreeSet::new();
     let mut passports = BTreeSet::new();
 
-    for entry in std::fs::read_dir(&src).expect("исходники крейта читаются").flatten() {
+    for entry in std::fs::read_dir(&src)
+        .expect("исходники крейта читаются")
+        .flatten()
+    {
         let path = entry.path();
         if path.extension().is_none_or(|kind| kind != "rs") {
             continue;
@@ -35,7 +38,10 @@ fn declared() -> (BTreeSet<String>, BTreeSet<String>) {
             let line = line.trim();
             // Прибор: `pub struct XInstrument` — с параметрами или без.
             if let Some(rest) = line.strip_prefix("pub struct ") {
-                let name = rest.split(['<', '(', ' ', '{', ';']).next().unwrap_or_default();
+                let name = rest
+                    .split(['<', '(', ' ', '{', ';'])
+                    .next()
+                    .unwrap_or_default();
                 if name.ends_with("Instrument") {
                     instruments.insert(name.to_string());
                 }

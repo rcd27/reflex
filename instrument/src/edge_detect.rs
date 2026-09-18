@@ -219,16 +219,33 @@ mod tests {
     use super::*;
 
     /// Край, у которого известны только эти две величины: остальное — «не считали» (§7).
-    struct Frames { packets: u64, bytes: u64 }
+    struct Frames {
+        packets: u64,
+        bytes: u64,
+    }
 
     impl EdgeView for Frames {
-        fn down_packets(&self) -> Option<u64> { Some(self.packets) }
-        fn down_bytes(&self) -> Option<u64> { Some(self.bytes) }
-        fn up_packets(&self) -> Option<u64> { None }
-        fn up_bytes(&self) -> Option<u64> { None }
-        fn idle(&self) -> Option<Duration> { None }
-        fn age(&self) -> Option<Duration> { None }
-        fn mark(&self) -> u32 { 0 }
+        fn down_packets(&self) -> Option<u64> {
+            Some(self.packets)
+        }
+        fn down_bytes(&self) -> Option<u64> {
+            Some(self.bytes)
+        }
+        fn up_packets(&self) -> Option<u64> {
+            None
+        }
+        fn up_bytes(&self) -> Option<u64> {
+            None
+        }
+        fn idle(&self) -> Option<Duration> {
+            None
+        }
+        fn age(&self) -> Option<Duration> {
+            None
+        }
+        fn mark(&self) -> u32 {
+            0
+        }
     }
 
     /// Порог «клиент отдал запрос» считает КАДРЫ, и это контракт, а не совпадение с conntrack.
@@ -237,13 +254,22 @@ mod tests {
     #[test]
     fn порог_запроса_считает_кадры_а_не_нагрузку() {
         // Три пакета вниз, кроме заголовков — ничего: запроса не было.
-        assert!(!asked_for_something(&Frames { packets: 3, bytes: 3 * HDR }));
+        assert!(!asked_for_something(&Frames {
+            packets: 3,
+            bytes: 3 * HDR
+        }));
         // Те же три пакета, но сверх заголовков 200 байт: запрос отдан.
-        assert!(asked_for_something(&Frames { packets: 3, bytes: 3 * HDR + 200 }));
+        assert!(asked_for_something(&Frames {
+            packets: 3,
+            bytes: 3 * HDR + 200
+        }));
         // Сверх заголовков есть 50 байт, но это меньше FLOOR (100) — ещё не запрос, а, например,
         // случайный ACK с опцией. Без этого случая мутация «убрать FLOOR» осталась бы незамеченной:
         // оба случая выше не зависят от FLOOR (0 и 200 — по разные стороны и нуля, и сотни).
-        assert!(!asked_for_something(&Frames { packets: 3, bytes: 3 * HDR + 50 }));
+        assert!(!asked_for_something(&Frames {
+            packets: 3,
+            bytes: 3 * HDR + 50
+        }));
     }
 
     /// Учёт выключен — не «ноль запроса», а «не считали». Иначе край без учёта выглядел бы как
@@ -252,13 +278,27 @@ mod tests {
     fn край_без_учёта_не_считается_отсутствием_запроса() {
         struct Blind;
         impl EdgeView for Blind {
-            fn down_packets(&self) -> Option<u64> { None }
-            fn down_bytes(&self) -> Option<u64> { None }
-            fn up_packets(&self) -> Option<u64> { None }
-            fn up_bytes(&self) -> Option<u64> { None }
-            fn idle(&self) -> Option<Duration> { None }
-            fn age(&self) -> Option<Duration> { None }
-            fn mark(&self) -> u32 { 0 }
+            fn down_packets(&self) -> Option<u64> {
+                None
+            }
+            fn down_bytes(&self) -> Option<u64> {
+                None
+            }
+            fn up_packets(&self) -> Option<u64> {
+                None
+            }
+            fn up_bytes(&self) -> Option<u64> {
+                None
+            }
+            fn idle(&self) -> Option<Duration> {
+                None
+            }
+            fn age(&self) -> Option<Duration> {
+                None
+            }
+            fn mark(&self) -> u32 {
+                0
+            }
         }
         assert!(!asked_for_something(&Blind));
     }

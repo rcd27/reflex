@@ -5,6 +5,7 @@
 
 use crate::distress::Distress;
 use crate::wire::{ResetBy, Seen, SeenTcp};
+use reflex_core::meter::Pace;
 use std::time::{Duration, Instant};
 
 // Имя беды живёт у буквы (`Distress::name`), не здесь: сторожит
@@ -458,10 +459,20 @@ impl ThrottledInstrument {
         }
     }
 
-    /// Скорость просевшего окна в байтах за секунду.
-    fn bps(&self) -> u32 {
-        let ms = self.window.as_millis().max(1);
-        u32::try_from(u128::from(self.down) * 1000 / ms).unwrap_or(u32::MAX)
+    /// Скорость просевшего окна в байтах за секунду — ТЕМ ЖЕ законом, что и весь остальной темп
+    /// дерева (`reflex_core::meter`): байты и длительность держатся точной дробью, а в число она
+    /// схлопывается ровно один раз, на выходе к человеку.
+    ///
+    /// `None` — окно нулевой длины: темп бесконечен, назвать его числом нечем. Прежде здесь стояло
+    /// «делим на `max(1)`», и бесконечность выходила наружу большим КОНЕЧНЫМ числом, неотличимым
+    /// от настоящего замера — ровно то, что докблок `meter` называет ошибкой.
+    fn bps(&self) -> Option<u32> {
+        let pace = Pace {
+            bytes: self.down,
+            over_nanos: u64::try_from(self.window.as_nanos()).unwrap_or(u64::MAX),
+        };
+        pace.per_second()
+            .map(|per| u32::try_from(per).unwrap_or(u32::MAX))
     }
 }
 
@@ -542,7 +553,10 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                     && baseline_before > 0
                     // Получатель тормозил сам — цель ни при чём.
                     && !closed.client_paused;
+                // Беда о ВЕЛИЧИНЕ не рождается, когда величины нет: при нулевом окне назвать темп
+                // нечем, и молчание честнее числа, взятого из `max(1)`.
                 let bps = closed.bps();
+                let accuse = accuse && bps.is_some();
                 let emptied = Self {
                     down: 0,
                     up: 0,
@@ -551,7 +565,12 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                 };
                 match accuse {
                     false => (emptied, smallvec::SmallVec::new()),
-                    true => (emptied, smallvec::smallvec![Distress::Throttled { bps }]),
+                    true => (
+                        emptied,
+                        smallvec::smallvec![Distress::Throttled {
+                            bps: bps.unwrap_or_default()
+                        }],
+                    ),
                 }
             }
             // ПРЯЧУЩАЯ БУКВА РВЁТ СЧЁТ ОКОН ПОДРЯД. `degraded_run` копит просевшие окна одно за
@@ -1024,6 +1043,35 @@ mod throttled_and_choked_tests {
         assert_eq!(said, vec![Distress::Throttled { bps: 40_000 }]);
     }
 
+    /// ПРИ НУЛЕВОМ ОКНЕ ПРИБОР МОЛЧИТ, А НЕ НАЗЫВАЕТ ЧИСЛО.
+    ///
+    /// Показание этого прибора — ВЕЛИЧИНА («столько байт в секунду против стольких доказанных»), а
+    /// при окне нулевой длины темп бесконечен и числом не выражается (`meter::Pace::per_second`).
+    /// Прежде здесь делили «на `max(1)`», и наружу уходило большое КОНЕЧНОЕ число, неотличимое от
+    /// настоящего замера: потребитель читал бы выдуманную величину как измеренную.
+    #[test]
+    fn нулевое_окно_не_рождает_беду_о_величине() {
+        let said = run(
+            ThrottledInstrument::over(Duration::ZERO),
+            vec![
+                (Step::Packet(SeenTcp::sent(100)), 0),
+                (Step::Packet(SeenTcp::received(1_000_000)), 10),
+                (Step::Tick, 1_000),
+                (Step::Packet(SeenTcp::received(40_000)), 1_100),
+                (Step::Tick, 2_000),
+                (Step::Packet(SeenTcp::received(40_000)), 2_100),
+                (Step::Tick, 3_000),
+                (Step::Packet(SeenTcp::received(40_000)), 3_100),
+                (Step::Tick, 4_000),
+            ],
+        );
+
+        assert!(
+            said.is_empty(),
+            "величины нет — беды о величине тоже: {said:?}"
+        );
+    }
+
     /// Тот же темп при той же планке бедой не является (иначе всякая медленная цель задушена).
     #[test]
     fn a_steadily_slow_target_is_not_accused() {
@@ -1127,7 +1175,10 @@ mod throttled_and_choked_tests {
                 (Step::Tick, 2_000),
                 (Step::Packet(SeenTcp::received(40_000)), 2_100),
                 (Step::Tick, 3_000),
-                (Step::Opaque(reflex_core::parse::Unread::NotOurProtocol), 3_050),
+                (
+                    Step::Opaque(reflex_core::parse::Unread::NotOurProtocol),
+                    3_050,
+                ),
                 (Step::Packet(SeenTcp::received(40_000)), 3_100),
                 (Step::Tick, 4_000),
             ],

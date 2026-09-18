@@ -116,7 +116,10 @@ mod tests {
     /// прибор не держит: чьё терпение и с какого мгновения кончается, решает тот, кто слушает.
     #[test]
     fn waiting_is_reported_as_a_quantity_not_a_threshold() {
-        assert_eq!(said(Duration::from_secs(6)), vec![Waited(Duration::from_secs(6))]);
+        assert_eq!(
+            said(Duration::from_secs(6)),
+            vec![Waited(Duration::from_secs(6))]
+        );
         assert_eq!(
             said(Duration::from_millis(120)),
             vec![Waited(Duration::from_millis(120))],
@@ -144,6 +147,9 @@ mod tests {
             input: Duration::from_secs(6),
             at,
         });
-        assert_eq!(after.into_iter().collect::<Vec<_>>(), vec![Waited(Duration::from_secs(6))]);
+        assert_eq!(
+            after.into_iter().collect::<Vec<_>>(),
+            vec![Waited(Duration::from_secs(6))]
+        );
     }
 }

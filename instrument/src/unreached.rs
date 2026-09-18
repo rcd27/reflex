@@ -91,11 +91,7 @@ impl reflex_core::mealy::Mealy for UnreachedInstrument {
                             smallvec![Distress::Unreached { retries }],
                             (),
                         ),
-                        _ => (
-                            UnreachedInstrument { retries, ..self },
-                            SmallVec::new(),
-                            (),
-                        ),
+                        _ => (UnreachedInstrument { retries, ..self }, SmallVec::new(), ()),
                     }
                 }
                 // ПРОДВИЖЕНИЕ: свежие байты цели говорят, что ответы доходят. Счёт с нуля — иначе
@@ -103,7 +99,11 @@ impl reflex_core::mealy::Mealy for UnreachedInstrument {
                 Seen::Received { .. }
                 | Seen::Payload {
                     from_client: false, ..
-                } => (UnreachedInstrument { retries: 0, ..self }, SmallVec::new(), ()),
+                } => (
+                    UnreachedInstrument { retries: 0, ..self },
+                    SmallVec::new(),
+                    (),
+                ),
                 // Клиент здесь ни при чём: предмет — сторона ЦЕЛИ. Его просьбы и повторы счёта не
                 // трогают, прощание тоже (разговор кончился, судить больше не о чем).
                 Seen::Sent { .. }

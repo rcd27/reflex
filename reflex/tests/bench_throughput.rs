@@ -18,16 +18,21 @@ fn пропускная_способность_цепочки() {
     use std::net::SocketAddr;
 
     fn recording(frames: &[(u32, Vec<u8>)]) -> Vec<u8> {
-        let head: Vec<u8> = [0xd4u8, 0xc3, 0xb2, 0xa1].into_iter()
-            .chain([2, 0, 4, 0]).chain([0; 8])
-            .chain(65535u32.to_le_bytes()).chain(1u32.to_le_bytes()).collect();
+        let head: Vec<u8> = [0xd4u8, 0xc3, 0xb2, 0xa1]
+            .into_iter()
+            .chain([2, 0, 4, 0])
+            .chain([0; 8])
+            .chain(65535u32.to_le_bytes())
+            .chain(1u32.to_le_bytes())
+            .collect();
         frames.iter().fold(head, |acc, (micros, body)| {
             acc.into_iter()
                 .chain((1_756_000_000 + micros / 1_000_000).to_le_bytes())
                 .chain((micros % 1_000_000).to_le_bytes())
                 .chain((body.len() as u32).to_le_bytes())
                 .chain((body.len() as u32).to_le_bytes())
-                .chain(body.iter().copied()).collect()
+                .chain(body.iter().copied())
+                .collect()
         })
     }
 
@@ -37,17 +42,28 @@ fn пропускная_способность_цепочки() {
     let mut frames: Vec<(u32, Vec<u8>)> = Vec::new();
     for talk in 0..100u32 {
         let flow = Flow {
-            src: format!("10.0.0.5:{}", 40000 + (talk % 20000) as u16).parse::<SocketAddr>().unwrap(),
+            src: format!("10.0.0.5:{}", 40000 + (talk % 20000) as u16)
+                .parse::<SocketAddr>()
+                .unwrap(),
             dst: "93.184.216.34:443".parse::<SocketAddr>().unwrap(),
             protocol: Protocol::Tcp,
         };
         let hello = reflex_core::tls::build_client_hello("example.com");
         for step in 0..20u32 {
             let at = talk * 1000 + step * 50;
-            let body = TcpBuilder::new().flow(&flow).seq(1 + step * 100).ack(0)
-                .flags(TcpFlags::PSH | TcpFlags::ACK).ttl(64)
-                .payload(if step == 0 { &hello } else { b"payload-payload-payload" })
-                .build().serialize();
+            let body = TcpBuilder::new()
+                .flow(&flow)
+                .seq(1 + step * 100)
+                .ack(0)
+                .flags(TcpFlags::PSH | TcpFlags::ACK)
+                .ttl(64)
+                .payload(if step == 0 {
+                    &hello
+                } else {
+                    b"payload-payload-payload"
+                })
+                .build()
+                .serialize();
             frames.push((at, body));
         }
     }
@@ -57,13 +73,15 @@ fn пропускная_способность_цепочки() {
 
     let started = std::time::Instant::now();
     let heard: usize = pcap(&path)
-        .from(Tcp).extract(Sni)
+        .from(Tcp)
+        .extract(Sni)
         .detect(Retransmit::unanswered())
         .detect(Silence::after(secs(5)))
         .detect(Rst::seen())
         .detect(Unreached::answers())
         .detect(Dismissed::without_a_word())
-        .heard().expect("носитель открылся")
+        .heard()
+        .expect("носитель открылся")
         .count();
     let spent = started.elapsed();
 

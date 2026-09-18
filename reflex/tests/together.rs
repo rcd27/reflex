@@ -27,9 +27,9 @@ impl Mealy for Always {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -39,16 +39,26 @@ impl Mealy for Always {
 fn показания_двух_цепочек_приходят_одним_потоком() {
     let heard: Vec<Note> = together()
         .chain(
-            engine(Paper::new().then_packet(syn(40001)).then_packet(request(40001)).then_stop())
-                .from(Tcp)
-                .extract(Sni)
-                .detect(paper::Crier::always()),
+            engine(
+                Paper::new()
+                    .then_packet(syn(40001))
+                    .then_packet(request(40001))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always()),
         )
         .chain(
-            engine(Paper::new().then_packet(syn(40002)).then_packet(request(40002)).then_stop())
-                .from(Tcp)
-                .extract(Sni)
-                .detect(paper::Crier::always()),
+            engine(
+                Paper::new()
+                    .then_packet(syn(40002))
+                    .then_packet(request(40002))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always()),
         )
         .heard()
         .collect();
@@ -74,10 +84,15 @@ fn отказ_одной_цепочки_не_отменяет_прочих() {
                 .detect(own(Always)),
         )
         .chain(
-            engine(Paper::new().then_packet(syn(40003)).then_packet(request(40003)).then_stop())
-                .from(Tcp)
-                .extract(Sni)
-                .detect(paper::Crier::always()),
+            engine(
+                Paper::new()
+                    .then_packet(syn(40003))
+                    .then_packet(request(40003))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always()),
         );
 
     assert_eq!(
@@ -109,8 +124,18 @@ fn набор_кончается_когда_кончились_все() {
         .then_stop();
 
     let heard: Vec<Note> = together()
-        .chain(engine(short).from(Tcp).extract(Sni).detect(paper::Crier::always()))
-        .chain(engine(long).from(Tcp).extract(Sni).detect(paper::Crier::always()))
+        .chain(
+            engine(short)
+                .from(Tcp)
+                .extract(Sni)
+                .detect(paper::Crier::always()),
+        )
+        .chain(
+            engine(long)
+                .from(Tcp)
+                .extract(Sni)
+                .detect(paper::Crier::always()),
+        )
         .heard()
         .collect();
 
@@ -153,13 +178,27 @@ struct Dozing {
 struct Blank;
 
 impl reflex_core::edge::EdgeView for Blank {
-    fn down_packets(&self) -> Option<u64> { None }
-    fn up_packets(&self) -> Option<u64> { None }
-    fn down_bytes(&self) -> Option<u64> { None }
-    fn up_bytes(&self) -> Option<u64> { None }
-    fn idle(&self) -> Option<Duration> { None }
-    fn age(&self) -> Option<Duration> { None }
-    fn mark(&self) -> u32 { 0 }
+    fn down_packets(&self) -> Option<u64> {
+        None
+    }
+    fn up_packets(&self) -> Option<u64> {
+        None
+    }
+    fn down_bytes(&self) -> Option<u64> {
+        None
+    }
+    fn up_bytes(&self) -> Option<u64> {
+        None
+    }
+    fn idle(&self) -> Option<Duration> {
+        None
+    }
+    fn age(&self) -> Option<Duration> {
+        None
+    }
+    fn mark(&self) -> u32 {
+        0
+    }
 }
 
 #[derive(Debug)]
@@ -170,8 +209,14 @@ impl Terminal for Dozing {
     type Answer = ();
     type Refusal = Never;
 
-    fn apply(&mut self, answered: Answered<Vec<u8>, ()>) -> Result<Delivered<()>, Refused<(), Never>> {
-        Ok(Delivered { at: answered.at, answer: answered.answer })
+    fn apply(
+        &mut self,
+        answered: Answered<Vec<u8>, ()>,
+    ) -> Result<Delivered<()>, Refused<(), Never>> {
+        Ok(Delivered {
+            at: answered.at,
+            answer: answered.answer,
+        })
     }
 }
 
@@ -240,7 +285,12 @@ fn молчащая_цепочка_не_держит_говорящую() {
     let started = Instant::now();
     let heard: Vec<Note> = together()
         .chain(engine(Dozes).from(Tcp).extract(Sni).detect(own(Always)))
-        .chain(engine(говорящая).from(Tcp).extract(Sni).detect(paper::Crier::always()))
+        .chain(
+            engine(говорящая)
+                .from(Tcp)
+                .extract(Sni)
+                .detect(paper::Crier::always()),
+        )
         .heard()
         .take(3)
         .collect();

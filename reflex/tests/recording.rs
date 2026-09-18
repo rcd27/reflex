@@ -93,8 +93,14 @@ fn повтор_из_записи_доходит_до_прибора_со_вре
         "retransmit",
         &recording(&[
             (0, from_client(0, TcpFlags::SYN, &[])),
-            (10_000, from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello)),
-            (310_000, from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello)),
+            (
+                10_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
+            (
+                310_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
         ]),
     );
 
@@ -136,7 +142,10 @@ fn тихий_дроп_из_записи_подтверждается_возра
         &recording(&[
             (0, from_client(0, TcpFlags::SYN, &[])),
             (20_000, from_target(0, 1, TcpFlags::SYN | TcpFlags::ACK)),
-            (25_000, from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello)),
+            (
+                25_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
             // Цель молчит, и ядро клиента повторяет просьбу с нарастающим RTO — ровно то, что
             // видно в записи настоящего тихого дропа. На третьем повторе возраст разговора
             // перешагивает окно.
@@ -196,7 +205,10 @@ fn два_прибора_над_одной_записью_говорят_каж�
         &recording(&[
             (0, from_client(0, TcpFlags::SYN, &[])),
             (20_000, from_target(0, 1, TcpFlags::SYN | TcpFlags::ACK)),
-            (25_000, from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello)),
+            (
+                25_000,
+                from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
+            ),
             (
                 1_025_000,
                 from_client(1, TcpFlags::PSH | TcpFlags::ACK, &hello),
@@ -223,7 +235,9 @@ fn два_прибора_над_одной_записью_говорят_каж�
 
     let heard = heard.into_inner().expect("журнал не отравлен");
     assert!(
-        heard.iter().any(|d| matches!(d, Distress::Retransmit { .. })),
+        heard
+            .iter()
+            .any(|d| matches!(d, Distress::Retransmit { .. })),
         "быстрый прибор обязан высказаться; услышано: {heard:?}, отчёт: {report:?}"
     );
     assert!(
@@ -232,7 +246,6 @@ fn два_прибора_над_одной_записью_говорят_каж�
          услышано: {heard:?}"
     );
 }
-
 
 /// Прибор, который говорит на КАЖДОМ пакете. Нужен затем, что здоровый разговор беды не рождает, а
 /// предмет теста — «дошли ли буквы», а не «нашлась ли блокировка».
@@ -247,9 +260,9 @@ impl Mealy for Counter {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -553,9 +566,9 @@ impl Mealy for Peeking {
                 let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 (self, smallvec![Distress::Silence { ms }], ())
             }
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }

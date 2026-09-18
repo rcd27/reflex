@@ -307,7 +307,11 @@ mod tests {
         }
     }
 
-    fn letter(narrow: Option<Seen>, up: u64, at: Instant) -> DetectorEvent<Edged<Option<Seen>, Option<Edge>>> {
+    fn letter(
+        narrow: Option<Seen>,
+        up: u64,
+        at: Instant,
+    ) -> DetectorEvent<Edged<Option<Seen>, Option<Edge>>> {
         DetectorEvent::Packet {
             input: Edged {
                 narrow,
@@ -426,11 +430,15 @@ mod tests {
         let instrument = SwallowInstrument::<Edge>::new();
 
         let (instrument, _, ()) = instrument.step(letter(resent(), 3, now));
-        let (instrument, _, ()) = instrument.step(letter(Some(Seen::Received { count: 1400 }), 4, now));
+        let (instrument, _, ()) =
+            instrument.step(letter(Some(Seen::Received { count: 1400 }), 4, now));
         let (_instrument, said, ()) =
             instrument.step(letter(resent(), 4, now + Duration::from_millis(250)));
 
-        assert!(said.is_empty(), "после прохода сегмента счёт начинается заново");
+        assert!(
+            said.is_empty(),
+            "после прохода сегмента счёт начинается заново"
+        );
     }
 
     /// СВЕЖИЕ БАЙТЫ КЛИЕНТА МЕЖДУ ПОВТОРАМИ — ПРОХОД, А НЕ ПРОГЛАТЫВАНИЕ (#332).

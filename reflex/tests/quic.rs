@@ -24,9 +24,9 @@ impl Mealy for Always {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -103,7 +103,9 @@ use reflex_core::types::{Addr, Dir, Flow, Protocol};
 fn talk() -> Flow {
     Flow {
         src: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
-        dst: "142.251.156.119:443".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:443"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
         protocol: Protocol::Udp,
     }
 }
@@ -134,8 +136,14 @@ fn seen(state: &mut QuicState, payload: &[u8], dir: Dir) -> Seen {
     match Quic::observe(state, Read::Udp(datagram)) {
         // Сужаем до общего словаря тем же законом, что и цепочка (`Reading::anywhere`): второй
         // способ сужения в тесте разошёлся бы с боевым молча.
-        Observation::Seen(observed) => observed.wire.anywhere().expect("датаграмма даёт общее слово"),
-        other => panic!("наблюдение обязано состояться, а вышло другое: {:?}", other.кратко()),
+        Observation::Seen(observed) => observed
+            .wire
+            .anywhere()
+            .expect("датаграмма даёт общее слово"),
+        other => panic!(
+            "наблюдение обязано состояться, а вышло другое: {:?}",
+            other.кратко()
+        ),
     }
 }
 
@@ -162,7 +170,13 @@ fn повтор_открытия_при_молчащей_цели_называе
     let mut state = QuicState::default();
 
     assert!(
-        matches!(seen(&mut state, &initial, Dir::Up), Seen::Payload { from_client: true, .. }),
+        matches!(
+            seen(&mut state, &initial, Dir::Up),
+            Seen::Payload {
+                from_client: true,
+                ..
+            }
+        ),
         "первое открытие — голова разговора: по ней узнаётся цель"
     );
     assert!(
@@ -181,7 +195,10 @@ fn после_ответа_цели_повтор_уликой_не_являет�
 
     let _ = seen(&mut state, &initial, Dir::Up);
     assert!(
-        matches!(seen(&mut state, b"\x40\x01\x02\x03", Dir::Down), Seen::Received { .. }),
+        matches!(
+            seen(&mut state, b"\x40\x01\x02\x03", Dir::Down),
+            Seen::Received { .. }
+        ),
         "датаграмма вниз — цель ответила"
     );
 
@@ -267,7 +284,6 @@ fn a_probe_without_crypto_under_a_real_drop_is_a_repeat() {
     );
 }
 
-
 // ─── КРАЙ НА ДАТАГРАММАХ: возраст разговора ────────────────────────────────────────────────────
 
 /// Собрать запись из `(мкс от начала, кадр)` — та же оснастка, что у `recording.rs`, с разведёнными
@@ -305,7 +321,9 @@ fn краевой_прибор_говорит_и_на_датаграммах() {
 
     let flow = reflex_core::types::Flow {
         src: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
-        dst: "142.251.156.119:443".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:443"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
         protocol: Protocol::Udp,
     };
     let initial = real_initial();

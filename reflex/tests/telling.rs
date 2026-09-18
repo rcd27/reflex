@@ -30,9 +30,9 @@ impl Mealy for Always {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -79,7 +79,10 @@ fn решение_читается_вердиктом_следующего_па�
             heard.lock().expect("слышно").push(distress);
             // Решение кладётся ИЗ РЕАКЦИИ здесь только ради краткости теста: дверь не знает, кто
             // её позвал, и та же ручка работает из чужой нити (`heard()`), где цикл — потребителя.
-            assert!(posting.tell(target, 0b1010), "решение обязано влезть в область");
+            assert!(
+                posting.tell(target, 0b1010),
+                "решение обязано влезть в область"
+            );
         })
         .run();
 
