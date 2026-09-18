@@ -75,7 +75,11 @@ fn известные_опции_читаются_как_на_проводе() {
 
     let stamps = TcpOptions::parse(&[8, 10, 0, 0, 0, 1, 0, 0, 0, 2]);
     let stamps = stamps.timestamps.expect("штампы прочтены");
-    assert_eq!((stamps.ts_val, stamps.ts_ecr), (1, 2), "оба штампа big-endian");
+    assert_eq!(
+        (stamps.ts_val, stamps.ts_ecr),
+        (1, 2),
+        "оба штампа big-endian"
+    );
 
     // Подряд, в одном буфере: `NOP`-выравнивание между опциями законно и не должно их терять.
     let together = TcpOptions::parse(&[1, 2, 4, 0x05, 0xB4, 1, 3, 3, 7, 0]);
@@ -102,7 +106,10 @@ fn испорченное_обрывает_разбор_а_неизвестно�
     );
 
     let after_overlong = TcpOptions::parse(&[2, 99, 3, 3, 7]);
-    assert_eq!(after_overlong.window_scale, None, "длина сверх буфера — тот же обрыв");
+    assert_eq!(
+        after_overlong.window_scale, None,
+        "длина сверх буфера — тот же обрыв"
+    );
 
     let after_unknown = TcpOptions::parse(&[4, 2, 3, 3, 7]);
     assert_eq!(

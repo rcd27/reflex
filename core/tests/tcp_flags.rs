@@ -31,11 +31,18 @@ fn every_value() -> impl Iterator<Item = TcpFlags> {
 fn печать_есть_буквы_взведённых_битов_в_читательском_порядке() {
     for value in every_value() {
         let bits = value.bits();
-        let expected: String = [(0x02, 'S'), (0x10, 'A'), (0x08, 'P'), (0x01, 'F'), (0x04, 'R'), (0x20, 'U')]
-            .into_iter()
-            .filter(|(bit, _)| bits & bit != 0)
-            .map(|(_, letter)| letter)
-            .collect();
+        let expected: String = [
+            (0x02, 'S'),
+            (0x10, 'A'),
+            (0x08, 'P'),
+            (0x01, 'F'),
+            (0x04, 'R'),
+            (0x20, 'U'),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, letter)| letter)
+        .collect();
         let expected = match expected.is_empty() {
             true => "none".to_string(),
             false => expected,
@@ -65,7 +72,11 @@ fn каждый_флаг_печатается_своей_буквой_и_бук�
         );
         seen.push(printed);
     }
-    assert_eq!(seen.len(), 6, "флагов стало иное число — закон надо перечитать, а не подправить");
+    assert_eq!(
+        seen.len(),
+        6,
+        "флагов стало иное число — закон надо перечитать, а не подправить"
+    );
 }
 
 /// ПРЕДИКАТЫ ОТВЕЧАЮТ СВОЕМУ ИМЕНИ НА ВСЕХ 64 ЗНАЧЕНИЯХ.
@@ -81,10 +92,18 @@ fn предикаты_отвечают_своему_имени_на_всех_з�
     for value in every_value() {
         let bits = value.bits();
         assert_eq!(value.is_syn(), bits & 0x12 == 0x02, "is_syn на {bits:#04x}");
-        assert_eq!(value.is_syn_ack(), bits & 0x12 == 0x12, "is_syn_ack на {bits:#04x}");
+        assert_eq!(
+            value.is_syn_ack(),
+            bits & 0x12 == 0x12,
+            "is_syn_ack на {bits:#04x}"
+        );
         assert_eq!(value.is_rst(), bits & 0x04 != 0, "is_rst на {bits:#04x}");
         assert_eq!(value.is_fin(), bits & 0x01 != 0, "is_fin на {bits:#04x}");
-        assert_eq!(value.is_psh_ack(), bits & 0x18 == 0x18, "is_psh_ack на {bits:#04x}");
+        assert_eq!(
+            value.is_psh_ack(),
+            bits & 0x18 == 0x18,
+            "is_psh_ack на {bits:#04x}"
+        );
     }
 }
 
@@ -103,5 +122,7 @@ fn открытие_разговора_и_ответ_на_него_не_совп
         );
     }
     assert!(TcpFlags::SYN.is_syn() && !TcpFlags::SYN.is_syn_ack());
-    assert!((TcpFlags::SYN | TcpFlags::ACK).is_syn_ack() && !(TcpFlags::SYN | TcpFlags::ACK).is_syn());
+    assert!(
+        (TcpFlags::SYN | TcpFlags::ACK).is_syn_ack() && !(TcpFlags::SYN | TcpFlags::ACK).is_syn()
+    );
 }

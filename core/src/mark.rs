@@ -133,7 +133,10 @@ mod tests {
         assert!(Region::new(0b1011_0000).is_none());
         assert!(Region::new(0).is_none(), "пустая область — тоже не область");
         assert!(Region::new(0b1111_0000).is_some());
-        assert!(Region::new(0x8000_0000).is_some(), "старший бит — законная область");
+        assert!(
+            Region::new(0x8000_0000).is_some(),
+            "старший бит — законная область"
+        );
     }
 
     /// Значение, не влезающее в область, НЕ СТРОИТСЯ. Обрежь его молча — «нога 5» стала бы «ногой
@@ -144,7 +147,10 @@ mod tests {
         assert_eq!(region.width(), 2);
 
         assert!(region.holding(3).is_some(), "три в два бита влезает");
-        assert!(region.holding(4).is_none(), "четыре — нет, и это отказ, а не 0");
+        assert!(
+            region.holding(4).is_none(),
+            "четыре — нет, и это отказ, а не 0"
+        );
     }
 
     /// Наложение сохраняет ЧУЖИЕ биты: на одной машине марку пишут многие, и затереть соседа
@@ -159,7 +165,11 @@ mod tests {
         let after = value.apply_to(word);
 
         assert_eq!(after & !region.mask(), word & !region.mask(), "чужое цело");
-        assert_eq!(Marked::read(&region, after), 0b1010, "своё читается обратно");
+        assert_eq!(
+            Marked::read(&region, after),
+            0b1010,
+            "своё читается обратно"
+        );
     }
 
     /// Непересечение — единственный способ ОБЪЯВИТЬ владение вместо того, чтобы о нём помнить.

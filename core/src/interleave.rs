@@ -131,8 +131,7 @@ impl Interleave {
     /// нулевом шаге (отсутствие сетки): прошедший момент был бы гарантией наступления узла, но нулевой
     /// шаг отменяет её, оставляя только значение — узла не будет.
     pub fn next_node(&self) -> Option<Instant> {
-        crate::grid::next_due(self.start, self.last, self.every).map(|nth| {
-            crate::grid::node(self.start, self.every, nth)
-        })
+        crate::grid::next_due(self.start, self.last, self.every)
+            .map(|nth| crate::grid::node(self.start, self.every, nth))
     }
 }

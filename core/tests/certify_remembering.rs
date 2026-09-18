@@ -24,10 +24,7 @@ impl Terminal for Bench {
     type Answer = ();
     type Refusal = ();
 
-    fn apply(
-        &mut self,
-        answered: Answered<(), ()>,
-    ) -> Result<Delivered<()>, Refused<(), ()>> {
+    fn apply(&mut self, answered: Answered<(), ()>) -> Result<Delivered<()>, Refused<(), ()>> {
         Ok(Delivered {
             at: answered.at,
             answer: answered.answer,
@@ -113,13 +110,7 @@ fn erasing_foreign_bits_is_its_own_fault() {
 #[test]
 fn a_silent_witness_invalidates_the_run() {
     assert!(matches!(
-        remembers(
-            &mut Bench::taking(),
-            held(),
-            0x1234,
-            0,
-            &mut Echo::silent()
-        ),
+        remembers(&mut Bench::taking(), held(), 0x1234, 0, &mut Echo::silent()),
         Verdict::Invalid(Invalid::NoConntrack)
     ));
 }

@@ -233,7 +233,11 @@ fn нулевой_шаг_даёт_отсутствие_сетки() {
     assert_eq!(seam.next_node(), None, "узела нет, сетки нет");
 
     let (_seam, out) = seam.idle::<()>(start + Duration::from_secs(1));
-    assert_eq!(shape(&out, start), vec![], "idle на нулевой сетке не выдаёт узлов");
+    assert_eq!(
+        shape(&out, start),
+        vec![],
+        "idle на нулевой сетке не выдаёт узлов"
+    );
 }
 
 // ─── ЧЕТВЁРТАЯ ДВЕРЬ: ОТКЛИК НА СПРОШЕННОЕ ──────────────────────────────────────────────────────
@@ -272,7 +276,8 @@ fn an_answer_lets_the_nodes_it_stepped_over_out_first() {
     let start = Instant::now();
     let seam = Interleave::started(start, STEP);
 
-    let (_seam, letters) = seam.answered::<u8, &str, &str>("example.com", "заблокировано", at(start, 350));
+    let (_seam, letters) =
+        seam.answered::<u8, &str, &str>("example.com", "заблокировано", at(start, 350));
 
     assert_eq!(
         tape_shape(&letters, start),
@@ -304,7 +309,10 @@ fn an_answer_carries_the_key_that_says_whose_it_is() {
 
     // Адрес спрашивают У БУКВЫ ЛЕНТЫ, а не у отклика: обе породы отвечают на один вопрос «твоё ли
     // это», и тем переигровка маршрутизирует их одинаково, не различая пород.
-    assert!(letter.answers(&"rutracker.org"), "буква обязана узнавать свой ключ");
+    assert!(
+        letter.answers(&"rutracker.org"),
+        "буква обязана узнавать свой ключ"
+    );
     assert!(!letter.answers(&"example.com"), "и не узнавать чужой");
 }
 

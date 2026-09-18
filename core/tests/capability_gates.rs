@@ -26,8 +26,9 @@ use std::path::Path;
 /// Разметка `capability.rs`, прочитанная построчно: имя способности и был ли `compile_fail` между
 /// ней и предыдущим объявлением.
 fn declared_with_guard() -> Vec<(String, bool)> {
-    let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capability.rs"))
-        .expect("исходник способностей читается");
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capability.rs"))
+            .expect("исходник способностей читается");
 
     let mut found: Vec<(String, bool)> = Vec::new();
     let mut guarded = false;
@@ -81,11 +82,15 @@ fn у_каждой_способности_есть_свой_гейт_заявл�
 /// Can` в том же тексте.
 #[test]
 fn разбор_нашёл_все_объявления_а_не_молча_ноль() {
-    let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capability.rs"))
-        .expect("исходник способностей читается");
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/capability.rs"))
+            .expect("исходник способностей читается");
     let independently = source.matches("pub trait Can").count();
 
-    assert!(independently >= 11, "способностей стало меньше одиннадцати — это событие, а не опечатка");
+    assert!(
+        independently >= 11,
+        "способностей стало меньше одиннадцати — это событие, а не опечатка"
+    );
     assert_eq!(
         declared_with_guard().len(),
         independently,

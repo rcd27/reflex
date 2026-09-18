@@ -27,13 +27,13 @@
 pub fn by_offset(pieces: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let ordered: std::collections::BTreeMap<u64, &Vec<u8>> =
         pieces.iter().map(|(at, data)| (*at, data)).collect();
-    ordered
-        .into_iter()
-        .fold(Vec::new(), |acc, (offset, data)| match offset as usize == acc.len() {
+    ordered.into_iter().fold(Vec::new(), |acc, (offset, data)| {
+        match offset as usize == acc.len() {
             true => acc.into_iter().chain(data.iter().copied()).collect(),
             // Кусок не встык — дальше склеивать нельзя.
             false => acc,
-        })
+        }
+    })
 }
 
 #[cfg(test)]

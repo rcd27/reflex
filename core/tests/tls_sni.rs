@@ -72,7 +72,11 @@ fn на_коротком_входе_имя_не_рождается() {
     for first in 0u8..=255 {
         for second in 0u8..=255 {
             let bytes = [first, second];
-            assert_eq!(sni(&bytes), None, "два байта {first:#04x} {second:#04x} родили имя");
+            assert_eq!(
+                sni(&bytes),
+                None,
+                "два байта {first:#04x} {second:#04x} родили имя"
+            );
         }
     }
 }
@@ -92,7 +96,8 @@ fn на_коротком_входе_имя_не_рождается() {
 /// нечем, а `span` показывает на байты, которых никто не может тронуть.
 #[test]
 fn диапазон_имени_указывает_на_его_байты() {
-    for domain in ["rutracker.org", "a.b", "очень-длинное-имя-цели.example.com"] {
+    for domain in ["rutracker.org", "a.b", "очень-длинное-имя-цели.example.com"]
+    {
         let bytes = hello(domain);
         let found = sni(&bytes).expect("имя найдено");
         assert_eq!(found.name, domain);
@@ -166,8 +171,15 @@ fn запись_разбирается_в_свой_вид() {
     let handshake = hello("rutracker.org");
     let parsed = TlsRecord::parse(&handshake).expect("запись разобрана");
     assert_eq!(parsed.content_type, TlsContentType::Handshake);
-    assert_eq!(parsed.version, TlsVersion { major: 3, minor: 1 }, "версия записи — байты провода, не наш словарь");
-    assert!(matches!(parsed.fragment, TlsFragment::ClientHello { sni: Some(_) }));
+    assert_eq!(
+        parsed.version,
+        TlsVersion { major: 3, minor: 1 },
+        "версия записи — байты провода, не наш словарь"
+    );
+    assert!(matches!(
+        parsed.fragment,
+        TlsFragment::ClientHello { sni: Some(_) }
+    ));
 
     for (byte, expected) in [
         (0x17u8, TlsContentType::ApplicationData),
