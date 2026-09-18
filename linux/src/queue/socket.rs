@@ -10,7 +10,7 @@ use libc::{c_int, c_void, close, poll, pollfd, recv, send, socket, AF_NETLINK, P
 
 use super::wire::{
     bind_request, flags_request, incoming_of, params_request, queue_maxlen_request,
-    verdict_message, Incoming,
+    verdict_message, CtMark, Incoming, SkbMark,
 };
 use crate::conntrack::TimeoutBase;
 use crate::netlink::errno;
@@ -83,8 +83,16 @@ mod dropped_tests {
     /// Строка испорчена — тоже незнание. Разбор, отдающий ноль на мусоре, врал бы тем же способом.
     #[test]
     fn испорченная_строка_даёт_незнание() {
-        assert_eq!(dropped_in("200 12345 17", 200), None, "полей меньше, чем нужно");
-        assert_eq!(dropped_in("200 a b c d e f g h", 200), None, "поле не число");
+        assert_eq!(
+            dropped_in("200 12345 17", 200),
+            None,
+            "полей меньше, чем нужно"
+        );
+        assert_eq!(
+            dropped_in("200 a b c d e f g h", 200),
+            None,
+            "поле не число"
+        );
     }
 }
 
@@ -265,23 +273,15 @@ impl QueueSocket {
         }
     }
 
-    /// Вердикт пакету `id`. Три необязательных довода — три РАЗНЫХ предмета, и сливать их нельзя:
-    /// * `ct_mark` — состояние разговора (`NFQA_CT{CTA_MARK}`), переживает пакет и читается на
-    ///   следующем пакете того же разговора: это дом автомата Мили;
-    /// * `payload` — новые байты (`NFQA_PAYLOAD`): ядро отпустит их вместо взятых;
-    /// * `skb_mark` — метка ПАКЕТА (`NFQA_MARK`), живёт до конца его пути по ядру и читается
-    ///   правилами маршрутизации (`ip rule fwmark`). Разговора она не переживает.
-    ///
-    /// Две метки — не дубль. Первая помнит, вторая ПРИКАЗЫВАЕТ, и разговор с ядром у них разный:
-    /// перепутав их, получишь либо состояние, стёртое следующим пакетом, либо приказ, не дошедший
-    /// до маршрутизатора.
+    /// Вердикт пакету `id`: три необязательных довода — три разных предмета, и различие держат
+    /// [`CtMark`], `payload` и [`SkbMark`] типами, а не порядком в подписи.
     pub fn verdict(
         &self,
         id: u32,
         accept: bool,
-        ct_mark: Option<u32>,
+        ct_mark: Option<CtMark>,
         payload: Option<&[u8]>,
-        skb_mark: Option<u32>,
+        skb_mark: Option<SkbMark>,
     ) -> Result<(), QueueError> {
         self.send(&verdict_message(
             self.queue, id, id, accept, ct_mark, payload, skb_mark,

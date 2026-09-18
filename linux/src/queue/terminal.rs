@@ -14,7 +14,7 @@ use crate::conntrack::{CtEdge, TimeoutBase};
 use crate::nfqueue::{millis_until, Waited};
 
 use super::socket::{QueueError, QueueSocket};
-use super::wire::{Incoming, Packet};
+use super::wire::{CtMark, Incoming, Packet, SkbMark};
 
 /// Носитель права ответить: пакет, чей `id` нужен вердикту, и база таймаутов, без которой `CtEdge`
 /// не построить. База едет с носителем, а не с приборами: снимается РАЗ при открытии очереди (см.
@@ -65,7 +65,10 @@ impl Edging for Held {
 pub enum Answer {
     Pass,
     Stop,
-    Remembered { accept: bool, state: u32 },
+    Remembered {
+        accept: bool,
+        state: u32,
+    },
     /// Отпустить С МЕТКОЙ ПАКЕТА: `NFQA_MARK` живёт до конца пути пакета по ядру и читается
     /// правилами маршрутизации (`ip rule fwmark`). Предмет [`reflex_core::capability::CanMark`].
     ///
@@ -108,14 +111,14 @@ pub(crate) fn asked(answer: &Answer) -> Told<'_> {
         // умеет. Обе двери дешевле одной проверки: способность ядра нельзя установить изнутри
         // вердикта, а молчание неотличимо от успеха.
         Answer::Remembered { accept, state } => Told {
-            state: Some(*state),
-            skb_mark: Some(*state),
+            state: Some(CtMark(*state)),
+            skb_mark: Some(SkbMark(*state)),
             ..Told::passing(*accept)
         },
         // Помеченный пакет ОТПУСКАЕТСЯ: метка есть приказ маршрутизатору, а дропнутому пакету
         // маршрут не нужен. Как и у подмены ниже, `accept` здесь следствие слова, не выбор.
         Answer::Marked(mark) => Told {
-            skb_mark: Some(*mark),
+            skb_mark: Some(SkbMark(*mark)),
             ..Told::passing(true)
         },
         // Подменённый пакет ОТПУСКАЕТСЯ: дропнуть его и одновременно подменить бессмысленно —
@@ -134,11 +137,11 @@ pub(crate) fn asked(answer: &Answer) -> Told<'_> {
 pub(crate) struct Told<'a> {
     pub accept: bool,
     /// Состояние разговора — в conntrack, переживает пакет.
-    pub state: Option<u32>,
+    pub state: Option<CtMark>,
     /// Новые байты вместо взятых.
     pub payload: Option<&'a [u8]>,
     /// Метка пакета — для маршрутизации, разговора не переживает.
-    pub skb_mark: Option<u32>,
+    pub skb_mark: Option<SkbMark>,
 }
 
 impl Told<'_> {
@@ -372,9 +375,9 @@ mod tests {
             }),
             Told {
                 accept: true,
-                state: Some(0x1234),
+                state: Some(CtMark(0x1234)),
                 payload: None,
-                skb_mark: Some(0x1234)
+                skb_mark: Some(SkbMark(0x1234))
             }
         );
         assert_eq!(asked(&Answer::Pass).accept, true);
@@ -391,8 +394,15 @@ mod tests {
     fn marking_reaches_the_verdict() {
         let told = asked(&Answer::Marked(0x00FF_0001));
 
-        assert!(told.accept, "помеченный пакет отпускается: дропнутому маршрут не нужен");
-        assert_eq!(told.skb_mark, Some(0x00FF_0001), "метка едет в поле метки");
+        assert!(
+            told.accept,
+            "помеченный пакет отпускается: дропнутому маршрут не нужен"
+        );
+        assert_eq!(
+            told.skb_mark,
+            Some(SkbMark(0x00FF_0001)),
+            "метка едет в поле метки"
+        );
         assert_eq!(
             told.state, None,
             "и НЕ едет в поле памяти: `Marked` приказывает маршрутизатору, а не помнит о разговоре"
@@ -410,12 +420,12 @@ mod tests {
         });
         assert_eq!(
             remembered.state,
-            Some(0x00FF_0001),
+            Some(CtMark(0x00FF_0001)),
             "память едет в своё поле — для ядра, которое умеет её принять"
         );
         assert_eq!(
             remembered.skb_mark,
-            Some(0x00FF_0001),
+            Some(SkbMark(0x00FF_0001)),
             "и в поле метки тоже — для ядра, которое не умеет: иначе продукт там не лечит вовсе"
         );
     }
@@ -430,7 +440,11 @@ mod tests {
         let told = asked(&answer);
 
         assert!(told.accept, "подменённый пакет отпускается: дропать нечего");
-        assert_eq!(told.payload, Some(&fresh[..]), "новые байты доезжают до вердикта");
+        assert_eq!(
+            told.payload,
+            Some(&fresh[..]),
+            "новые байты доезжают до вердикта"
+        );
         assert_eq!(
             told.state, None,
             "«переписать И запомнить» одним словом сегодня не выразимо — подпись `CanRewrite::rewrite` \

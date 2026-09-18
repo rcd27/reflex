@@ -11,6 +11,6 @@ pub use crate::conntrack::TimeoutBase;
 pub use socket::{QueueError, QueueSocket};
 pub use terminal::{Answer, Held};
 pub use wire::{
-    bind_request, cmd_body, flags_request, incoming_of, params_body, params_request,
-    verdict_body, verdict_message, Incoming, Packet,
+    bind_request, cmd_body, flags_request, incoming_of, params_body, params_request, verdict_body,
+    verdict_message, CtMark, Incoming, Packet, SkbMark,
 };

@@ -3,8 +3,8 @@
 //! разбор ровно тем, что кладёт ядро, и читать ровно то, что уходит ядру.
 
 use reflex_linux::queue::{
-    cmd_body, flags_request, incoming_of, params_body, verdict_body, verdict_message,
-    Incoming,
+    cmd_body, flags_request, incoming_of, params_body, verdict_body, verdict_message, CtMark,
+    Incoming, SkbMark,
 };
 
 // --- ручной разбор/сборка атрибутов (зеркало формата netlink, но независимое от крейта) ---
@@ -137,14 +137,20 @@ fn flags_request_sets_conntrack_and_fail_open_in_flag_and_mask() {
     let built = flags_request(200, 1);
     // NFQA_CFG_FLAGS = 5, NFQA_CFG_MASK = 4, NFQA_CFG_F_CONNTRACK = 0x0002, FAIL_OPEN = 0x0001, be32.
     // Без FAIL_OPEN ядро роняет пакет, которого мы не успели забрать (канарейка 14.09.2026: 9212).
-    assert!(contains_be32_attr(&built, 5, 0x0003), "оба флага выставлены");
-    assert!(contains_be32_attr(&built, 4, 0x0003), "маска называет те же биты");
+    assert!(
+        contains_be32_attr(&built, 5, 0x0003),
+        "оба флага выставлены"
+    );
+    assert!(
+        contains_be32_attr(&built, 4, 0x0003),
+        "маска называет те же биты"
+    );
 }
 
 /// Состояние уезжает вложенным NFQA_CT{CTA_MARK} — именно этого не умеет крейт nfq.
 #[test]
 fn verdict_carries_conntrack_mark() {
-    let built = verdict_message(200, 7, 42, true, Some(0x0000_1234), None, None);
+    let built = verdict_message(200, 7, 42, true, Some(CtMark(0x0000_1234)), None, None);
     // NFQA_CT = 11 (вложенный), внутри CTA_MARK = 8, be32.
     let ct = nested_attr(&built, 11).expect("NFQA_CT в вердикте");
     assert_eq!(be32_attr(&ct, 8), Some(0x0000_1234));
@@ -215,7 +221,7 @@ fn verdict_carries_new_payload() {
 /// же». Держит предыдущий тест честным: атрибут, стоящий всегда, не доказывал бы ничего.
 #[test]
 fn verdict_without_rewrite_carries_no_payload() {
-    let built = verdict_message(200, 7, 42, true, Some(0x1234), None, None);
+    let built = verdict_message(200, 7, 42, true, Some(CtMark(0x1234)), None, None);
     assert!(attrs_of(&built).iter().all(|(kind, _)| *kind != 10));
 }
 
@@ -227,7 +233,15 @@ fn verdict_without_rewrite_carries_no_payload() {
 /// состояние, стёртое следующим пакетом, вместо приказа маршрутизатору — молча.
 #[test]
 fn verdict_carries_skb_mark_apart_from_conntrack_mark() {
-    let built = verdict_message(200, 7, 42, true, Some(0xAAAA_0000), None, Some(0x0000_BBBB));
+    let built = verdict_message(
+        200,
+        7,
+        42,
+        true,
+        Some(CtMark(0xAAAA_0000)),
+        None,
+        Some(SkbMark(0x0000_BBBB)),
+    );
 
     assert_eq!(
         attrs_of(&built)

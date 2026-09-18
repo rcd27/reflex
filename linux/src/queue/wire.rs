@@ -7,7 +7,9 @@
 //! байт, и ядро молча не поняло бы сообщение.
 
 use crate::conntrack::{view_of, CtView};
-use crate::netlink::{aligned, attrs, be32_at, i32_at, nested, tlv, u16_at, NLMSG_DONE, NLMSG_ERROR};
+use crate::netlink::{
+    aligned, attrs, be32_at, i32_at, nested, tlv, u16_at, NLMSG_DONE, NLMSG_ERROR,
+};
 
 // Сверены с `include/uapi/linux/netfilter/nfnetlink_queue.h` (не по памяти).
 const NFNL_SUBSYS_QUEUE: u16 = 3;
@@ -161,6 +163,22 @@ pub fn flags_request(queue: u16, seq: u32) -> Vec<u8> {
     message(NFQNL_MSG_CONFIG, queue, seq, &[flags, mask].concat())
 }
 
+/// Метка РАЗГОВОРА (`NFQA_CT{CTA_MARK}`): переживает пакет и читается на следующем пакете того же
+/// разговора — дом автомата Мили (§9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CtMark(pub u32);
+
+/// Метка ПАКЕТА (`NFQA_MARK`): живёт до конца его пути по ядру и читается правилами маршрутизации
+/// (`ip rule fwmark`), разговора не переживает.
+///
+/// РАЗНЫЕ ТИПЫ У ДВУХ `u32` — не церемония, а единственный способ предъявить различие: обе метки
+/// едут в одном сообщении вердикта соседними доводами, и перепутанные местами дают либо состояние,
+/// стёртое следующим пакетом, либо приказ, не дошедший до маршрутизатора. Ни то, ни другое не
+/// красит ни сборку, ни юниты — прежде это различие держалось порядком аргументов и абзацем прозы
+/// в четырёх местах сразу.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkbMark(pub u32);
+
 /// Вердикт пакету. При `Some(mark)` кладёт `NFQA_CT{CTA_MARK}` — состояние уезжает в ядро вместе с
 /// вердиктом; при `None` атрибута `NFQA_CT` нет вовсе (не трогать ≠ записать своё).
 ///
@@ -173,14 +191,14 @@ pub fn verdict_message(
     seq: u32,
     id: u32,
     accept: bool,
-    ct_mark: Option<u32>,
+    ct_mark: Option<CtMark>,
     payload: Option<&[u8]>,
-    skb_mark: Option<u32>,
+    skb_mark: Option<SkbMark>,
 ) -> Vec<u8> {
     let verdict = if accept { NF_ACCEPT } else { NF_DROP };
     let head = tlv(NFQA_VERDICT_HDR, &verdict_body(verdict, id));
     let with_state = match ct_mark {
-        Some(mark) => [head, nested(NFQA_CT, &tlv(CTA_MARK, &mark.to_be_bytes()))].concat(),
+        Some(CtMark(mark)) => [head, nested(NFQA_CT, &tlv(CTA_MARK, &mark.to_be_bytes()))].concat(),
         None => head,
     };
     let with_bytes = match payload {
@@ -188,7 +206,7 @@ pub fn verdict_message(
         None => with_state,
     };
     let body = match skb_mark {
-        Some(mark) => [with_bytes, tlv(NFQA_MARK, &mark.to_be_bytes())].concat(),
+        Some(SkbMark(mark)) => [with_bytes, tlv(NFQA_MARK, &mark.to_be_bytes())].concat(),
         None => with_bytes,
     };
     message(NFQNL_MSG_VERDICT, queue, seq, &body)
