@@ -12,9 +12,9 @@ mod capture;
 pub mod conntrack;
 // Обход/сборка TLV — общие для ctnetlink (`conntrack`) и очереди (`nfqueue`). Гейт по обеим фичам:
 // без них модуль мёртв (в отличие от плана, объявлявшего его безусловно).
+mod inject;
 #[cfg(any(feature = "conntrack", feature = "nfqueue"))]
 pub(crate) mod netlink;
-mod inject;
 #[cfg(feature = "nfqueue")]
 pub mod nfqueue;
 // Свой сокет к NFNL_SUBSYS_QUEUE: разбирает NFQA_CT и кладёт его в вердикт — чего крейт `nfq` не

@@ -216,10 +216,7 @@ fn announce<B: std::fmt::Debug, I: std::fmt::Debug>(
 fn certify_remembers(
     queue: &str,
 ) -> Result<
-    Verdict<
-        reflex_core::certify::remembering::Broken,
-        reflex_core::certify::remembering::Invalid,
-    >,
+    Verdict<reflex_core::certify::remembering::Broken, reflex_core::certify::remembering::Invalid>,
     String,
 > {
     use reflex_core::certify::remembering::{remembers, Recaller};
@@ -241,7 +238,9 @@ fn certify_remembers(
         }
     }
 
-    let number: u16 = queue.parse().map_err(|_| format!("queue не число: {queue}"))?;
+    let number: u16 = queue
+        .parse()
+        .map_err(|_| format!("queue не число: {queue}"))?;
     // База таймаутов снимается РАЗ, здесь же, и едет в `open` аргументом: `Carried` — носитель, у
     // которого спрашивают `Edging`, и строить его без базы нечем (она приезжает с носителем, не с
     // бэкендом — см. `queue::Held`). Это НЕ второй читатель предпосылки вместо задачи 7: запрет был

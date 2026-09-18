@@ -162,7 +162,10 @@ pub fn check() -> Result<(), PreflightError> {
 /// Модуль conntrack загружен — без него `NFQA_CT` не приедет, и весь путь края мёртв.
 fn check_conntrack() -> Result<(), PreflightError> {
     let modules = fs::read_to_string("/proc/modules").unwrap_or_default();
-    match modules.lines().any(|line| line.starts_with("nf_conntrack ")) {
+    match modules
+        .lines()
+        .any(|line| line.starts_with("nf_conntrack "))
+    {
         true => Ok(()),
         false => Err(PreflightError::NoConntrack),
     }
@@ -543,7 +546,10 @@ mod tests {
     fn accounting_error_names_the_fix() {
         let message = format!("{}", PreflightError::NoAccounting);
         assert!(message.contains("nf_conntrack_acct"));
-        assert!(message.contains("sysctl"), "рецепт починки, а не констатация");
+        assert!(
+            message.contains("sysctl"),
+            "рецепт починки, а не констатация"
+        );
     }
 
     /// Оба sysctl названы РАЗДЕЛЬНО: у них разные последствия (без acct слепнут счётчики, без
@@ -562,7 +568,10 @@ mod tests {
         let off = format!("{}", PreflightError::NoTimestamps);
         let absent = format!("{}", PreflightError::NoTimestampsKey);
 
-        assert!(off.contains("sysctl -w"), "выключенное чинится строкой: {off}");
+        assert!(
+            off.contains("sysctl -w"),
+            "выключенное чинится строкой: {off}"
+        );
         assert!(
             absent.contains("CONFIG_NF_CONNTRACK_TIMESTAMP"),
             "несобранное называет ОПЦИЮ ЯДРА: {absent}"
@@ -618,7 +627,10 @@ mod glue_tests {
     #[test]
     fn отказ_по_glue_называет_своё_лечение_а_не_чужое() {
         let said = format!("{}", PreflightError::NoConntrackGlue);
-        assert!(said.contains("CONFIG_NETFILTER_NETLINK_GLUE_CT"), "названа опция: {said}");
+        assert!(
+            said.contains("CONFIG_NETFILTER_NETLINK_GLUE_CT"),
+            "названа опция: {said}"
+        );
         assert!(
             said.contains("перезагрузка модуля НЕ поможет"),
             "названо, чего делать НЕ надо: {said}"

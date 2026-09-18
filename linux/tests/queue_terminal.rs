@@ -24,9 +24,10 @@ fn overrun_is_a_value() {
 /// Способность помнить строится тем же словом, каким отвечает очередь: пятое слово молча не завести.
 #[test]
 fn remembering_is_one_word_with_the_verdict() {
-    let answer = <reflex_linux::queue::QueueSocket as reflex_core::capability::CanRemember>::remember(
-        0x1234, true,
-    );
+    let answer =
+        <reflex_linux::queue::QueueSocket as reflex_core::capability::CanRemember>::remember(
+            0x1234, true,
+        );
     assert_eq!(
         answer,
         Answer::Remembered {

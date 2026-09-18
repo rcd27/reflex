@@ -25,7 +25,7 @@ use reflex_instrument::edge_word::Edged;
 use reflex_instrument::wire::Seen;
 use reflex_linux::conntrack::{CtEdge, TimeoutBase};
 use reflex_linux::nfqueue::Waited;
-use reflex_linux::queue::{Incoming, QueueSocket};
+use reflex_linux::queue::{CtMark, Incoming, QueueSocket};
 
 /// Своя очередь — не 200 фасадного пути: стенд гоняет оба одновременно.
 const QUEUE: u16 = 201;
@@ -115,7 +115,7 @@ pub fn main() {
                 println!("[край] {distress}");
             }
             // Памятка (если есть) уезжает в марку RMW — чужие биты целы; иначе марку не трогаем.
-            let _ = socket.verdict(packet.id, true, memo.map(|memo| memo.apply_to(view.mark)), None, None);
+            let _ = socket.verdict(packet.id, true, memo.map(|memo| CtMark(memo.apply_to(view.mark))), None, None);
         }
     }
 }

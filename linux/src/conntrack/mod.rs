@@ -9,6 +9,4 @@ mod wire;
 
 pub use dump::{Dump, DumpError};
 pub use edge::{CtEdge, TimeoutBase};
-pub use wire::{
-    chunk_of, entry_of, view_of, Chunk, Counts, CtEnds, CtTcp, CtView, Entry, Tuple,
-};
+pub use wire::{chunk_of, entry_of, view_of, Chunk, Counts, CtEnds, CtTcp, CtView, Entry, Tuple};

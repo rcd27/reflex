@@ -6,7 +6,9 @@
 //! `f(x) == f(x)` зелена на любой реализации и охраняет пустоту.
 
 use reflex_core::types::Protocol;
-use reflex_engine::parse::{datagrammed, keyed, keyed_of_orig, wired, Ends, Header, Payload, Segment};
+use reflex_engine::parse::{
+    datagrammed, keyed, keyed_of_orig, wired, Ends, Header, Payload, Segment,
+};
 use reflex_linux::conntrack::Tuple;
 
 /// SYN-сегмент клиента к серверу — минимум, чтобы `wired` выковал ключ по проводу.

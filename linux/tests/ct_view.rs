@@ -71,7 +71,11 @@ fn the_start_is_absolute_the_age_is_not_computed_here() {
     let stamp = 1_757_000_000_000_000_000u64;
     // CTA_TIMESTAMP = 20 (вложенный), внутри CTA_TIMESTAMP_START = 1, be64 наносекунд.
     let view = view_of(&nested_raw(20, &tlv_be64(1, stamp)));
-    assert_eq!(view.started_at, Some(stamp), "как прислало ядро, без арифметики");
+    assert_eq!(
+        view.started_at,
+        Some(stamp),
+        "как прислало ядро, без арифметики"
+    );
 }
 
 /// IPv6 РАЗБИРАЕТСЯ, но ключом не становится. Отдай на IPv6-потоке четвёрку по умолчанию — ВСЕ они
