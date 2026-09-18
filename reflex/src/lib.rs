@@ -107,7 +107,9 @@ use reflex_core::serves::Served;
 /// канал, мёртвый читатель) от его отсутствия.
 pub use reflex_core::tap::{Offered, Tap};
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
-use reflex_core::timeout::Departure;
+/// ПРИЧИНА УХОДА — реэкспорт: она стоит публичным полем [`Parted::why`], и потребитель, считающий
+/// утрату в телеметрию, обязан её назвать, чтобы отличить снятое живое от снятого мёртвого.
+pub use reflex_core::timeout::Departure;
 use reflex_core::tls;
 /// КЛЮЧ ЦЕЛИ — реэкспорт: он стоит ПУБЛИЧНЫМ ПОЛЕМ [`Observed::key`], а `Observed` строит всякий,
 /// кто пишет свой транспорт. Брался через `reflex-engine`, где он лишь перепродан; имя родилось в
@@ -631,6 +633,20 @@ impl Transport for Tcp {
             state.talks.forget(wire.flow);
             state.idents.remove(&wire.flow);
         }
+        // ПОКАЗАНИЕ СНИМАЕТСЯ ПЕРВЫМ, И ЛИЧНОСТЬ ЗАВОДИТСЯ ТОЛЬКО ПОД НЕГО.
+        //
+        // Разбор состоялся, а наблюдения из него не вышло (`Talks` не всякий сегмент переводит в
+        // слово): кадр наш и целый — прятать нечего, потому `Foreign`, а не `Unread`. Но такая
+        // четвёрка не рождает и МАШИНЫ в таблице, а значит уборка по трём рубежам о ней никогда не
+        // услышит: хозяин снимает то, что у него есть. Заведи личность раньше показания — и она
+        // осталась бы висеть до конца процесса, в обход зеркала.
+        //
+        // Класс узкий (голый `ACK` без флагов, без данных и с ненулевым окном — мы подключились к
+        // чужому разговору не с начала), и объёма беды он не делает; чинится ради ПОЛНОТЫ: дыра в
+        // зеркале, о которой знаешь, хуже дыры, о которой не знаешь, — её видно и не стыдно.
+        let Some(tcp) = state.talks.read(&wire) else {
+            return Observation::Foreign;
+        };
         // Личность копится; отсутствие SNI не теряется — цель по адресу.
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
             dst: wire.dst,
@@ -639,17 +655,11 @@ impl Transport for Tcp {
             hello_at: None,
         });
         name_from_hello(ident, &wire);
-        let key = ident.key();
-        // Разбор состоялся, а наблюдения из него не вышло (`Talks` не всякий сегмент переводит в
-        // слово): кадр наш и целый — прятать нечего, потому `Foreign`, а не `Unread`.
-        match state.talks.read(&wire) {
-            Some(tcp) => Observation::Seen(Observed {
-                flow: wire.flow,
-                key,
-                wire: Reading::Tcp(tcp),
-            }),
-            None => Observation::Foreign,
-        }
+        Observation::Seen(Observed {
+            flow: wire.flow,
+            key: ident.key(),
+            wire: Reading::Tcp(tcp),
+        })
     }
 
     /// Обе карты разом: граница разговора и личность цели живут по одному ключу и уходят вместе.
@@ -1459,6 +1469,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             telling: None,
             severing: None,
             naming: None,
+            parting: None,
             transport: PhantomData,
         }
     }
@@ -1553,6 +1564,8 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     severing: Option<Severing<C::Carrier, S>>,
     /// Куда говорить имя разговора, если просили ([`Detecting::naming`]).
     naming: Option<reflex_core::Tap<Named>>,
+    /// Куда говорить об уходе разговора, если просили ([`Detecting::parting`]).
+    parting: Option<reflex_core::Tap<Parted>>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -1565,6 +1578,18 @@ pub struct Named {
     pub at: Instant,
 }
 
+/// РАЗГОВОР СНЯТ С НАБЛЮДЕНИЯ — слово наружу, с причиной.
+///
+/// Причина здесь не украшение отчёта: [`Departure::Ceiling`] снимает ЖИВОЕ (место кончилось у нас),
+/// прощание и срок — мёртвое. Считающий это в телеметрию обязан их различать: ненулевой поток по
+/// потолку значит «движку тесно, часть целей он перестал наблюдать», и это весть о НАС, а не о сети.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parted {
+    pub flow: Flow,
+    pub why: Departure,
+    pub at: Instant,
+}
+
 impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// ГОВОРИТЬ ИМЯ РАЗГОВОРА (#337 nevod). Разбор имени уже в горячем пути; дверь отдаёт его тому, кто
     /// видит разговор иначе — conntrack знает путь и байты, но не знает, кому они. Канал не ждёт:
@@ -1572,6 +1597,25 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     pub fn naming(self, tap: reflex_core::Tap<Named>) -> Detecting<C, T, H, S> {
         Detecting {
             naming: Some(tap),
+            ..self
+        }
+    }
+
+    /// ГОВОРИТЬ ОБ УХОДЕ РАЗГОВОРА — тем же портом и по той же причине, что [`Detecting::naming`]:
+    /// канал не ждёт, полный канал роняет весть и говорит об этом ([`Offered`]).
+    ///
+    /// Заведено по замеру потребителя (18.09.2026). Утрата по потолку УЖЕ объявлялась — значением
+    /// в [`Report::forgotten`], — но на боевом пути `Report` не приходит НИКОГДА: прогон не
+    /// кончается по построению, а `.heard()` отдаёт его лишь на ветви «носитель не открылся».
+    /// Объявление уходило потребителю, которого там нет, и владелец видел ровно то, от чего
+    /// страхует потолок: «прибор перестал видеть цель» — молча.
+    ///
+    /// Три рубежа идут ОДНОЙ дверью, а не тремя: причина стоит в слове ([`Parted::why`]), и кому
+    /// нужен только потолок, тот отфильтрует его сам. Три двери развели бы один предмет по трём
+    /// местам, и четвёртый рубеж потребовал бы четвёртой.
+    pub fn parting(self, tap: reflex_core::Tap<Parted>) -> Detecting<C, T, H, S> {
+        Detecting {
+            parting: Some(tap),
             ..self
         }
     }
@@ -1596,6 +1640,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             telling: self.telling,
             severing: self.severing,
             naming: self.naming,
+            parting: self.parting,
             transport: PhantomData,
         }
     }
@@ -2813,6 +2858,7 @@ where
             #[cfg(feature = "telling")]
             telling,
             naming,
+            parting,
             ..
         } = chain;
         let name = recipe.name();
@@ -2865,6 +2911,7 @@ where
             certify,
             about,
             naming,
+            parting,
             idle,
         };
         let state = T::State::default();
@@ -3054,9 +3101,23 @@ where
 
         voice.does(carrier, effects);
 
-        // Уборка на границе узла: слово о цели сказано раньше, среди букв (`Alive::walk`).
+        // УБОРКА — КАЖДЫЙ ОБОРОТ, а не на границе узла. Прежде она висела здесь же, внутри
+        // `if crossed.is_some()`, и это было ошибкой с ценой: снятие ключа делает ГОРЯЧИЙ ПУТЬ
+        // (`process`/`each`/`make_room`), а узел закрывается по НАБЛЮДЁННОМУ времени. Провод, у
+        // которого время идёт быстрее сетки — переигровка плотной записи, всплеск на живой
+        // очереди, — снимает тысячи ключей между двумя узлами, и все они ждут объявления в
+        // `departed`: состояние разбора не убирается, а сам список ухода растёт.
+        //
+        // Нашлось замером потребителя (18.09.2026): на плотном модельном времени зеркало трёх
+        // рубежей не давало НИЧЕГО — 50 000 четвёрок в микросекундном шаге, потолок снимает, а
+        // `forget` не зовётся ни разу, потому что узлов нет. На разреженном входе оно же резало
+        // память вдвое-втрое. Один и тот же закон, две разные картины — разница была в том, кто
+        // двигает уборку.
+        //
+        // Порядок сохранён: слово о цели говорится раньше, среди букв (`Alive::walk`), а уборка
+        // идёт после него в том же обороте.
+        alive.forget_evicted(state);
         if crossed.is_some() {
-            alive.forget_evicted(state);
             alive.certified(seeds, false);
         }
         true
@@ -3089,6 +3150,8 @@ struct Alive<C: Bordered, T: Transport, S> {
     about: Option<(Fold<S>, TargetVoice<S>)>,
     /// Куда говорить имя разговора — один раз, когда ключ цели впервые стал именем.
     naming: Option<reflex_core::Tap<Named>>,
+    /// Куда говорить об уходе разговора — по разу на снятый ключ, с причиной.
+    parting: Option<reflex_core::Tap<Parted>>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
     idle: Duration,
 }
@@ -3289,7 +3352,17 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             .iter()
             .filter(|(_flow, why)| matches!(why, Departure::Ceiling))
             .count();
-        for (flow, _why) in &departed {
+        // СЛОВО ОБ УХОДЕ — ТОМУ, КТО ПРОСИЛ, и здесь же, а не в `Report`: боевой прогон `Report`а
+        // не отдаёт никогда, и объявление уходило бы потребителю, которого на этом пути нет.
+        let at = Instant::now();
+        for (flow, why) in &departed {
+            if let Some(tap) = self.parting.as_ref() {
+                tap.emit(Parted {
+                    flow: *flow,
+                    why: *why,
+                    at,
+                });
+            }
             T::forget(state, flow);
             self.targets.remove(flow);
         }
@@ -3566,6 +3639,39 @@ mod tests {
 
     fn kept_bytes(ident: &Ident) -> usize {
         ident.hello.iter().map(|(_, bytes)| bytes.len()).sum()
+    }
+
+    /// ЛИЧНОСТЬ ЗАВОДИТСЯ ТОЛЬКО ПОД ПОКАЗАНИЕ — иначе она висит в обход зеркала.
+    ///
+    /// Кадр, из которого наблюдения не вышло, не рождает машины в таблице; значит уборка по трём
+    /// рубежам о такой четвёрке не услышит никогда — хозяин снимает то, что у него есть. Класс
+    /// узкий (голый `ACK`: без флагов, без данных, окно ненулевое — подключились к чужому разговору
+    /// не с начала), но дыра в зеркале должна быть закрыта, а не описана.
+    #[test]
+    fn no_identity_is_kept_for_a_frame_that_said_nothing() {
+        let mut state = TcpState::default();
+
+        let empty: [u8; 0] = [];
+        assert!(
+            matches!(
+                Tcp::observe(&mut state, Read::Tcp(client_wire(1000, &empty))),
+                Observation::Foreign
+            ),
+            "голый `ACK` показания не даёт"
+        );
+        assert_eq!(
+            state.idents.len(),
+            0,
+            "и личности по нему заводить нечего: снять её потом будет некому"
+        );
+
+        // А кадр, сказавший слово, личность заводит — иначе цель нечем ключевать.
+        let data = vec![7u8; 100];
+        assert!(matches!(
+            Tcp::observe(&mut state, Read::Tcp(client_wire(1000, &data))),
+            Observation::Seen(_)
+        ));
+        assert_eq!(state.idents.len(), 1, "показание есть — есть и личность");
     }
 
     /// ЧЕТВЁРКА ПЕРЕИСПОЛЬЗУЕТСЯ, и память прошлого разговора обязана уйти на открытии нового.

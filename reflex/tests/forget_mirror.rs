@@ -11,6 +11,7 @@
 //! проверяется не поле структуры, а обязанность двери — то, что увидит и всякий, кто напишет свой
 //! транспорт.
 
+use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -95,5 +96,41 @@ fn a_transport_without_per_conversation_memory_still_gets_told() {
     assert!(
         format!("{report:?}").contains("Report"),
         "прогон состоялся значением, а не паникой"
+    );
+}
+
+/// ЖИВОЙ СЧЁТ УТРАТЫ — то, чего у боевого пути не было вовсе.
+///
+/// `Report::forgotten` считает утрату по потолку значением, но боевой прогон `Report`а не отдаёт
+/// НИКОГДА: он не кончается по построению, а `.heard()` возвращает его лишь на ветви «носитель не
+/// открылся». Объявление уходило потребителю, которого там нет. Порт [`Detecting::parting`] отдаёт
+/// уход ВО ВРЕМЯ прогона и с причиной — по ней видно, сняли мёртвое или живое.
+#[test]
+fn partings_are_told_while_the_run_is_still_going() {
+    let (tx, rx) = mpsc::sync_channel(64);
+
+    let paper = Paper::new()
+        .then_packet(request(40011))
+        .silent_for(Duration::from_secs(30))
+        .then_packet(request(40012))
+        .silent_for(Duration::from_secs(1))
+        .then_stop();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .parting(Tap::new(tx))
+        .on(|_target, _distress| {})
+        .run();
+
+    let told: Vec<Parted> = rx.try_iter().collect();
+    assert!(
+        told.iter().any(|parted| parted.flow.src.port() == 40011),
+        "разговор ушёл по сроку — порт обязан был о нём сказать; сказано: {told:?}"
+    );
+    assert!(
+        told.iter().all(|parted| parted.why == Departure::Idle),
+        "и сказать ПРИЧИНУ: здесь снимали мёртвое, потолок ни при чём — {told:?}"
     );
 }
