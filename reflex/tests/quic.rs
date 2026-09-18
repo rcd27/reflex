@@ -435,3 +435,75 @@ fn on_datagrams_the_silence_door_names_a_target_that_never_answered() {
          дверь обязана назвать беду сама; услышано: {heard:?}"
     );
 }
+
+/// ПАРА к закону выше: цель, ОТВЕТИВШАЯ в пределах порога, беды не вызывает.
+///
+/// Без этой половины первый закон зелен по ложной причине: дверь, кричащая на всяком разговоре,
+/// прошла бы его так же. Правило 10.7 — зелёное не считается, пока не показана способность дать
+/// красный; здесь показывается обратная способность, промолчать.
+///
+/// Цена порога названа замером, а не догадкой: при пороге 300 мс и шаге сетки 200 мс слово
+/// рождается на узле 400 мс, и цель, чей первый ответ пришёл позже него, объявляется молчащей —
+/// живая, с RTT 450 мс, получает `NoBytes`. Потому порог ставится шире p99 времени первого ответа
+/// на своей земле, а этот закон держит только ближний край: ответ в пределах порога беды не даёт.
+#[test]
+fn a_datagram_target_that_answered_in_time_is_not_accused() {
+    use reflex_core::builder::UdpBuilder;
+    use reflex_core::types::{Flow, Protocol};
+
+    let flow = Flow {
+        src: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:443"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        protocol: Protocol::Udp,
+    };
+    let back = Flow {
+        src: "142.251.156.119:443"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        dst: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
+        protocol: Protocol::Udp,
+    };
+    let others = Flow {
+        src: "10.0.0.5:40001".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:53"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        protocol: Protocol::Udp,
+    };
+    let initial = real_initial();
+    let datagram = |flow: &Flow, payload: &[u8]| {
+        UdpBuilder::new()
+            .flow(flow)
+            .ttl(64)
+            .payload(payload)
+            .build()
+            .serialize()
+    };
+
+    // Цель ответила через 150 мс — раньше первого узла, на котором порог перейдён. Дальше лента
+    // живёт чужим трафиком ещё полсекунды: молчания после ответа тоже быть не должно.
+    let mut frames: Vec<(u32, Vec<u8>)> = vec![
+        (0, datagram(&flow, &initial)),
+        (150_000, datagram(&back, &vec![7u8; 1200])),
+    ];
+    frames.extend((1..=12).map(|i| (i * 50_000, datagram(&others, b"x"))));
+    frames.sort_by_key(|(at, _)| *at);
+    let path = std::env::temp_dir().join(format!("reflex-quic-live-{}.pcap", std::process::id()));
+    std::fs::write(&path, recording(&frames)).expect("временный файл записан");
+
+    let heard = std::sync::Mutex::new(Vec::new());
+    pcap(&path)
+        .from(Quic)
+        .extract(Sni)
+        .detect(Silence::after(std::time::Duration::from_millis(300)))
+        .on(|_target: &str, distress| heard.lock().expect("журнал не отравлен").push(distress))
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard.is_empty(),
+        "цель ответила в пределах порога — обвинять её не в чем; услышано: {heard:?}"
+    );
+}
