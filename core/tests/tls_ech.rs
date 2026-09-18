@@ -1,5 +1,5 @@
 #![cfg(feature = "tls")]
-//! ПРИЗНАК ECH В ClientHello (#317).
+//! ПРИЗНАК ECH В ClientHello.
 //!
 //! # Зачем этот прибор заводится ЗАРАНЕЕ
 //!

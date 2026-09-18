@@ -1,25 +1,20 @@
-//! In-memory DNS cache: maps IP addresses to domain names with TTL-based expiry.
+//! Соответствие «адрес → имя», собранное из наблюдённых ответов DNS. Ключ цели — ИМЯ (§4), а на
+//! проводе после разрешения остаётся один адрес: без этой карты связь «пакет → цель» теряется
+//! вместе с ответом, который её назвал.
 //!
-//! Used by Geneva for mapping destination IPs back to domain names.
-//! Populated from DNS response packets observed on the bridge interface.
-//!
-//! # Eviction
-//!
-//! - Expired entries are removed by `cleanup()` (called periodically).
-//! - When `max_entries` is exceeded on insert, the oldest entry (smallest
-//!   `inserted_at`) is evicted to make room.
+//! Карта ограничена ОБОИМИ краями, и края разные по природе. Срок (`ttl`) берётся из самого ответа:
+//! имя, пережившее свой TTL, называет уже не ту цель. Число записей — наш предел: наблюдатель
+//! ответов на объём чужого трафика не влияет, а память обязана остаться конечной (канон §4).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
-/// A cached DNS entry (private — callers only see domain via `lookup`).
 struct Entry {
     domain: String,
     expires_at: f64,
     inserted_at: f64,
 }
 
-/// IP -> domain cache with TTL expiry and bounded size.
 pub struct DnsCache {
     entries: HashMap<Ipv4Addr, Entry>,
     max_entries: usize,
@@ -33,10 +28,13 @@ impl DnsCache {
         }
     }
 
-    /// Insert a DNS response: each IP in `ips` maps to `domain`.
+    /// Ответ ложится ЦЕЛИКОМ: все адреса одного имени, а не первый из них. Отвечающий вправе
+    /// раздать имя по нескольким адресам и раздавать их в разном порядке — взяв один, мы потеряли
+    /// бы цель ровно на тех пакетах, что ушли к остальным.
     ///
-    /// If the cache exceeds `max_entries` after insertion, the oldest entry
-    /// (smallest `inserted_at`) is evicted.
+    /// Тесно становится ПОСЛЕ вставки, не вместо неё: свежий ответ входит всегда, а место под него
+    /// освобождают старые. Иначе полная карта перестала бы узнавать новое — и тем прочнее, чем
+    /// дольше живёт.
     pub fn insert(&mut self, domain: &str, ips: &[Ipv4Addr], ttl_secs: f64, now: f64) {
         for &ip in ips {
             self.entries.insert(
@@ -54,7 +52,8 @@ impl DnsCache {
         }
     }
 
-    /// Look up the domain for `ip`, returning `None` if missing or expired.
+    /// Истёкшая запись отвечает `None`, но из карты не уходит: чтение карту не правит. Уборка —
+    /// отдельный шаг ([`DnsCache::cleanup`]), и зовёт его тот, кто знает свой темп.
     pub fn lookup(&self, ip: Ipv4Addr, now: f64) -> Option<&str> {
         let entry = self.entries.get(&ip)?;
         if now <= entry.expires_at {
@@ -64,7 +63,6 @@ impl DnsCache {
         }
     }
 
-    /// Remove all expired entries.
     pub fn cleanup(&mut self, now: f64) {
         self.entries.retain(|_, entry| now <= entry.expires_at);
     }
@@ -77,7 +75,8 @@ impl DnsCache {
         self.entries.is_empty()
     }
 
-    /// Evict the entry with the smallest `inserted_at`.
+    /// Порядок вытеснения — по времени ВСТАВКИ, не по последнему чтению: срок записи назначил
+    /// отвечающий, и наше обращение к ней его не продлевает.
     fn evict_oldest(&mut self) {
         let oldest_ip = self
             .entries
