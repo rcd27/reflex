@@ -1,11 +1,13 @@
 use std::sync::{Arc, PoisonError, RwLock};
 use tokio::sync::broadcast;
 
-/// Current-value + broadcast. Like RxJS BehaviourSubject.
+/// ТЕКУЩЕЕ ЗНАЧЕНИЕ ПЛЮС РАССЫЛКА (Rx `BehaviourSubject`): `subscribe` даёт БУДУЩИЕ изменения, а
+/// снимок «прямо сейчас» спрашивается отдельно — `get`.
 ///
-/// - `get()` returns current value (clone)
-/// - `set()` updates current + broadcasts to all subscribers
-/// - `subscribe()` returns a broadcast receiver for future changes
+/// Значение лежит полем, а не только в канале, и это не удобство: `broadcast` не помнит сказанного
+/// тому, кто подписался позже, и без `current` поздний подписчик до первого `set` не отличал бы
+/// «ещё не говорили» от «значение таково». Клетку незнания (§7) пришлось бы тогда заводить каждому
+/// потребителю своим `Option`, и у скольких потребителей — столько и редакций этой клетки.
 pub struct Subject<T: Clone> {
     current: Arc<RwLock<T>>,
     tx: broadcast::Sender<T>,

@@ -2,16 +2,16 @@
 // документации, а не молчаливое предупреждение, которое ловят люди постфактум.
 #![deny(rustdoc::broken_intra_doc_links)]
 
-//! Runtime adapters for reflex-core.
+//! КРАЙ МИРА ДЛЯ ЧИСТОЙ МАШИНЫ. Всё, чему нужны часы, сигнал ОС, замок ядра, файл или
+//! конкурентность, живёт здесь; `reflex-core` остаётся морфизмом — типы, разбор, комбинаторы,
+//! чистые операторы потока.
 //!
-//! This crate holds everything that depends on a concrete async runtime (tokio),
-//! OS facilities (libc, std::fs, signals, pid files), or other system primitives.
-//! reflex-core itself stays pure: types, parsing, building, detection combinators, pure
-//! stream operators. Anything that needs a clock, an OS signal, or a process-wide channel
-//! lives here.
+//! Разрез не вкусовой, его требует канон: часов у морфизма нет, периодичность выражается буквой
+//! входа (§8), а мир вносится функтором извне (§9). Поднимись что-нибудь отсюда в `core` —
+//! носителем коалгебры станет `S × H` со скрытым входом `H` (Утв. 8.2), и переигровка (§10)
+//! перестанет быть переигровкой: порядок букв начнёт зависеть не от одних букв.
 
-// ЛЕСТНИЦА ПРОБ — вторая ось: `core` держит шаг, `runtime` держит конкурентность. Докблок модуля
-// объясняет, почему она не в фундаменте, и под каким условием эта ось вообще заводится.
+// ЛЕСТНИЦА ПРОБ — вторая ось того же разреза: `core` держит шаг, `runtime` держит конкурентность.
 pub mod ladder;
 
 pub mod clock;

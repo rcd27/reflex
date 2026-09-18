@@ -1,10 +1,10 @@
-/// Wait for a shutdown signal (platform-specific).
+/// ПРОСЬБА ЗАВЕРШИТЬСЯ — ОДНА ДВЕРЬ НА ВСЕ ШТАТНЫЕ СИГНАЛЫ, а не на один. Unix: первый пришедший
+/// из SIGINT, SIGTERM, SIGHUP. Прочие платформы: Ctrl+C либо закрытие консоли.
 ///
-/// - Unix (Linux, macOS): resolves on SIGINT, SIGTERM, or SIGHUP (whichever comes first).
-/// - Windows: resolves on Ctrl+C or console close event.
-///
-/// This replaces `tokio::signal::ctrl_c()` in daemon code to handle
-/// all standard termination signals.
+/// `tokio::signal::ctrl_c()` на эту роль не годится: systemd и docker просят демона уйти SIGTERM,
+/// и слушающий один SIGINT по просьбе НЕ выходит — его добивают по истечении срока, то есть
+/// SIGKILL, на котором корректного завершения уже нет. Отдельная дверь на сигнал завела бы вторую
+/// точку решения о выходе, и две разошлись бы молча; дверь здесь одна.
 pub async fn shutdown_signal() {
     #[cfg(unix)]
     {

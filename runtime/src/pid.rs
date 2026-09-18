@@ -27,17 +27,16 @@ impl From<io::Error> for PidError {
     }
 }
 
-/// Single-instance guard built on an advisory file lock (`flock`).
+/// ЕДИНСТВЕННОСТЬ ЭКЗЕМПЛЯРА ДЕРЖИТ ЗАМОК ЯДРА (`flock`), А НЕ СОДЕРЖИМОЕ ФАЙЛА. Замок привязан к
+/// открытому дескриптору и снимается ядром при завершении процесса — в том числе по SIGKILL и при
+/// крахе, когда убрать за собой некому. Оттого guard невосприимчив к переиспользованию PID и к
+/// сбросу pid-namespace при рестарте контейнера.
 ///
-/// Взаимное исключение держится на замке ядра, а не на содержимом файла:
-/// замок привязан к открытому дескриптору и снимается ядром при завершении
-/// процесса (в т.ч. по SIGKILL/краху). Поэтому guard невосприимчив к
-/// переиспользованию PID и к сбросу PID-namespace при рестарте контейнера —
-/// в отличие от прежней проверки `kill(pid, 0)`, которая принимала чужой/свой
-/// переиспользованный PID за «уже запущенный демон».
+/// `kill(pid, 0)` отвергнут как свидетель: он свидетельствует о СУЩЕСТВОВАНИИ номера, а спрошено о
+/// ВЛАДЕНИИ, и чужой процесс, занявший освободившийся номер, читался бы как «демон уже запущен».
 ///
-/// PID в файле — чисто информационный (для подсказки `kill -TERM <pid>`),
-/// на корректность не влияет.
+/// PID в файле — ИНФОРМАЦИОННЫЙ (подсказка для `kill -TERM <pid>`): на корректность не влияет и
+/// источником истины не служит, истину держит замок.
 #[derive(Debug)]
 pub struct PidGuard {
     path: PathBuf,
@@ -81,13 +80,13 @@ impl PidGuard {
         &self.path
     }
 
-    /// Inspects whether a *running* daemon currently owns the lock on `path`.
-    /// Returns the owning pid if the lock is held, `None` otherwise.
+    /// КТО ВЛАДЕЕТ ЗАМКОМ НА `path` ПРЯМО СЕЙЧАС: `Some(pid)` — замок держит живой демон, `None` —
+    /// живого держателя нет. Спрашивается замок, не число в файле (докблок [`PidGuard`]).
     ///
-    /// Use this from admin subcommands that must refuse to mutate state owned
-    /// by a running daemon (e.g. an nft-cleanup tool). A stale pidfile left by
-    /// a dead daemon reports `None` — its lock was released by the kernel on
-    /// process death, so cleanup is safe.
+    /// Дверь для админских подкоманд, которым запрещено трогать состояние живого демона (уборка
+    /// nft). Осиротевший pid-файл мёртвого демона даёт `None` честно: замок ядро сняло при смерти
+    /// процесса, и уборка безопасна — отсутствие владельца здесь ЗАМЕРЕНО попыткой взять замок, а
+    /// не выведено из того, что файл остался.
     pub fn live_owner(path: &PathBuf) -> Option<u32> {
         let mut file = OpenOptions::new().read(true).write(true).open(path).ok()?;
         match try_lock_exclusive(&file) {
