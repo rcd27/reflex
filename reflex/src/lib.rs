@@ -1143,26 +1143,63 @@ where
 ///
 /// Край — ПАРАМЕТР `E`, а не conntrack: прибор читает закон [`EdgeView`], и другой носитель ставит
 /// сюда свой край, не трогая ни строки парка.
-/// Проводная половина двери [`Silence`]: прибор тишины, у которого отнято слово `NoBytes`.
+/// Проводная половина двери [`Silence`]: прибор тишины, у которого слово `NoBytes` отнято — но
+/// только на СОЕДИНЕНИЯХ, и не по вкусу, а по условию канона.
 ///
-/// Отнято не по вкусу: `NoBytes` — утверждение обо ВСЕЙ истории разговора («не отвечала вовсе»), а
-/// свидетелем истории до своего рождения провод не является — её знает край, у которого счёт ведёт
-/// ядро. Скажи оба — потребитель считал бы две беды там, где она одна.
+/// Утв. 7.5 даёт три клетки, в которых тождественное молчание законно; фильтр стоит на третьей —
+/// «отсутствие имеет независимого свидетеля». На TCP свидетель есть: `NoBytes` утверждает обо ВСЕЙ
+/// истории разговора («не отвечала вовсе»), а её знает край, у которого счёт ведёт ядро, и
+/// выражает он её веткой `up.packets == 1` — «пришёл только `SYN+ACK` и смолк». Скажи оба —
+/// потребитель считал бы две беды там, где она одна (охраняется прогоном:
+/// `reflex/tests/recording.rs`, мутант без фильтра даёт две `NoBytes` подряд).
+///
+/// НА ДАТАГРАММАХ СВИДЕТЕЛЯ НЕТ, и клетка (в) пуста: фазы «только `SYN+ACK`» у них не бывает,
+/// молчащая цель даёт краю `up.packets == 0` — другой класс, другое слово (`Blackhole`) и другой
+/// момент. Момент важнее всего: ct-вид едет С ПАКЕТОМ, на тике краевой прибор тождественен, а
+/// следующий пакет здесь есть повтор клиента по PTO (`srtt + 4×rttvar` ≈ 999 мс, RFC 9002). То есть
+/// отнятое слово не говорит НИКТО, и молчание двери становится неотличимо от «беды нет» — ровно то
+/// отображение дефекта наблюдателя в утверждение о мире, которое запрещает Утв. 7.2.
+///
+/// Замер, оплативший разделение: 413 датаграмм QUIC под тихим дропом, 11 бед — все `Retransmit` с
+/// `after_ms` 999–1000, ни одной от двери тишины; порог, опущенный до 300 мс, эффекта не дал, ибо
+/// открывал ветку, ведущую в вырезанное слово. Цена решения названа прямо: на датаграммах об одном
+/// разговоре теперь бывают ДВА слова — `NoBytes` от провода по своим часам и `Blackhole` от края,
+/// когда клиент повторит. Слова разные (окно против возраста), и первое приходит втрое раньше.
+///
+/// Ветка транспорта — состояние РАЗГОВОРА, а не буква: называет её первое же наблюдение провода,
+/// дальше идут одни часы, и спросить букву тика о транспорте нечем.
 #[derive(Clone, Copy)]
-struct Stalling(reflex_instrument::detect::SilenceInstrument);
+struct Stalling {
+    machine: reflex_instrument::detect::SilenceInstrument,
+    /// Разговор датаграммный — свидетеля у отсутствия нет. `None` — провода ещё не видели, и слово
+    /// отнимается: до первого наблюдения неизвестно, кому оно принадлежит.
+    datagram: Option<bool>,
+}
 
 impl Mealy for Stalling {
-    type In = DetectorEvent<Seen>;
+    /// ШИРОКОЕ слово провода, а не общее: половине нужна ВЕТКА транспорта, а она живёт только здесь.
+    /// Сужение к алфавиту прибора делает тот же чеканщик, что и лифт (`narrow`), — второй копии
+    /// правила «пакет чужой буквы шаг пропускает» не заводим.
+    type In = DetectorEvent<Reading>;
     type Out = SmallVec<[Distress; 2]>;
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
-        let (machine, said, _noted) = self.0.step(event);
+        let datagram = match &event {
+            DetectorEvent::Packet { input, .. } => Some(matches!(input, Reading::Udp(_))),
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => self.datagram,
+        };
+        let Some(event) = narrow::<Reading, Seen>(&event) else {
+            return (Stalling { datagram, ..self }, SmallVec::new(), ());
+        };
+        let (machine, said, _noted) = self.machine.step(event);
         let said = said
             .into_iter()
-            .filter(|word| !matches!(word, Distress::NoBytes))
+            .filter(|word| datagram == Some(true) || !matches!(word, Distress::NoBytes))
             .collect();
-        (Stalling(machine), said, ())
+        (Stalling { machine, datagram }, said, ())
     }
 }
 
@@ -1171,9 +1208,10 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
     type Home = MarkWriter;
     fn place(self, layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
         Placed::Both(
-            lift::<Wide<Reading, E>, Seen, _, Distress, Distress>(Stalling(
-                reflex_instrument::detect::SilenceInstrument::after(self.after),
-            )),
+            lift::<Wide<Reading, E>, Reading, _, Distress, Distress>(Stalling {
+                machine: reflex_instrument::detect::SilenceInstrument::after(self.after),
+                datagram: None,
+            }),
             Box::new(AtEdge {
                 machine: EdgeSilence::<E>::new(self.after, layout),
                 alphabet: PhantomData,

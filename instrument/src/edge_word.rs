@@ -48,6 +48,17 @@ impl<V> Reads<(Reading, V)> for Seen {
     }
 }
 
+/// Сужение к САМОМУ ШИРОКОМУ слову провода: прибор, которому нужна ещё и ветка транспорта, читает
+/// `Reading` целиком. Вид края он всё так же не трогает — расслоение носителя то же (§4).
+/// Заведено для проводной половины двери тишины: чьё слово законно отнимать, зависит от того, есть
+/// ли у отсутствия независимый свидетель (канон, Утв. 7.5в), а свидетель у соединений и датаграмм
+/// разный.
+impl<V> Reads<(Reading, V)> for Reading {
+    fn read(wide: &(Reading, V)) -> Option<Reading> {
+        Some(wide.0.clone())
+    }
+}
+
 impl<V> Reads<(Reading, V)> for SeenTcp {
     fn read(wide: &(Reading, V)) -> Option<SeenTcp> {
         <SeenTcp as Reads<Reading>>::read(&wide.0)

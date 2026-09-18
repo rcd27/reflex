@@ -362,3 +362,76 @@ fn the_edge_instrument_speaks_on_datagrams_too() {
          услышано: {heard:?}"
     );
 }
+
+/// ПРЕДМЕТ: на датаграммах дверь тишины называет «цель не ответила вовсе» ПО СВОИМ ЧАСАМ — раньше,
+/// чем клиент повторит открытие.
+///
+/// Канон, Утв. 7.5: тождественное молчание законно лишь при (а) слове о наблюдателе, (б) выводе без
+/// отсутствия или (в) независимом свидетеле отсутствия. Слово `NoBytes` отнято у проводной половины
+/// двери по доводу (в) — свидетель есть край. На датаграммах довод не держится: краевой прибор
+/// выражает этот класс веткой `up.packets == 1` («пришёл только `SYN+ACK` и смолк»), а у датаграмм
+/// такой фазы нет — молчащая цель даёт ноль, и край говорит об этом другим словом (`Blackhole`) и
+/// только по приходу СЛЕДУЮЩЕГО пакета, ибо ct-вид едет с пакетом. Свидетеля нет — значит и
+/// молчать нечем.
+///
+/// Цена, которой закон оплачен: первый заход человека по QUIC теряется целиком. Прибор повтора
+/// заперт в чужом таймере (первый PTO клиента ≈ 999 мс, RFC 9002), краевой ждёт того же пакета, а
+/// порог в 300 мс, выставленный потребителем, открывал ветку, ведущую в вырезанное слово, и эффекта
+/// не имел — замер на стенде: 413 датаграмм, 11 бед, все `Retransmit` с `after_ms` 999–1000.
+#[test]
+fn on_datagrams_the_silence_door_names_a_target_that_never_answered() {
+    use reflex_core::builder::UdpBuilder;
+    use reflex_core::types::Protocol;
+
+    let flow = reflex_core::types::Flow {
+        src: "10.0.0.5:40000".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:443"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        protocol: Protocol::Udp,
+    };
+    // Чужой разговор той же машины: его кадры двигают узлы сетки, а нашему разговору не говорят
+    // ничего. Без них лента кончилась бы на первом же пакете, и тишина проверялась бы концом
+    // записи, а не порогом.
+    let others = reflex_core::types::Flow {
+        src: "10.0.0.5:40001".parse::<std::net::SocketAddr>().unwrap(),
+        dst: "142.251.156.119:53"
+            .parse::<std::net::SocketAddr>()
+            .unwrap(),
+        protocol: Protocol::Udp,
+    };
+    let initial = real_initial();
+    let datagram = |flow: &reflex_core::types::Flow, payload: &[u8]| {
+        UdpBuilder::new()
+            .flow(flow)
+            .ttl(64)
+            .payload(payload)
+            .build()
+            .serialize()
+    };
+
+    // Клиент открыл разговор и умолк; запись длится полсекунды — короче любого PTO, дольше порога.
+    let frames: Vec<(u32, Vec<u8>)> = [(0u32, datagram(&flow, &initial))]
+        .into_iter()
+        .chain((1..=5).map(|i| (i * 100_000, datagram(&others, b"x"))))
+        .collect();
+    let path = std::env::temp_dir().join(format!("reflex-quic-mute-{}.pcap", std::process::id()));
+    std::fs::write(&path, recording(&frames)).expect("временный файл записан");
+
+    let heard = std::sync::Mutex::new(Vec::new());
+    pcap(&path)
+        .from(Quic)
+        .extract(Sni)
+        .detect(Silence::after(std::time::Duration::from_millis(300)))
+        .on(|_target: &str, distress| heard.lock().expect("журнал не отравлен").push(distress))
+        .run();
+
+    let heard = heard.into_inner().expect("журнал не отравлен");
+    assert!(
+        heard
+            .iter()
+            .any(|distress| matches!(distress, Distress::NoBytes)),
+        "цель молчит полсекунды при пороге 300 мс, а повтора клиента ещё не было — \
+         дверь обязана назвать беду сама; услышано: {heard:?}"
+    );
+}
