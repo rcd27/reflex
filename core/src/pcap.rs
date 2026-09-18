@@ -156,6 +156,67 @@ const SLL2_HEADER: usize = 20;
 /// Обрыв в конце не отменяет прочитанного: `tcpdump`, убитый сигналом, оставляет хвост, а выбросить
 /// из-за него сутки записи значило бы терять данные из-за того, КАК их перестали снимать. Оттого
 /// кадры и беда отдаются вместе, а не через `Result`: судит вызывающий.
+/// ЧТЕНИЕ ПО КАДРУ — ЗАПИСЬ В ПАМЯТИ ОДИН РАЗ, А НЕ ДВА.
+///
+/// [`read`] отдаёт все кадры разом, и каждый несёт СВОЮ копию тела: на пике в памяти лежат и файл,
+/// и его разобранная копия, то есть около 2× веса записи. Замер 18.09.2026: запись 43,68 МБ давала
+/// 90,4 МБ пика на голой цепочке, и это ДО первого разобранного пакета. Гигабайтная запись дала бы
+/// два.
+///
+/// Хуже того, это врало всякому, кто мерил память переигровкой: вес прибора рос линейно с числом
+/// кадров — неотличимо от утечки. На этом сгорело два вечерних вывода, наш и потребителя.
+///
+/// Здесь состояние без заимствования (`data` подаётся на каждый шаг): курсор, а не итератор. Иначе
+/// носитель, владеющий байтами и отдающий срезы в них же, стал бы самоссылочным — а он владеет
+/// байтами по необходимости (файл читается один раз и живёт весь прогон).
+#[derive(Debug, Clone, Copy)]
+pub struct Cursor {
+    base: Instant,
+    first: u64,
+    swapped: bool,
+    link: Link,
+    at: usize,
+}
+
+/// Открыть запись под чтение по кадру: разобрать заголовок, найти первый штамп (от него считаются
+/// интервалы) и ОСМОТРЕТЬ ХВОСТ. Осмотр здесь, а не при исчерпании, потому что обрыв — свойство
+/// записи, и сказать о нём надо тому, кто её открывает; тел он при этом не копирует.
+pub fn opened(data: &[u8], base: Instant) -> Result<(Cursor, Option<Broken>), Broken> {
+    let (swapped, link) = header(data)?;
+    let first = offsets(data, swapped)
+        .next()
+        .and_then(|offset| record_at(data, offset, swapped))
+        .map(|(stamp, _bytes, _original)| stamp);
+    // Пустая запись — не ошибка чтения: заголовок цел, кадров нет. Курсор отдаёт `None` с первого
+    // же шага, и решает об этом тот, кто открывал, — ему видно, чем такое молчание назвать.
+    Ok((
+        Cursor {
+            base,
+            first: first.unwrap_or(0),
+            swapped,
+            link,
+            at: GLOBAL_HEADER,
+        },
+        tail_of(data, swapped),
+    ))
+}
+
+impl Cursor {
+    /// Следующий кадр записи. Копируется ровно одно тело — то, которое сейчас поедет в разбор.
+    pub fn next(&mut self, data: &[u8]) -> Option<Frame> {
+        let (stamp, bytes, original) = record_at(data, self.at, self.swapped)?;
+        let frame = Frame {
+            at: self.base + Duration::from_micros(stamp.saturating_sub(self.first)),
+            wall: UNIX_EPOCH + Duration::from_micros(stamp),
+            bytes: bytes.to_vec(),
+            link: self.link,
+            original,
+        };
+        self.at += RECORD_HEADER + bytes.len();
+        Some(frame)
+    }
+}
+
 pub fn read(data: &[u8], base: Instant) -> (Vec<Frame>, Option<Broken>) {
     match header(data) {
         Err(broken) => (Vec::new(), Some(broken)),

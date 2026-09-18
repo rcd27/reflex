@@ -123,11 +123,19 @@ pub fn pcap(path: impl AsRef<Path>) -> Engine<Recording> {
     engine(Recording::at(path))
 }
 
-/// Открытая запись: кадры и курсор. Состояния сверх курсора нет — файл не отвечает миру, и
+/// Открытая запись: БАЙТЫ и курсор по ним. Состояния сверх курсора нет — файл не отвечает миру, и
 /// хранить ему нечего.
+///
+/// Кадры разбираются ПО ОДНОМУ, а не все разом, и это не бережливость, а честность прибора: разбор
+/// всей записи вперёд держал бы в памяти и файл, и его копию — около 2× веса. Замер 18.09.2026:
+/// 43,68 МБ записи давали 90,4 МБ пика ДО первого разобранного пакета, и этот вес подмешивался в
+/// КАЖДЫЙ замер памяти на переигровке — линейно по числу кадров, то есть неотличимо от утечки.
 pub struct PcapFile {
-    frames: Vec<Frame>,
-    next: usize,
+    bytes: Vec<u8>,
+    cursor: reflex_core::pcap::Cursor,
+    /// Кадр, прочитанный вперёд: им и только им отличается «запись кончилась» от «сейчас дам».
+    /// [`Serves::exhausted`] спрашивают ДО работы, и ответить на него, не заглянув, нечем.
+    pending: Option<Frame>,
 }
 
 /// Файлу нечем отказать: вердикт никуда не едет, отказать некому.
@@ -215,7 +223,7 @@ impl Serves for PcapFile {
     where
         F: FnOnce(&Held<Vec<u8>>, Option<NoEdge>) -> (),
     {
-        match self.frames.get(self.next) {
+        match self.pending.take() {
             Some(frame) => {
                 // `restored`, а не `bytes`: разбор провода ждёт IP-заголовок первым байтом, а в
                 // записи перед ним лежит канальный слой. Снимает его `core::pcap` — там известен
@@ -223,7 +231,7 @@ impl Serves for PcapFile {
                 // приборы считают байты длиной тела, и без этого запись движка (`record`), где у
                 // ответов цели остаются одни заголовки, читалась бы как молчание цели.
                 let held = Held::new(frame.restored(), frame.at);
-                self.next += 1;
+                self.pending = self.cursor.next(&self.bytes);
                 let answer = decide(&held, None);
                 Served::Answered(self.apply(held.answered(answer)))
             }
@@ -234,7 +242,7 @@ impl Serves for PcapFile {
     }
 
     fn exhausted(&self) -> bool {
-        self.next >= self.frames.len()
+        self.pending.is_none()
     }
 }
 
@@ -250,8 +258,17 @@ impl IntoCarrier for Recording {
         })?;
         // Основание — «сейчас»: абсолютного времени записи приборам не нужно, им нужны ИНТЕРВАЛЫ
         // (окно тишины, возраст разговора), а их `read` сохраняет.
-        let (frames, broken) = reflex_core::pcap::read(&data, std::time::Instant::now());
-        match (frames.is_empty(), broken) {
+        let (mut cursor, broken) = reflex_core::pcap::opened(&data, std::time::Instant::now())
+            .map_err(|broken| {
+                Cause(format!(
+                    "запись не разобрана ({}): {broken:?}",
+                    self.path.display()
+                ))
+            })?;
+        // Первый кадр читается ЗДЕСЬ: им отвечается вопрос «есть ли в записи хоть что-то», и он же
+        // становится тем, что носитель отдаст первым оборотом.
+        let pending = cursor.next(&data);
+        match (pending.is_none(), broken) {
             // Пустой файл — не ошибка чтения, но и не наблюдение: сказать о нём нечего, и цикл
             // выйдет сразу. Причина названа, чтобы «ничего не найдено» не читалось как «чисто».
             (true, why) => Err(Cause(format!(
@@ -266,9 +283,17 @@ impl IntoCarrier for Recording {
             // настоящее. Урон назван в отчёте, а не спрятан.
             (false, Some(broken)) => {
                 crate::report!("запись оборвана, читаю до обрыва: {broken:?}");
-                Ok(Local::new(PcapFile { frames, next: 0 }))
+                Ok(Local::new(PcapFile {
+                    bytes: data,
+                    cursor,
+                    pending,
+                }))
             }
-            (false, None) => Ok(Local::new(PcapFile { frames, next: 0 })),
+            (false, None) => Ok(Local::new(PcapFile {
+                bytes: data,
+                cursor,
+                pending,
+            })),
         }
     }
 
