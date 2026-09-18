@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
-use crate::detector::DetectorEvent;
+use crate::detector::{DetectorEvent, Ended};
 use crate::mealy::Mealy;
 use crate::types::Flow;
 
@@ -34,6 +34,7 @@ where
     D: Mealy<In = DetectorEvent<In>>,
     K: Eq + Hash + Clone,
     In: Clone,
+    D: Ended,
 {
     /// `idle_timeout` — сколько машина ключа может молчать до эвикта на тике. Иначе затихший ключ
     /// тикается вечно (утечка + спам наблюдаемости). Задаётся по окну детектора (напр. 2×).
@@ -48,6 +49,13 @@ where
 
     /// Пакет — в машину своего ключа; наружу пара, которую та сказала. Ключ вычисляет вызывающий
     /// (он знает, чей вход подал) — метка на каждом пакете стоила бы клона в горячем пути.
+    ///
+    /// МАШИНА, ОБЪЯВИВШАЯ КОНЕЦ, УБИРАЕТСЯ ЗДЕСЬ ЖЕ, не дожидаясь простоя (§12.6, [`Ended`]).
+    /// Спрашивают её ПОСЛЕ шага: она сперва говорит последнее слово — снятая молча, она потеряла
+    /// бы беду последнего окна, тот же порядок, что и при эвикте по простою в [`FlowTable::each`].
+    ///
+    /// Прежде исчерпанный разговор занимал место весь `idle_timeout`, хотя знал о своём конце:
+    /// приборы прощание слушали (`instrument`), а память — нет.
     pub fn process(&mut self, key: K, input: &In, at: Instant) -> (D::Out, D::Log) {
         let machine = self
             .machines
@@ -57,8 +65,15 @@ where
             input: input.clone(),
             at,
         });
-        self.machines.insert(key.clone(), machine);
-        self.last_seen.insert(key, at);
+        match machine.ended() {
+            true => {
+                self.last_seen.remove(&key);
+            }
+            false => {
+                self.machines.insert(key.clone(), machine);
+                self.last_seen.insert(key, at);
+            }
+        }
         (said, noted)
     }
 
@@ -150,6 +165,7 @@ mod tests {
 
         #[derive(Clone)]
         struct Counter(usize);
+        impl crate::detector::Ended for Counter {}
         impl Mealy for Counter {
             type In = DetectorEvent<UdpDatagram>;
             type Out = SmallVec<[Count; 2]>;
@@ -194,6 +210,8 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct TickPing;
+    impl crate::detector::Ended for TickPing {}
+
     impl Mealy for TickPing {
         type In = DetectorEvent<TcpSegment>;
         type Out = SmallVec<[(); 2]>;

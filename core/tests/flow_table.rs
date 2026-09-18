@@ -29,6 +29,10 @@ struct RstCounter {
     count: u32,
 }
 
+/// Сброс концом НЕ объявляется: для этого дерева `RST` — беда (возможно, поддельная), а не
+/// прощание. Машина живёт дальше и считает следующие.
+impl reflex_core::detector::Ended for RstCounter {}
+
 impl Mealy for RstCounter {
     type In = DetectorEvent<TcpSegment>;
     type Out = SmallVec<[Count; 2]>;
@@ -228,4 +232,65 @@ fn normalize_reverses_high_port_source() {
     assert_eq!(said.as_slice(), &[Count(1)]);
     // Both directions should be in the same flow entry
     assert_eq!(table.flow_count(), 1);
+}
+
+/// МАШИНА, ОБЪЯВИВШАЯ КОНЕЦ, УХОДИТ ИЗ ТАБЛИЦЫ СРАЗУ — не дожидаясь простоя (§12.6: уборка
+/// выводится из алфавита; у разговора с прощанием она наступает раньше срока).
+///
+/// Держать исчерпанный разговор до истечения `idle_timeout` значит копить улику из чужих пауз и
+/// занимать память тем, чего уже нет. Прежде так и было: приборы прощание слушали, память — нет.
+#[test]
+fn машина_объявившая_конец_уходит_не_дожидаясь_простоя() {
+    #[derive(Debug, Clone, Default)]
+    struct Farewell {
+        done: bool,
+    }
+
+    /// Предмет исчерпан, когда сторона ПОПРОЩАЛАСЬ (`FIN`). Сброс сюда не входит намеренно.
+    impl reflex_core::detector::Ended for Farewell {
+        fn ended(&self) -> bool {
+            self.done
+        }
+    }
+
+    impl Mealy for Farewell {
+        type In = DetectorEvent<TcpSegment>;
+        type Out = SmallVec<[Count; 2]>;
+        type Log = ();
+
+        fn step(mut self, event: Self::In) -> (Self, Self::Out, ()) {
+            if let DetectorEvent::Packet { input: ref seg, .. } = event {
+                if seg.flags.is_fin() {
+                    self.done = true;
+                    // ПОСЛЕДНЕЕ СЛОВО СКАЗАНО: машину снимают после шага, не вместо него.
+                    return (self, smallvec::smallvec![Count(1)], ());
+                }
+            }
+            (self, SmallVec::new(), ())
+        }
+    }
+
+    let mut table: FlowTable<Farewell, Flow> =
+        FlowTable::new(Duration::from_secs(3600), |_flow| Farewell::default());
+
+    let живой = make_segment(40000, 443, TcpFlags::ACK);
+    table.process(normalize_flow(живой.flow()), &живой, Instant::now());
+    assert_eq!(table.flow_count(), 1, "разговор идёт — машина на месте");
+
+    let сброс = make_segment(40000, 443, TcpFlags::RST);
+    table.process(normalize_flow(сброс.flow()), &сброс, Instant::now());
+    assert_eq!(
+        table.flow_count(),
+        1,
+        "сброс концом не объявлен: поддельный RST — предмет наблюдения, а не конец предмета"
+    );
+
+    let прощание = make_segment(40000, 443, TcpFlags::FIN);
+    let (said, _) = table.process(normalize_flow(прощание.flow()), &прощание, Instant::now());
+    assert_eq!(said.as_slice(), &[Count(1)], "последнее слово сказано");
+    assert_eq!(
+        table.flow_count(),
+        0,
+        "предмет исчерпан — память освобождена сразу, а не через час простоя"
+    );
 }

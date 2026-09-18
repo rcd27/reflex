@@ -108,6 +108,11 @@ enum LocalEvent {
     Mark(u32),
 }
 
+/// Конца этот счёт не объявляет: он видит кадры и марку, а прощание не различает — область
+/// убирается сроком (§12.6). Заяви он конец по догадке, разговор снимался бы с учёта по признаку,
+/// которого носитель не наблюдает.
+impl crate::detector::Ended for Counts {}
+
 impl Mealy for Counts {
     type In = DetectorEvent<LocalEvent>;
     type Out = ();
