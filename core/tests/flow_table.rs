@@ -1,6 +1,7 @@
 use reflex_core::detector::DetectorEvent;
 use reflex_core::flow_table::{normalize_flow, FlowTable};
 use reflex_core::mealy::Mealy;
+use reflex_core::timeout::Departure;
 use reflex_core::types::{Flow, HasFlow, Protocol, TcpFlags, TcpOptions, TcpSegment};
 use reflex_core::word::{Base, Word};
 use smallvec::SmallVec;
@@ -329,15 +330,22 @@ fn the_ceiling_keeps_memory_finite_even_when_nobody_falls_silent() {
         "потолок держит: без него вошли бы все тысяча"
     );
 
-    let forgotten = table.forgotten();
+    let departed = table.departed();
     assert_eq!(
-        forgotten.len(),
+        departed.len(),
         1000 - CEILING,
         "каждая утрата названа: снимали ЖИВЫХ, и молчание о них неотличимо от «разговора не было»"
     );
+    assert!(
+        departed
+            .iter()
+            .all(|(_key, why)| matches!(why, Departure::Ceiling)),
+        "и названа ПРИЧИНОЙ: по этому ключу помнит не только таблица, а убрать своё может лишь \
+         тот, кто узнал об уходе — причина говорит ему, мёртвое сняли или живое"
+    );
 
     assert!(
-        table.forgotten().is_empty(),
+        table.departed().is_empty(),
         "объявления забирают один раз — второй раз говорить не о чем"
     );
 }
