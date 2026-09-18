@@ -75,7 +75,12 @@ fn identifiers_are_written_in_latin_letters() {
         for (number, line) in text.lines().enumerate() {
             if declares_cyrillic_name(line) {
                 let short = file.strip_prefix(&root).unwrap_or(file);
-                cyrillic.push(format!("{}:{}: {}", short.display(), number + 1, line.trim()));
+                cyrillic.push(format!(
+                    "{}:{}: {}",
+                    short.display(),
+                    number + 1,
+                    line.trim()
+                ));
             }
         }
     }
