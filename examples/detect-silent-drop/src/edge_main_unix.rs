@@ -115,7 +115,13 @@ pub fn main() {
                 println!("[край] {distress}");
             }
             // Памятка (если есть) уезжает в марку RMW — чужие биты целы; иначе марку не трогаем.
-            let _ = socket.verdict(packet.id, true, memo.map(|memo| CtMark(memo.apply_to(view.mark))), None, None);
+            let _ = socket.verdict(
+                packet.id,
+                true,
+                memo.map(|memo| CtMark(memo.apply_to(view.mark))),
+                None,
+                None,
+            );
         }
     }
 }

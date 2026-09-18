@@ -194,7 +194,7 @@ impl<T: crate::word::Word> Mealy for Timeout<T> {
             // Порядок здесь ЗНАЧАЩИЙ, а не косметика: гард различает буквы по ПРИЧИНЕ
             // (`hides_observation`, один закон на дерево), а арм ниже — по ИМЕНИ. Стой арм `Opaque`
             // выше, `Opaque { why: Truncated }` уходил бы в тождество, и обрезанный кадр —
-            // единственная прячущая буква, доезжающая с боевого пути (`Transport::observe`), — не
+            // единственная прячущая буква, доезжающая от носителя (`Transport::observe`), — не
             // снимал бы `idle_certain`. Проверено тестом
             // `core/tests/timeout.rs::a_truncated_frame_hides_the_verdict_about_the_world`: верни
             // прежний порядок армов — он краснеет.

@@ -11,7 +11,7 @@ description = "Носитель WinDivert для reflex — свидетель �
 reflex-core = { path = "../core" }
 reflex-instrument = { path = "../instrument" }
 
-# Фасад нужен только боевому носителю (`carrier.rs` под `cfg(windows)`); `witness.rs` собирается на
+# Фасад нужен только носителю под Windows (`carrier.rs` под `cfg(windows)`); `witness.rs` собирается на
 # любой платформе и потому границу способностей воспроизводит своим кодом, а не импортом `Act`.
 [target.'cfg(windows)'.dependencies]
 reflex = { path = "../reflex" }

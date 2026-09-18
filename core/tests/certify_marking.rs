@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 type Downhill = Rc<RefCell<Vec<Vec<u8>>>>;
-/// СКОЛЬКО ПАКЕТОВ С МЕТКОЙ ПРОЧИТАЛ ТОТ, КТО НИЖЕ. В бою — счётчик правила `meta mark`.
+/// СКОЛЬКО ПАКЕТОВ С МЕТКОЙ ПРОЧИТАЛ ТОТ, КТО НИЖЕ. На живом ядре — счётчик правила `meta mark`.
 type Tally = Rc<RefCell<usize>>;
 
 const MARK: u32 = 0x2a;

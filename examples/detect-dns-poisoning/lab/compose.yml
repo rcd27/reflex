@@ -1,4 +1,4 @@
-# Стенд detect-dns-poisoning: боевая верификация инжекта NXDOMAIN на реальном ТСПУ вантажа.
+# Стенд detect-dns-poisoning: проверка на реальном трафике инжекта NXDOMAIN на реальном ТСПУ вантажа.
 # Транспорт Udp (порт 53) — первая цель, где .from не TCP.
 services:
   engine:

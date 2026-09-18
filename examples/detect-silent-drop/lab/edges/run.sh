@@ -50,7 +50,7 @@ nft add rule  inet reflex_edges inp_ct    tcp sport 443 queue num 200
 nft add chain inet reflex_edges inp_local '{ type filter hook input priority -140; policy accept; }'
 nft add rule  inet reflex_edges inp_local tcp sport 443 queue num 201
 
-# 3. Боевой трафик — МОЛОТОМ, не одиночной пробой: краевой прибор судит по возрасту потока, и одному
+# 3. Реальный трафик — МОЛОТОМ, не одиночной пробой: краевой прибор судит по возрасту потока, и одному
 #    соединению редко случается пережить порог под наблюдением (тот же урок, что в `lab/engine`).
 hammer() {
   pids=""

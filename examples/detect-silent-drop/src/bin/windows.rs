@@ -28,7 +28,7 @@ fn main() -> reflex::Report {
         .from(Tcp)
         .extract(Sni)
         .detect(Retransmit::unanswered()) // быстрое подозрение — по повтору клиента
-        .detect(Silence::after(secs(5)))  // медленное подтверждение — по окну тишины
+        .detect(Silence::after(secs(5))) // медленное подтверждение — по окну тишины
         .on(|target, distress| match distress {
             Distress::Retransmit { after_ms } => {
                 report!("подозрение на тихий дроп: {target} (повтор через {after_ms}мс)")

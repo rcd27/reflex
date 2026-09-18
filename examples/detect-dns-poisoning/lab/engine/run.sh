@@ -1,5 +1,5 @@
 #!/bin/sh
-# Внутри контейнера: движок на очереди UDP:53 + боевые DNS-запросы через реальный ТСПУ вантажа.
+# Внутри контейнера: движок на очереди UDP:53 + настоящие DNS-запросы через реальный ТСПУ вантажа.
 # Цель — домен со стабильным инжектом NXDOMAIN; контроль — домашний домен (настоящий ответ).
 set -u
 
@@ -25,7 +25,7 @@ nft add rule  inet reflex_lab out udp dport 53 queue num 200
 nft add chain inet reflex_lab inp '{ type filter hook input priority -150; policy accept; }'
 nft add rule  inet reflex_lab inp udp sport 53 queue num 200
 
-# Боевые запросы напрямую к публичному резолверу (мимо системного stub).
+# Реальные запросы напрямую к публичному резолверу (мимо системного stub).
 dig +tries=1 +time=3 "@$RESOLVER" "$TARGET"  A >/dev/null 2>&1 || true
 dig +tries=1 +time=3 "@$RESOLVER" "$CONTROL" A >/dev/null 2>&1 || true
 
@@ -42,7 +42,7 @@ GOT=0;         grep -q "отравление DNS: $TARGET" "$LOG" && GOT=1
 CONTROL_HIT=0; grep -q "$CONTROL"                "$LOG" && CONTROL_HIT=1
 echo "[итог] отравление=$GOT (ждём 1)  контроль=$CONTROL_HIT (ждём 0)"
 if [ "$GOT" = 1 ] && [ "$CONTROL_HIT" = 0 ]; then
-  echo "[итог] ЗЕЛЕНО: отравление DNS «$TARGET» поймано на боевом трафике; «$CONTROL» чист"
+  echo "[итог] ЗЕЛЕНО: отравление DNS «$TARGET» поймано на реальном трафике; «$CONTROL» чист"
   exit 0
 fi
 echo "[итог] КРАСНО"

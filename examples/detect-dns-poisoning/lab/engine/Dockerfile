@@ -4,7 +4,7 @@ COPY . .
 RUN cargo build --release -p detect-dns-poisoning
 
 FROM debian:bookworm-slim
-# dnsutils — dig для боевого DNS-запроса; nftables — очередь.
+# dnsutils — dig для настоящего DNS-запроса; nftables — очередь.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       nftables iproute2 dnsutils ca-certificates \
  && rm -rf /var/lib/apt/lists/*

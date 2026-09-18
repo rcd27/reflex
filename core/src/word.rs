@@ -63,7 +63,8 @@ impl Base for Nobody {
 }
 
 /// Охват `⊆`: `Packet ⊂ Conversation ⊂ Target`. Канон §5. Порядок объявлен, не выведен;
-/// транзитивность (`Packet: Within<Target>`) — рукой, ибо спуск через уровень существует в бою.
+/// транзитивность (`Packet: Within<Target>`) — рукой, ибо спуск через уровень встречается на
+/// настоящем трафике.
 pub trait Within<Wider: Base>: Base {}
 
 impl Within<Conversation> for Packet {}

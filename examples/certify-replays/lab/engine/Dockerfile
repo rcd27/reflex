@@ -7,7 +7,7 @@ COPY . .
 RUN cargo build --release -p certify-replays
 
 FROM debian:bookworm-slim
-# nftables — поставить очередь; curl — погнать боевой трафик; ca-certificates — TLS.
+# nftables — поставить очередь; curl — погнать реальный трафик; ca-certificates — TLS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       nftables iproute2 curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*

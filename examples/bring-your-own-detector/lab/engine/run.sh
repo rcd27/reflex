@@ -1,5 +1,5 @@
 #!/bin/sh
-# Внутри контейнера: движок с ПОТРЕБИТЕЛЬСКИМ прибором на очереди + боевой трафик через реальный
+# Внутри контейнера: движок с ПОТРЕБИТЕЛЬСКИМ прибором на очереди + реальный трафик через реальный
 # аплинк (ТСПУ вантажа). Доказываем: чужой движку автомат Мили ловит тихий дроп на живом трафике.
 set -u
 
@@ -24,7 +24,7 @@ nft add rule  inet reflex_lab out tcp dport 443 queue num 200
 nft add chain inet reflex_lab inp '{ type filter hook input priority -150; policy accept; }'
 nft add rule  inet reflex_lab inp tcp sport 443 queue num 200
 
-# Боевой трафик: цель повиснет (max-time держит дольше порога 3с), контроль пройдёт. Мимо прокси.
+# Реальный трафик: цель повиснет (max-time держит дольше порога 3с), контроль пройдёт. Мимо прокси.
 curl -s4 --noproxy '*' --max-time 10 "https://$TARGET/"  >/dev/null 2>&1 &
 curl -s4 --noproxy '*' --max-time 8  "https://$CONTROL/" >/dev/null 2>&1 || true
 
@@ -42,7 +42,7 @@ HIT=0; grep -q "свой прибор поймал тишину: $TARGET" "$LOG"
 CONTROL_HIT=0; grep -q "$CONTROL" "$LOG" && CONTROL_HIT=1
 echo "[итог] свой_прибор_поймал=$HIT (ждём 1)  контроль=$CONTROL_HIT (ждём 0)"
 if [ "$HIT" = 1 ] && [ "$CONTROL_HIT" = 0 ]; then
-  echo "[итог] ЗЕЛЕНО: чужой движку автомат поймал тихий дроп «$TARGET» на боевом трафике; «$CONTROL» чист"
+  echo "[итог] ЗЕЛЕНО: чужой движку автомат поймал тихий дроп «$TARGET» на реальном трафике; «$CONTROL» чист"
   exit 0
 fi
 echo "[итог] КРАСНО"

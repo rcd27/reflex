@@ -135,7 +135,7 @@ fn seen(state: &mut QuicState, payload: &[u8], dir: Dir) -> Seen {
     };
     match Quic::observe(state, Read::Udp(datagram)) {
         // Сужаем до общего словаря тем же законом, что и цепочка (`Reading::anywhere`): второй
-        // способ сужения в тесте разошёлся бы с боевым молча.
+        // способ сужения в тесте разошёлся бы с тем, что делает цепочка, молча.
         Observation::Seen(observed) => observed
             .wire
             .anywhere()

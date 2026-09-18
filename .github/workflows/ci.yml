@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Боевые стенды живут отдельно (`examples/*/lab/`) и в CI не гоняются — им нужен реальный ТСПУ,
+      # Стенды на реальном трафике живут отдельно (`examples/*/lab/`) и в CI не гоняются — им нужен реальный ТСПУ,
       # которого у раннера нет. Здесь проверяется дерево, а не мир.
       #
       # СВОЁ СЕТЕВОЕ ПРОСТРАНСТВО всё же нужно: три витнеса ядра (`os/tests/netlink_link_event.rs`,

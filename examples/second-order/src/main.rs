@@ -44,9 +44,9 @@ impl Mealy for Every {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             DetectorEvent::Packet { .. } => (self, smallvec![Distress::NoBytes], ()),
-            DetectorEvent::Tick { .. } | DetectorEvent::Opaque { .. } | DetectorEvent::Torn { .. } => {
-                (self, SmallVec::new(), ())
-            }
+            DetectorEvent::Tick { .. }
+            | DetectorEvent::Opaque { .. }
+            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
         }
     }
 }
@@ -64,8 +64,8 @@ fn series(notes: impl Iterator<Item = Note>, since: Instant) -> BTreeMap<Box<str
         let Some(bytes) = note.edge.and_then(|edge| edge.down_bytes) else {
             continue;
         };
-        let window = note.at.saturating_duration_since(since).as_millis() as u64
-            / WINDOW.as_millis() as u64;
+        let window =
+            note.at.saturating_duration_since(since).as_millis() as u64 / WINDOW.as_millis() as u64;
         // Внутри окна берём ПОСЛЕДНЕЕ накопление: оно и есть «сколько прошло к концу окна».
         windows
             .entry(note.target.clone())
@@ -113,15 +113,16 @@ fn main() -> std::process::ExitCode {
         report!("{target}: ряд по окнам {rates:?}");
         // Прибор второго порядка судит ряд ОДНИМ шагом: состояния у него нет, весь предмет во
         // входе. Оттого он и не встаёт в цепочку — цепочка кормит буквами, а не рядами.
-        let (_instrument, said, ()) =
-            SagInstrument.step(DetectorEvent::packet_now(rates.clone()));
+        let (_instrument, said, ()) = SagInstrument.step(DetectorEvent::packet_now(rates.clone()));
         match said.first() {
             None => report!("  просадки нет (либо ряд короче четырёх окон — прибор слеп, не пуст)"),
             Some(Sag {
                 at_window,
                 before_bps,
                 after_bps,
-            }) => report!("  ПРОСАДКА на окне {at_window}: было {before_bps} Б/с, стало {after_bps}"),
+            }) => {
+                report!("  ПРОСАДКА на окне {at_window}: было {before_bps} Б/с, стало {after_bps}")
+            }
         }
     }
 
