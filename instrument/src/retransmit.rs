@@ -230,6 +230,14 @@ mod tests {
         static START: Instant = Instant::now();
     }
 
+    /// Повтор приветствия. Место в потоке этому прибору безразлично — он судит «вниз ничего».
+    fn resent() -> Seen {
+        Seen::Resent {
+            count: 517,
+            from: 0,
+        }
+    }
+
     fn packet(seen: Seen, ms: u64) -> DetectorEvent<Seen> {
         DetectorEvent::Packet {
             input: seen,
@@ -251,7 +259,7 @@ mod tests {
         let (instrument, quiet, _) = instrument.step(packet(hello(), 0));
         assert!(quiet.is_empty(), "первая просьба бедой не является");
 
-        let (_instrument, said, _) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
+        let (_instrument, said, _) = instrument.step(packet(resent(), 360));
 
         assert_eq!(
             said.as_slice(),
@@ -267,7 +275,7 @@ mod tests {
         let (instrument, _, _) = instrument.step(packet(hello(), 0));
         let (instrument, _, _) = instrument.step(packet(Seen::Received { count: 1400 }, 120));
 
-        let (_instrument, said, _) = instrument.step(packet(Seen::Resent { count: 517 }, 480));
+        let (_instrument, said, _) = instrument.step(packet(resent(), 480));
 
         assert!(
             said.is_empty(),
@@ -280,8 +288,8 @@ mod tests {
     fn only_the_first_repeat_speaks() {
         let instrument = RetransmitInstrument::new();
         let (instrument, _, _) = instrument.step(packet(hello(), 0));
-        let (instrument, first, _) = instrument.step(packet(Seen::Resent { count: 517 }, 360));
-        let (_instrument, second, _) = instrument.step(packet(Seen::Resent { count: 517 }, 1080));
+        let (instrument, first, _) = instrument.step(packet(resent(), 360));
+        let (_instrument, second, _) = instrument.step(packet(resent(), 1080));
 
         assert_eq!(first.len(), 1, "первый повтор говорит");
         assert!(second.is_empty(), "второй повтор о том же молчит");
@@ -296,7 +304,7 @@ mod tests {
         // цель ответила 1400 байт — но носитель объявил потерю, и наблюдение до нас не дошло
         let (instrument, _, _) = instrument.step(DetectorEvent::Torn { at: at(120) });
 
-        let (_instrument, said, _) = instrument.step(packet(Seen::Resent { count: 517 }, 480));
+        let (_instrument, said, _) = instrument.step(packet(resent(), 480));
 
         assert!(
             said.is_empty(),

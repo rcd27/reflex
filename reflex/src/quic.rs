@@ -246,6 +246,12 @@ impl Transport for Quic {
                             talk.retries = talk.retries.saturating_add(1);
                             Seen::Resent {
                                 count: payload.len() as u32,
+                                // Место повтора — начало первого куска crypto: у датаграмм
+                                // номеров потока нет, а смещение в crypto и есть «какой кусок».
+                                from: pieces
+                                    .first()
+                                    .map(|(offset, _)| *offset as u32)
+                                    .unwrap_or(0),
                             }
                         }
                         // Первое открытие: отдаём ГОЛОВУ, чтобы цепочка узнала цель по имени тем

@@ -2,7 +2,19 @@
 //! Байты атрибутов собираются здесь руками: `netlink`-сборка крейт-приватна, а тест обязан кормить
 //! разбор тем, что кладёт ядро.
 
-use reflex_linux::conntrack::{view_of, CtEnds, CtTcp};
+use reflex_linux::conntrack::{view_of, CtDst, CtEnds, CtTcp};
+
+/// Переписан ли адрес назначения — бит `IPS_DST_NAT` (5) в `CTA_STATUS` (3), big-endian. Без статуса —
+/// `Unknown`: «не переписан» при отсутствии атрибута было бы ложью. Номера сверяет стенд, не этот тест.
+#[test]
+fn dst_nat_is_read_from_status_and_absence_is_unknown() {
+    assert_eq!(
+        view_of(&tlv_be32(3, (1 << 5) | 0b1010)).dst,
+        CtDst::Rewritten
+    );
+    assert_eq!(view_of(&tlv_be32(3, 0b1010)).dst, CtDst::Kept);
+    assert_eq!(view_of(&tlv_be32(8, 7)).dst, CtDst::Unknown);
+}
 
 /// Один атрибут netlink: заголовок (длина без паддинга + тип) и тело, выровненное до четырёх.
 fn tlv_bytes(kind: u16, body: &[u8]) -> Vec<u8> {

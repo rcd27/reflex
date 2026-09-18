@@ -4,7 +4,9 @@
 
 use std::time::Duration;
 
-use crate::netlink::{attrs, be16_at, be32_at, be64_at, portion_of, Portion};
+use crate::netlink::{
+    aligned, attrs, be16_at, be32_at, be64_at, portion_of, u16_at, u32_at, Portion, HDR,
+};
 
 /// Сколько прошло в одну сторону по счёту ЯДРА.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -33,6 +35,28 @@ pub struct Entry {
     /// Состояние по мнению ядра. Нужно тому, кто решает, какую запись можно забыть без вреда:
     /// `SynSent` — рукопожатия не было, рвать нечего.
     pub tcp: Option<CtTcp>,
+    /// Переписан ли адрес назначения. Решение «увести» действует на НОВЫЙ разговор (NAT решается на
+    /// первом пакете), и только этот бит отличает разговор, уже уведённый, от висящего на прежнем пути.
+    pub dst: CtDst,
+}
+
+/// Судьба адреса назначения по мнению ЯДРА (`IPS_DST_NAT` в `CTA_STATUS`). `Unknown` — статуса в записи
+/// не было: «не переписан» было бы ложью, неотличимой от правды.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CtDst {
+    #[default]
+    Unknown,
+    Kept,
+    Rewritten,
+}
+
+impl CtDst {
+    fn of_status(status: u32) -> CtDst {
+        match status & IPS_DST_NAT {
+            0 => CtDst::Kept,
+            _rewritten => CtDst::Rewritten,
+        }
+    }
 }
 
 /// TCP-состояние разговора по мнению ЯДРА (из `CTA_PROTOINFO`). Свой автомат TCP не нужен — ядро
@@ -104,10 +128,14 @@ pub struct CtView {
     pub expires_in: Option<Duration>,
     pub tcp: Option<CtTcp>,
     pub mark: u32,
+    pub dst: CtDst,
 }
 
 const NFGEN: usize = 4;
 const CTA_TUPLE_ORIG: u16 = 1;
+const CTA_STATUS: u16 = 3;
+/// `IPS_DST_NAT_BIT = 5` в `enum ip_conntrack_status` (`nf_conntrack_common.h`).
+const IPS_DST_NAT: u32 = 1 << 5;
 const CTA_MARK: u16 = 8;
 const CTA_COUNTERS_ORIG: u16 = 9;
 const CTA_COUNTERS_REPLY: u16 = 10;
@@ -317,6 +345,10 @@ pub fn view_of(body: &[u8]) -> CtView {
             tcp: tcp_of(value),
             ..built
         },
+        CTA_STATUS => CtView {
+            dst: be32_at(value, 0).map(CtDst::of_status).unwrap_or(built.dst),
+            ..built
+        },
         CTA_ID => CtView {
             id: be32_at(value, 0).unwrap_or(built.id),
             ..built
@@ -334,7 +366,87 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
         reply_counts: view.up,
         mark: view.mark,
         tcp: view.tcp,
+        dst: view.dst,
     })
+}
+
+/// Что случилось с разговором по словам ЯДРА — подписчику групп NEW/UPDATE/DESTROY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtKind {
+    /// Запись заведена: `IPCTNL_MSG_CT_NEW` с `NLM_F_CREATE`.
+    Born,
+    /// Запись сменила статус или состояние: `IPCTNL_MSG_CT_NEW` без `NLM_F_CREATE`.
+    Changed,
+    /// Запись снята: `IPCTNL_MSG_CT_DELETE`, со счётом за всю жизнь разговора.
+    Died,
+}
+
+/// Событие conntrack. Момента в нём нет: ядро его не шлёт, и ставит его тот, кто прочёл сокет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CtEvent {
+    pub kind: CtKind,
+    pub entry: Entry,
+    /// Цель ответила хотя бы одним пакетом (`IPS_SEEN_REPLY`).
+    pub replied: bool,
+}
+
+const IPCTNL_MSG_CT_NEW: u16 = 0;
+const IPCTNL_MSG_CT_DELETE: u16 = 2;
+const NLM_F_CREATE: u16 = 0x400;
+/// `IPS_SEEN_REPLY_BIT = 1` в `enum ip_conntrack_status`.
+const IPS_SEEN_REPLY: u32 = 1 << 1;
+
+fn replied_of(payload: &[u8]) -> bool {
+    payload
+        .get(NFGEN..)
+        .into_iter()
+        .flat_map(attrs)
+        .find(|(kind, _)| *kind == CTA_STATUS)
+        .and_then(|(_, value)| be32_at(value, 0))
+        .is_some_and(|status| status & IPS_SEEN_REPLY != 0)
+}
+
+fn event_of(kind: u16, flags: u16, payload: &[u8]) -> Option<CtEvent> {
+    let happened = match (kind & 0xff, flags & NLM_F_CREATE) {
+        (IPCTNL_MSG_CT_NEW, 0) => Some(CtKind::Changed),
+        (IPCTNL_MSG_CT_NEW, _created) => Some(CtKind::Born),
+        (IPCTNL_MSG_CT_DELETE, _) => Some(CtKind::Died),
+        (_other, _) => None,
+    };
+    happened
+        .zip(entry_of(payload))
+        .map(|(kind, entry)| CtEvent {
+            kind,
+            entry,
+            replied: replied_of(payload),
+        })
+}
+
+/// События из одного чтения сокета подписки. Своим обходом, а не [`portion_of`]: у подписки нет
+/// `NLMSG_DONE`, а род события различает флаг заголовка, которого тот разбору не отдаёт. Обрыв на
+/// хвосте — остановка, а не чтение наугад.
+pub fn events_of(buffer: &[u8]) -> Vec<CtEvent> {
+    std::iter::successors(Some(buffer), |rest| {
+        u32_at(rest, 0)
+            .map(|len| aligned(len as usize))
+            .filter(|len| *len >= HDR)
+            .and_then(|len| rest.get(len..))
+    })
+    .map_while(|rest| {
+        match (
+            u32_at(rest, 0).map(|len| len as usize),
+            u16_at(rest, 4),
+            u16_at(rest, 6),
+        ) {
+            (Some(len), Some(kind), Some(flags)) if len >= HDR && len <= rest.len() => Some(
+                rest.get(HDR..len)
+                    .and_then(|payload| event_of(kind, flags, payload)),
+            ),
+            (_, _, _) => None,
+        }
+    })
+    .flatten()
+    .collect()
 }
 
 /// Разбор порции дампа. Обход сообщений — общий с вопросами маршрутизатору

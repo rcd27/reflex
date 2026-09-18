@@ -81,6 +81,11 @@ name = "ct-dump"
 path = "examples/ct-dump.rs"
 required-features = ["conntrack"]
 
+[[example]]
+name = "ct-events"
+path = "examples/ct-events.rs"
+required-features = ["conntrack"]
+
 # ТОЖДЕСТВО РАЗГОВОРА НА СТЫКЕ ДВУХ КРЕЙТОВ: `parse::keyed_of_orig` (переносимый разбор) обязан
 # давать тот же ключ, что кортеж ORIG у `conntrack::Tuple` (знание ядра). Закон о СОГЛАСИИ двух, и
 # потому живёт здесь: `reflex-engine` о conntrack не знает и знать не должен, а этот крейт знает

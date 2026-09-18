@@ -45,9 +45,12 @@ use crate::wire::Seen;
 
 /// Сколько повторов ОДНОГО сегмента при живой цели считаем выборочным дропом.
 ///
-/// Два, а не один: первый повтор бывает от обычной потери, и кричать по нему значило бы обвинять
-/// сеть в цензуре на каждой пачке. Ряд повторов при живой цели — уже заявление пути.
-const ENOUGH: u32 = 2;
+/// ТРИ, А НЕ ДВА — ЗАМЕР СТЕНДА 16.09 (#332). Второй повтор того же сегмента подряд — тоже обычная
+/// потеря: быстрый повтор теряется сам, и через RTO уходит следующий (запись заливки при потере 2 %:
+/// кадры 1261 и 1263, 252 мс, без свежих байтов между ними — и по этому продукт порвал заливку).
+/// При потере p третья потеря подряд — p³ (при 2 % ≈ 1 на 125 000 сегментов); буква оплачена шестью
+/// повторами хвоста приветствия. ЦЕНА: настоящее проглатывание называется на один RTO позже.
+const ENOUGH: u32 = 3;
 
 /// Прибор выборочного дропа: клиент повторяет, цель жива.
 ///
@@ -61,6 +64,9 @@ pub struct SwallowInstrument<V> {
     repeats: u32,
     /// Момент первого повтора — величина в слове есть ожидание человека с него.
     since: Option<std::time::Instant>,
+    /// КАКОЙ сегмент повторяется — место в потоке клиента. Повтор другого места есть
+    /// восстановление другой потери, и счёт начинается с него заново (#332).
+    segment: Option<u32>,
     /// Уже сказали.
     fired: bool,
     edge: std::marker::PhantomData<fn() -> V>,
@@ -85,6 +91,7 @@ impl<V> SwallowInstrument<V> {
         SwallowInstrument {
             repeats: 0,
             since: None,
+            segment: None,
             fired: false,
             edge: std::marker::PhantomData,
         }
@@ -135,14 +142,18 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
         match input.narrow {
             // ПОВТОР КЛИЕНТА ПРИ ЖИВОЙ ЦЕЛИ — предмет. Живость спрашивается у КРАЯ, потому что
             // подтверждения без данных в проводе события не рождают.
-            Some(Seen::Resent { .. }) if alive(edge) => {
-                let repeats = self.repeats.saturating_add(1);
-                let since = self.since.or(Some(at));
+            Some(Seen::Resent { from, .. }) if alive(edge) => {
+                let (repeats, since) = match self.segment == Some(from) {
+                    true => (self.repeats.saturating_add(1), self.since.or(Some(at))),
+                    false => (1, Some(at)),
+                };
+                let segment = Some(from);
                 match (repeats >= ENOUGH, self.fired) {
                     (true, false) => (
                         SwallowInstrument {
                             repeats,
                             since,
+                            segment,
                             fired: true,
                             ..self
                         },
@@ -153,10 +164,11 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
                         }],
                         (),
                     ),
-                    _ => (
+                    (true, true) | (false, _) => (
                         SwallowInstrument {
                             repeats,
                             since,
+                            segment,
                             ..self
                         },
                         SmallVec::new(),
@@ -166,8 +178,14 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
             }
             // ЦЕЛЬ ОТДАЛА БАЙТЫ — сегмент прошёл, счёт с нуля. Иначе долгая закачка с редкими
             // потерями однажды дала бы ложную тревогу.
+            //
+            // СВЕЖИЕ БАЙТЫ КЛИЕНТА — ТОЖЕ ПРОХОД (#332): клиент пошёл дальше, значит повторённый
+            // сегмент дошёл. На заливке цель отвечает голыми подтверждениями, событий из них нет, и
+            // без этого счёт копил повторы разных сегментов часами — долгий туннель рвался на
+            // обычной потере. Заморозка так не выглядит: окно стоит, нового клиент не шлёт.
             Some(Seen::Received { .. })
             | Some(Seen::Restated { .. })
+            | Some(Seen::Sent { .. })
             | Some(Seen::Payload {
                 from_client: false, ..
             }) => (
@@ -179,10 +197,9 @@ impl<V: EdgeView> reflex_core::mealy::Mealy for SwallowInstrument<V> {
                 SmallVec::new(),
                 (),
             ),
-            // Прочее счёта не трогает: свежая просьба клиента — не повтор, прощание кончает
-            // разговор, а повтор при МЁРТВОЙ цели есть предмет прибора повтора, не наш.
+            // Прочее счёта не трогает: прощание кончает разговор, а повтор при МЁРТВОЙ цели есть
+            // предмет прибора повтора, не наш.
             Some(Seen::Resent { .. })
-            | Some(Seen::Sent { .. })
             | Some(Seen::Closed { .. })
             | Some(Seen::Payload {
                 from_client: true, ..
@@ -228,9 +245,10 @@ impl<V: EdgeView> crate::Instrument for SwallowInstrument<V> {
         "ЖИВОСТЬ БЕРЁТСЯ У КРАЯ, значит наследует его предел: край, ведущий счёт по дошедшим до \
          НАС кадрам (`Local`), при нашей же дыре занизит `up_packets` — и прибор промолчит там, \
          где цель на самом деле отвечала. Ошибка в сторону молчания, не в сторону обвинения.",
-        "ПОРОГ В ДВА ПОВТОРА ВЫБРАН ПО РОДУ, А НЕ ПО ЗАМЕРУ. Одиночный повтор — обычная потеря, \
-         это известно; сколько повторов отличают цензуру от плохого канала — не замерено, и \
-         число будет уточняться первой же записью, где путь просто плох.",
+        "ПОРОГ В ТРИ ПОВТОРА УТОЧНЁН ЗАПИСЬЮ ПЛОХОГО ПУТИ (стенд 16.09, #332): при потере 2 % \
+         второй повтор того же сегмента подряд случается сам — быстрый повтор теряется, и уходит \
+         RTO. Третья потеря подряд — p³. Очень плохой канал (потеря в десятки процентов) даст \
+         ложную тревогу и при трёх — число не замерено выше 2 %.",
     ];
 
     /// Оракулы: выборочный дроп хвоста при живом разговоре — и контроль, где повторы идут при
@@ -299,8 +317,40 @@ mod tests {
         }
     }
 
+    /// Повтор одного и того же сегмента — предмет прибора.
     fn resent() -> Option<Seen> {
-        Some(Seen::Resent { count: 174 })
+        resent_of(7000)
+    }
+
+    fn resent_of(from: u32) -> Option<Seen> {
+        Some(Seen::Resent { count: 174, from })
+    }
+
+    /// ЗАПИСЬ ПЛОХОГО ПУТИ №2 (стенд 16.09, потеря 2 %, #332): восстановление по SACK — клиент
+    /// перепосылает ТРИ РАЗНЫХ потерянных сегмента подряд за 1,8 мс, свежих байтов между ними нет
+    /// (кадры 7486/7488/7490: `seq` 8848981, 8855921, 8857309). Порог по числу повторов это не
+    /// различает — только место повтора.
+    #[test]
+    fn repeats_of_different_segments_are_recovery_not_a_swallowed_one() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) = instrument.step(letter(resent_of(8848981), 900, now));
+        let (instrument, _, ()) = instrument.step(letter(
+            resent_of(8855921),
+            901,
+            now + Duration::from_millis(1),
+        ));
+        let (_instrument, said, ()) = instrument.step(letter(
+            resent_of(8857309),
+            902,
+            now + Duration::from_millis(2),
+        ));
+
+        assert!(
+            said.is_empty(),
+            "три разные потери, каждая повторена раз — сеть теряет, а не глотает один кусок"
+        );
     }
 
     /// ПРЕДМЕТ: клиент повторяет один и тот же сегмент, а цель ПОДТВЕРЖДАЕТ (жива на транспорте).
@@ -314,12 +364,40 @@ mod tests {
         let (instrument, said, ()) = instrument.step(letter(resent(), 3, now));
         assert!(said.is_empty(), "первый повтор — обычная потеря");
 
-        let (_instrument, said, ()) =
+        let (instrument, said, ()) =
             instrument.step(letter(resent(), 3, now + Duration::from_millis(250)));
+        assert!(
+            said.is_empty(),
+            "второй повтор подряд — тоже обычная потеря (#332)"
+        );
+
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 3, now + Duration::from_millis(750)));
         assert_eq!(
             said.as_slice(),
-            [Distress::Swallowed { after_ms: 250 }],
+            [Distress::Swallowed { after_ms: 750 }],
             "ряд повторов при живой цели обязан быть назван, и величина — ожидание человека"
+        );
+    }
+
+    /// ЗАПИСЬ ПЛОХОГО ПУТИ, ПО КОТОРОЙ ПРОДУКТ ПОРВАЛ ЗАЛИВКУ (стенд 16.09, потеря 2 %, #332):
+    /// быстрый повтор сегмента, через 252 мс — повтор того же по RTO, свежих байтов между ними нет.
+    /// Это восстановление после потери, а не проглатывание: следом клиент пошёл бы дальше.
+    #[test]
+    fn a_fast_retransmit_followed_by_an_rto_retransmit_is_ordinary_loss() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) =
+            instrument.step(letter(Some(Seen::Sent { count: 1388 }), 900, now));
+        let (instrument, said, ()) =
+            instrument.step(letter(resent(), 901, now + Duration::from_millis(2)));
+        assert!(said.is_empty(), "быстрый повтор — обычная потеря");
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 902, now + Duration::from_millis(254)));
+        assert!(
+            said.is_empty(),
+            "повтор по RTO того же сегмента — потерялся и быстрый повтор; рвать заливку нельзя"
         );
     }
 
@@ -353,6 +431,55 @@ mod tests {
             instrument.step(letter(resent(), 4, now + Duration::from_millis(250)));
 
         assert!(said.is_empty(), "после прохода сегмента счёт начинается заново");
+    }
+
+    /// СВЕЖИЕ БАЙТЫ КЛИЕНТА МЕЖДУ ПОВТОРАМИ — ПРОХОД, А НЕ ПРОГЛАТЫВАНИЕ (#332).
+    ///
+    /// Долгая заливка (VPN-туннель через коробку, большой запрос) с редкими потерями: цель отвечает
+    /// голыми подтверждениями, событий из них нет, и счёт без этого правила копил повторы РАЗНЫХ
+    /// сегментов сколько угодно долго. Второй повтор — «проглочено», обрыв, `ECONNRESET` у
+    /// человека: 67 обрывов туннеля за полчаса на канарейке 16.09.
+    #[test]
+    fn fresh_bytes_from_the_client_between_repeats_mean_the_segment_passed() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) = instrument.step(letter(resent(), 3, now));
+        let (instrument, _, ()) = instrument.step(letter(
+            Some(Seen::Sent { count: 1400 }),
+            40,
+            now + Duration::from_millis(900),
+        ));
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 60, now + Duration::from_secs(4)));
+
+        assert!(
+            said.is_empty(),
+            "клиент пошёл дальше новыми байтами — прежний сегмент прошёл, второй повтор о другом"
+        );
+    }
+
+    /// КОНТРОЛЬ: ЗАЛИВКА ВСТАЛА ПОСЛЕ ДОСТАВКИ — по-прежнему беда. Без этой половины предыдущий
+    /// тест зелен и на приборе, который замолчал у всякого разговора, успевшего хоть что-то послать.
+    #[test]
+    fn repeats_after_progress_with_no_fresh_bytes_are_still_swallowed() {
+        let now = Instant::now();
+        let instrument = SwallowInstrument::<Edge>::new();
+
+        let (instrument, _, ()) =
+            instrument.step(letter(Some(Seen::Sent { count: 1400 }), 40, now));
+        let (instrument, _, ()) =
+            instrument.step(letter(resent(), 41, now + Duration::from_millis(300)));
+        let (instrument, _, ()) =
+            instrument.step(letter(resent(), 42, now + Duration::from_millis(900)));
+        let (_instrument, said, ()) =
+            instrument.step(letter(resent(), 43, now + Duration::from_millis(2100)));
+
+        assert_eq!(
+            said.as_slice(),
+            [Distress::Swallowed { after_ms: 1800 }],
+            "клиент гоняет один кусок и нового не шлёт — сегмент не проходит"
+        );
     }
 
     /// Своя слепота счёт гасит: дыра могла забрать ответ цели, и повтор через неё — не улика пути.

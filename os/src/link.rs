@@ -22,6 +22,42 @@ pub fn present_at(probe: std::path::PathBuf, floor: Duration) -> std::io::Result
     }))
 }
 
+/// Наблюдение счётчика смен несущей. Алгебраический, а не голый `u64`, потому что «устройства нет»
+/// нулём выразить нельзя дважды: потребитель ищет РОСТ, а ноль после семёрки читается как падение;
+/// и пересозданное устройство начинает счёт заново, так что «было 7, стало 1» — не покой, а два
+/// события подряд. Нечитаемый файл при живом устройстве (прав нет) тоже даст `Gone` — среда, где
+/// `/sys` недоступен, не та, где этот уровень имеет смысл.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flaps {
+    Counted(u64),
+    Gone,
+}
+
+/// Уровень «сколько раз ядро сменило несущую», подсказываемый netlink. МОНОТОННЫЙ счётчик, а не
+/// уровень «линк сейчас лежит»: сторожевой сброс держит порт внизу 4–10 с, и редкий опрос уровня
+/// мигание ПРОПУСТИТ, а счётчик — нет (#331). Подсказка та же, что у `present`: группа link.
+pub fn flaps(name: &str, floor: Duration) -> std::io::Result<Level<Flaps>> {
+    flaps_at(
+        std::path::PathBuf::from("/sys/class/net")
+            .join(name)
+            .join("carrier_changes"),
+        floor,
+    )
+}
+
+/// То же, но путь пробы задан явно — для тестовых харнессов. Подменяется источник истины, не
+/// источник поводов.
+pub fn flaps_at(probe: std::path::PathBuf, floor: Duration) -> std::io::Result<Level<Flaps>> {
+    let hint = link_group_socket()?;
+    Ok(Level::hinted(hint, floor, move || {
+        std::fs::read_to_string(&probe)
+            .ok()
+            .and_then(|seen| seen.trim().parse::<u64>().ok())
+            .map(Flaps::Counted)
+            .unwrap_or(Flaps::Gone)
+    }))
+}
+
 /// Сокет, подписанный на группу link-событий. `nl_pid = 0` — адрес назначает ядро; хардкод своего
 /// pid столкнул бы два таких уровня в процессе (второй bind — `EADDRINUSE`).
 fn link_group_socket() -> std::io::Result<std::os::fd::OwnedFd> {
@@ -82,6 +118,36 @@ mod tests {
         let nowhere = std::path::PathBuf::from("/такого/пути/нет");
         let level = present_at(nowhere, Duration::from_millis(50));
         assert_eq!(level.map(|l| l.get()).ok(), Some(false));
+    }
+
+    // Счётчик несущей у `lo` читается как число — сам файл есть на любом Linux.
+    #[test]
+    fn flaps_reads_the_carrier_counter() {
+        let level = flaps("lo", Duration::from_millis(50));
+        assert!(level.is_ok());
+        let seen = level.map(|l| l.get()).ok();
+        assert!(
+            matches!(seen, Some(Flaps::Counted(_))),
+            "ожидали число смен несущей, получили {seen:?}"
+        );
+    }
+
+    // Устройства нет — `Gone`, а НЕ `Counted(0)`: различение и есть смысл типа.
+    #[test]
+    fn absent_device_is_gone_not_zero() {
+        let nowhere = std::path::PathBuf::from("/такого/пути/нет/carrier_changes");
+        let level = flaps_at(nowhere, Duration::from_millis(50));
+        assert_eq!(level.map(|l| l.get()).ok(), Some(Flaps::Gone));
+    }
+
+    // Мусор вместо числа — тоже `Gone`: тотальность без паники на чужом формате.
+    #[test]
+    fn unparsable_counter_is_gone() {
+        let scratch = std::env::temp_dir().join("reflex-flaps-мусор");
+        let written = std::fs::write(&scratch, "не число\n");
+        assert!(written.is_ok());
+        let level = flaps_at(scratch, Duration::from_millis(50));
+        assert_eq!(level.map(|l| l.get()).ok(), Some(Flaps::Gone));
     }
 
     // Заведомо несуществующее имя: уровень честно ложен, ожидание доходит до дедлайна.

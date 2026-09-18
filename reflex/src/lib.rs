@@ -1198,6 +1198,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             #[cfg(feature = "telling")]
             telling: None,
             severing: None,
+            naming: None,
             transport: PhantomData,
         }
     }
@@ -1284,10 +1285,31 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     /// ПРАВИЛО ОБРЫВА для двери показаний: на какое слово рвать. `None` — не просили, и показания
     /// остаются чистым наблюдением.
     severing: Option<Severing<C::Carrier, S>>,
+    /// Куда говорить имя разговора, если просили ([`Detecting::naming`]).
+    naming: Option<reflex_core::Tap<Named>>,
     transport: PhantomData<fn() -> T>,
 }
 
+/// ИМЯ РАЗГОВОРА: как назвалась его цель (SNI, `Initial`, вопрос DNS). Говорится один раз — когда
+/// разговор впервые получил имя. Момент — носителя, не потребителя.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub flow: Flow,
+    pub name: Box<str>,
+    pub at: Instant,
+}
+
 impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
+    /// ГОВОРИТЬ ИМЯ РАЗГОВОРА (#337 nevod). Разбор имени уже в горячем пути; дверь отдаёт его тому, кто
+    /// видит разговор иначе — conntrack знает путь и байты, но не знает, кому они. Канал не ждёт:
+    /// полный канал теряет имя, а не задерживает пакет.
+    pub fn naming(self, tap: reflex_core::Tap<Named>) -> Detecting<C, T, H, S> {
+        Detecting {
+            naming: Some(tap),
+            ..self
+        }
+    }
+
     /// Тело установки, общее обеим дверям: дом меняется ТИПОМ, работа одна.
     fn add<P, H2: MarkHome>(mut self, detector: P) -> Detecting<C, T, H2, S>
     where
@@ -1307,6 +1329,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             #[cfg(feature = "telling")]
             telling: self.telling,
             severing: self.severing,
+            naming: self.naming,
             transport: PhantomData,
         }
     }
@@ -2479,10 +2502,7 @@ struct Turning<C: Bordered, T: Transport, S> {
     /// Внеполосная дверь и ДОМ РЕШЕНИЙ ПО КЛЮЧУ. Дом здесь, а не в `Alive`: решение не наблюдение
     /// и приборам не достаётся — оно живёт до вердикта и читается им.
     #[cfg(feature = "telling")]
-    telling: Option<(
-        crate::telling::Mailbox,
-        HashMap<String, reflex_core::mark::Marked>,
-    )>,
+    telling: Option<crate::telling::Home>,
 }
 
 impl<C, T, S> Turning<C, T, S>
@@ -2508,6 +2528,7 @@ where
             about,
             #[cfg(feature = "telling")]
             telling,
+            naming,
             ..
         } = chain;
         let name = recipe.name();
@@ -2558,6 +2579,7 @@ where
             tape: Tape::new(),
             certify,
             about,
+            naming,
             idle,
         };
         let state = T::State::default();
@@ -2579,7 +2601,7 @@ where
             #[cfg(feature = "telling")]
             // ПОДПИСКА, А НЕ САМА РУЧКА: ящик заводится здесь, при постройке цепочки, и потому
             // решение достаётся КАЖДОЙ цепочке потребителя, а не той, чей оборот случился раньше.
-            telling: telling.map(|handle| (handle.subscribe(), HashMap::new())),
+            telling: telling.map(|handle| handle.subscribe()),
         })
     }
 
@@ -2616,10 +2638,8 @@ where
         // двигает — оно не наблюдение провода, и узел, рождённый чужим решением, был бы скрытым
         // входом для приборов молчания (см. докблок `telling`: место на ленте — следующий срез).
         #[cfg(feature = "telling")]
-        if let Some((handle, decisions)) = self.telling.as_mut() {
-            for told in handle.drain() {
-                decisions.insert(told.target, told.decided);
-            }
+        if let Some(home) = self.telling.as_mut() {
+            home.collect();
         }
         let Turning {
             carrier,
@@ -2631,7 +2651,7 @@ where
         } = self;
         // Дом решений — только на чтение внутри решения о вердикте.
         #[cfg(feature = "telling")]
-        let decisions = self.telling.as_ref().map(|(_handle, decisions)| decisions);
+        let home = self.telling.as_ref();
     // О КОНЦЕ СПРАШИВАЮТ ПРЕЖДЕ, ЧЕМ ПРОСИТЬ РАБОТУ. Носитель, у которого её больше не будет,
     // иначе обязан был бы выдумать тишину до срока — и цикл выдал бы узел, которого в его
     // источнике нет. А тишина, которую носитель честно выдержал, наоборот, обязана дойти
@@ -2686,10 +2706,10 @@ where
         // Ярлык цели снимается ДО того, как `whose` уедет в раздачу: решение адресовано ключу, а
         // владение ключом уходит вместе с буквой.
         #[cfg(feature = "telling")]
-        let decided: Option<reflex_core::mark::Marked> = decisions.and_then(|decisions| {
+        let decided: Option<reflex_core::mark::Marked> = home.and_then(|home| {
             whose
                 .as_ref()
-                .and_then(|(_flow, key)| decisions.get(&label(key)).copied())
+                .and_then(|(_flow, key)| home.decided(&label(key)))
         });
         #[cfg(not(feature = "telling"))]
         let decided: Option<reflex_core::mark::Marked> = None;
@@ -2774,6 +2794,8 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
     /// что зовётся на закрытии узла — среди букв, а не после них.
     about: Option<(Fold<S>, TargetVoice<S>)>,
+    /// Куда говорить имя разговора — один раз, когда ключ цели впервые стал именем.
+    naming: Option<reflex_core::Tap<Named>>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
     idle: Duration,
 }
@@ -2844,7 +2866,19 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                         memo = remembered.or(memo);
                         signals.extend(spoken);
                     }
-                    self.targets.insert(*flow, key.clone());
+                    let was = self.targets.insert(*flow, key.clone());
+                    match (self.naming.as_ref(), was, key) {
+                        (Some(tap), None | Some(TargetKey::Unnamed(_)), TargetKey::Named(name)) => {
+                            let _lost_when_full = tap.offer(Named {
+                                flow: *flow,
+                                name: name.clone(),
+                                at,
+                            });
+                        }
+                        (None, _, _)
+                        | (Some(_), Some(TargetKey::Named(_)), _)
+                        | (Some(_), _, TargetKey::Unnamed(_)) => (),
+                    }
                     (vec![(key.clone(), *flow, signals)], seen)
                 }
                 // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
