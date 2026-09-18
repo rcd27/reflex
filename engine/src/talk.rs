@@ -101,7 +101,13 @@ fn heads(payload: &[u8], from_client: bool, out: (bool, bool)) -> bool {
 
 /// Общая часть обоих алфавитов — байты и голова потока. Одна на два протокола: факт один (человек
 /// попросил, цель отдала). Пустой сегмент без флагов — чистый `ACK`, события из него нет.
-fn anywhere(payload: &[u8], from_client: bool, repeat: bool, head: bool, from: u32) -> Option<Seen> {
+fn anywhere(
+    payload: &[u8],
+    from_client: bool,
+    repeat: bool,
+    head: bool,
+    from: u32,
+) -> Option<Seen> {
     match (!payload.is_empty(), head, from_client) {
         // Голова потока — отдельным фактом, не вдобавок к объёму (тот же сегмент, названный так,
         // чтобы опознание его увидело). Двух событий на сегмент не выпускаем — объём посчитался бы
@@ -160,9 +166,8 @@ fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> 
         // `FIN` почти всегда чист).
         _ if wire.closes && wire.payload.is_empty() => Some(SeenTcp::closed(from_client)),
         // Остаток назван явно, не `_`: новый флаг в разборе сломает эту строку, а не проскочит молча.
-        (false, false, false) => {
-            anywhere(wire.payload, from_client, repeat, head, wire.header.seq).map(SeenTcp::Anywhere)
-        }
+        (false, false, false) => anywhere(wire.payload, from_client, repeat, head, wire.header.seq)
+            .map(SeenTcp::Anywhere),
     }
 }
 
@@ -553,7 +558,10 @@ mod tests {
         assert_eq!(talks.len(), 1);
         assert!(
             talks.read(&tcp(1000, b"hello", true))
-                == Some(SeenTcp::Anywhere(Seen::Resent { count: 5, from: 1000 })),
+                == Some(SeenTcp::Anywhere(Seen::Resent {
+                    count: 5,
+                    from: 1000
+                })),
             "повтор не узнан — граница разговора не запомнилась"
         );
 

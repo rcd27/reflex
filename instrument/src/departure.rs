@@ -37,7 +37,7 @@ impl<S> DepartureInstrument<S> {
 }
 
 impl<S: SeveredByPerson + TargetDelivered> DepartureInstrument<S> {
-    fn read(&self, observation: &S, _now_ms: u64) -> Option<Left> {
+    fn read(&self, observation: &S) -> Option<Left> {
         match observation.severed_by_person() {
             false => None,
             true => match observation.target_delivered() {
@@ -57,7 +57,7 @@ impl<S: SeveredByPerson + TargetDelivered> reflex_core::mealy::Mealy for Departu
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от
@@ -151,10 +151,7 @@ mod tests {
             severed: true,
             delivered: false,
         };
-        assert_eq!(
-            DepartureInstrument::new().read(&seen, 0),
-            Some(Left::Unserved)
-        );
+        assert_eq!(DepartureInstrument::new().read(&seen), Some(Left::Unserved));
     }
 
     #[test]
@@ -163,10 +160,7 @@ mod tests {
             severed: true,
             delivered: true,
         };
-        assert_eq!(
-            DepartureInstrument::new().read(&seen, 0),
-            Some(Left::Served)
-        );
+        assert_eq!(DepartureInstrument::new().read(&seen), Some(Left::Served));
     }
 
     /// Не про человека — молчание, отличимое от обоих вердиктов.
@@ -176,6 +170,6 @@ mod tests {
             severed: false,
             delivered: true,
         };
-        assert_eq!(DepartureInstrument::<Watched>::new().read(&seen, 0), None);
+        assert_eq!(DepartureInstrument::<Watched>::new().read(&seen), None);
     }
 }

@@ -94,7 +94,7 @@ pub struct HistoryInstrument;
 
 impl HistoryInstrument {
     /// Момент не используется: ряд сам есть время (выражено порядком точек, не отметкой).
-    fn read(&self, observation: &(Vec<Point>, Point), _now_ms: u64) -> Shift {
+    fn read(&self, observation: &(Vec<Point>, Point)) -> Shift {
         let (series, fresh) = observation;
         compare(series, fresh)
     }
@@ -110,7 +110,7 @@ impl reflex_core::mealy::Mealy for HistoryInstrument {
     fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, (), smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. }
@@ -277,7 +277,7 @@ mod history_passport_tests {
     /// Пустой ряд — не «всё хорошо»: прибор обязан сказать, что сравнивать не с чем (`Blind`).
     #[test]
     fn an_empty_series_is_blindness_not_calm() {
-        let reading = HistoryInstrument.read(&(Vec::new(), point(50)), 0);
+        let reading = HistoryInstrument.read(&(Vec::new(), point(50)));
         assert!(matches!(reading, Shift::NoSeries { .. }));
         assert_eq!(HistoryInstrument::SILENCE, Some(crate::Silence::Blind));
     }

@@ -42,7 +42,7 @@ impl<L> LinkInstrument<L> {
 }
 
 impl<L: crate::ask::Carrying + crate::ask::Stalled> LinkInstrument<L> {
-    fn read(&self, link: &L, _now_ms: u64) -> Option<Leg> {
+    fn read(&self, link: &L) -> Option<Leg> {
         match link.carrying() {
             // Пустое окно не судится: доли без знаменателя нет, «ноль из нуля» — отсутствие
             // наблюдения, не здоровая нога.
@@ -66,7 +66,7 @@ impl<L: crate::ask::Carrying + crate::ask::Stalled> reflex_core::mealy::Mealy
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от

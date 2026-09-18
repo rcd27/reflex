@@ -17,7 +17,7 @@ impl reflex_core::word::Word for Waited {
 pub struct PaceInstrument;
 
 impl PaceInstrument {
-    fn read(&self, waited: &Duration, _now_ms: u64) -> Option<Waited> {
+    fn read(&self, waited: &Duration) -> Option<Waited> {
         match waited.is_zero() {
             true => None,
             false => Some(Waited(*waited)),
@@ -34,7 +34,7 @@ impl reflex_core::mealy::Mealy for PaceInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от

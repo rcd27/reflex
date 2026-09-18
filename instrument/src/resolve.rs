@@ -65,7 +65,7 @@ impl reflex_core::word::Word for Resolved {
 pub struct ResolutionInstrument;
 
 impl ResolutionInstrument {
-    fn read(&self, message: &DnsMessage, _now_ms: u64) -> Option<Resolved> {
+    fn read(&self, message: &DnsMessage) -> Option<Resolved> {
         // Запрос улики не несёт: судить его — отвечать на незаданный вопрос.
         match message.direction {
             DnsDirection::Query => return None,
@@ -190,7 +190,7 @@ impl reflex_core::mealy::Mealy for ResolutionInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn хозяин_своей_зоны_отказывает_по_праву() {
         assert_eq!(
-            ResolutionInstrument.read(&denial_for("printer.lan"), 0),
+            ResolutionInstrument.read(&denial_for("printer.lan")),
             None,
             "внутреннюю зону резолвер держит сам, и отказ в ней — его право"
         );
@@ -418,7 +418,7 @@ mod tests {
         authentic.authority_records = 1;
 
         assert_eq!(
-            ResolutionInstrument.read(&authentic, 0),
+            ResolutionInstrument.read(&authentic),
             None,
             "отказ со сроком отрицания дал хозяин зоны: присвоить авторитетность и исполнить долг \
              хозяина одновременно подделка не умеет"
@@ -442,7 +442,7 @@ mod tests {
         cut.truncated = true;
 
         assert_eq!(
-            ResolutionInstrument.read(&cut, 0),
+            ResolutionInstrument.read(&cut),
             None,
             "секцию срезали по дороге; клиент переспросит по TCP, и вот тот ответ судить можно"
         );
@@ -459,7 +459,7 @@ mod tests {
         let denied = claiming_authority(answer(1, NXDOMAIN, Vec::new()));
 
         assert_eq!(
-            ResolutionInstrument.read(&denied, 0),
+            ResolutionInstrument.read(&denied),
             Some(Resolved::Erased {
                 name: "rutracker.org".to_string(),
                 how: Erasure::Denied,
@@ -495,7 +495,7 @@ mod tests {
             a_record([5, 5, 5, 5]),
         ];
 
-        match ResolutionInstrument.read(&answer(1, 0, five), 0) {
+        match ResolutionInstrument.read(&answer(1, 0, five)) {
             Some(Resolved::Honest { addrs, .. }) => assert_eq!(
                 addrs,
                 vec![
@@ -518,7 +518,7 @@ mod tests {
     fn увод_вторым_адресом_виден_так_же_как_первым() {
         let sneaky = vec![a_record([93, 184, 216, 34]), a_record([10, 0, 0, 1])];
 
-        match ResolutionInstrument.read(&answer(1, 0, sneaky), 0) {
+        match ResolutionInstrument.read(&answer(1, 0, sneaky)) {
             Some(Resolved::Hijacked { to, alongside, .. }) => {
                 assert_eq!(to, vec![[10, 0, 0, 1]], "частный адрес назван уводом");
                 assert_eq!(

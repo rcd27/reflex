@@ -96,7 +96,10 @@ fn the_sighting_survives_the_neighbour() {
 fn flow_of(n: u32) -> Flow {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     Flow {
-        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        src: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)),
+            40000 + n as u16,
+        ),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
         protocol: reflex_core::types::Protocol::Tcp,
     }

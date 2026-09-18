@@ -94,7 +94,10 @@ fn a_pace_of_zero_bytes_is_never_reported_as_faster_than_a_real_one() {
 fn flow_of(n: u32) -> Flow {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     Flow {
-        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        src: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)),
+            40000 + n as u16,
+        ),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
         protocol: reflex_core::types::Protocol::Tcp,
     }

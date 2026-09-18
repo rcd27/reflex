@@ -127,7 +127,7 @@ pub struct ObservedInstrument;
 
 impl ObservedInstrument {
     /// Показание в круг судеб. Момент не используется: судьба доопределяется концом плеча.
-    fn read(&self, observation: &Observed, _now_ms: u64) -> &'static [Fate] {
+    fn read(&self, observation: &Observed) -> &'static [Fate] {
         observation.admits()
     }
 }
@@ -141,7 +141,7 @@ impl reflex_core::mealy::Mealy for ObservedInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, smallvec::smallvec![Admits(reading)], ())
             }
             reflex_core::DetectorEvent::Tick { .. }
@@ -308,17 +308,14 @@ mod observed_passport_tests {
     /// возвращающий всегда `ALL_FATES` прошёл бы любой одиночный вход).
     #[test]
     fn the_passport_hands_back_a_circle_not_a_fate() {
+        assert_eq!(ObservedInstrument.read(&Observed::NoConnect), &[Fate::Dead]);
         assert_eq!(
-            ObservedInstrument.read(&Observed::NoConnect, 0),
-            &[Fate::Dead]
-        );
-        assert_eq!(
-            ObservedInstrument.read(&Observed::Bytes, 0).len(),
+            ObservedInstrument.read(&Observed::Bytes).len(),
             3,
             "пассивно `Mirage`, `Grinding` и `Good` не делятся ничем"
         );
         assert_eq!(
-            ObservedInstrument.read(&Observed::Inconsistent, 0).len(),
+            ObservedInstrument.read(&Observed::Inconsistent).len(),
             ALL_FATES.len(),
             "брак прибора обязан давать полный круг, а не сужать его"
         );

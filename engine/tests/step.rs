@@ -4,8 +4,8 @@ use reflex_engine::row::{Answered, Naming};
 use reflex_engine::step::{sever, step, RETELL_HORIZON};
 use reflex_engine::Span;
 use reflex_engine::{
-    Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Mark, Noticed, Packet, Plan,
-    Programme, Sighting, Stepped, Tick,
+    Act, Addr, Basis, Cursor, Dir, Epoch, Flow, Interest, Mark, Noticed, Packet, Plan, Programme,
+    Sighting, Stepped, Tick,
 };
 
 /// ЧТО НАБЛЮДЕНО — без адресата и момента.
@@ -745,7 +745,10 @@ fn a_hello_without_a_name_is_told_apart_from_no_hello_at_all() {
 fn flow_of(n: u32) -> Flow {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     Flow {
-        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)), 40000 + n as u16),
+        src: SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | n)),
+            40000 + n as u16,
+        ),
         dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(0x5DB8_D822)), 443),
         protocol: reflex_core::types::Protocol::Tcp,
     }

@@ -54,7 +54,7 @@ impl<W> EpisodeInstrument<W> {
 }
 
 impl<W: OpenedAt + LastSeen + PersonLeft> EpisodeInstrument<W> {
-    fn read(&self, observation: &(W, Instant), _now_ms: u64) -> Option<Ending> {
+    fn read(&self, observation: &(W, Instant)) -> Option<Ending> {
         let (window, now) = observation;
 
         // Наблюдённый уход сильнее вывода по времени (про то, что видели, а не чего не дождались):
@@ -83,7 +83,7 @@ impl<W: OpenedAt + LastSeen + PersonLeft> reflex_core::mealy::Mealy for EpisodeI
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             // Состояния у прибора НЕТ (`PhantomData`): показание есть функция одной буквы, и от
@@ -195,7 +195,7 @@ mod tests {
             left: true,
         };
         assert_eq!(
-            EpisodeInstrument::new().read(&(window, now), 0),
+            EpisodeInstrument::new().read(&(window, now)),
             Some(Ending::Abandoned)
         );
     }
@@ -212,7 +212,7 @@ mod tests {
             left: true,
         };
         assert_eq!(
-            EpisodeInstrument::new().read(&(window, now), 0),
+            EpisodeInstrument::new().read(&(window, now)),
             Some(Ending::Abandoned)
         );
     }
@@ -226,7 +226,7 @@ mod tests {
             left: false,
         };
         assert_eq!(
-            EpisodeInstrument::new().read(&(window, now), 0),
+            EpisodeInstrument::new().read(&(window, now)),
             Some(Ending::Idle)
         );
     }
@@ -240,7 +240,7 @@ mod tests {
             left: false,
         };
         assert_eq!(
-            EpisodeInstrument::<Window>::new().read(&(window, now), 0),
+            EpisodeInstrument::<Window>::new().read(&(window, now)),
             None
         );
     }

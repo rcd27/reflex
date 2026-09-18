@@ -528,7 +528,7 @@ impl reflex_instrument::ask::TargetDelivered for Sighting {
 impl SightingInstrument {
     /// Наблюдение уже снято плоскостью — прибор его докладывает, не пересчитывая; момент вшит в само
     /// наблюдение.
-    fn read(&self, observation: &Sighting, _now_ms: u64) -> Sighting {
+    fn read(&self, observation: &Sighting) -> Sighting {
         *observation
     }
 }
@@ -545,7 +545,7 @@ impl reflex_core::mealy::Mealy for SightingInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, smallvec::smallvec![reading], ())
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, smallvec::SmallVec::new(), ()),
@@ -657,8 +657,8 @@ mod sighting_passport_tests {
             dst: Addr(0x0A00_0002),
         };
 
-        assert_eq!(SightingInstrument.read(&opened, 0), opened);
-        assert_eq!(SightingInstrument.read(&severed, 0), severed);
+        assert_eq!(SightingInstrument.read(&opened), opened);
+        assert_eq!(SightingInstrument.read(&severed), severed);
     }
 
     /// Потеря цели зовётся тем же словом, что печатается, и её имени нет в реестре наблюдений

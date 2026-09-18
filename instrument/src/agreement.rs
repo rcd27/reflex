@@ -21,7 +21,7 @@ pub enum Agreement {
 pub struct AgreementInstrument;
 
 impl AgreementInstrument {
-    fn read(&self, observation: &(u64, Option<u64>), _now_ms: u64) -> Agreement {
+    fn read(&self, observation: &(u64, Option<u64>)) -> Agreement {
         let (ours, kernel) = *observation;
         match kernel {
             None => Agreement::NoWitness { ours },
@@ -44,7 +44,7 @@ impl reflex_core::mealy::Mealy for AgreementInstrument {
     fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, (), smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. }

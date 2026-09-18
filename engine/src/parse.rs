@@ -1,5 +1,5 @@
-use reflex_core::types::{Flow, Protocol};
 use crate::{Addr, Dir};
+use reflex_core::types::{Flow, Protocol};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub const SERVER_PORT: u16 = 443;
@@ -419,7 +419,6 @@ pub fn keyed_of_orig(orig: Tuple) -> Flow {
         },
     )
 }
-
 
 pub fn head_of(payload: &[u8]) -> Head {
     match hello_at(payload) {

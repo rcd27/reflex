@@ -23,7 +23,7 @@ impl reflex_core::word::Word for Sag {
 }
 
 impl SagInstrument {
-    fn read(&self, observation: &Vec<u64>, _now_ms: u64) -> Option<Sag> {
+    fn read(&self, observation: &Vec<u64>) -> Option<Sag> {
         // Хвост и маховик отброшены до счёта: оба неполны, участие любого даёт ложную тревогу.
         let windows: &[u64] = match observation.len() {
             0..=3 => return None,
@@ -59,7 +59,7 @@ impl reflex_core::mealy::Mealy for SagInstrument {
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, reading.into_iter().collect(), ())
             }
             reflex_core::DetectorEvent::Tick { .. }

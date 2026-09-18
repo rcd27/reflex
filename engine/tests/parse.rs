@@ -1,5 +1,5 @@
-use reflex_engine::{Addr, Dir};
 use reflex_engine::parse::{head_of, read, Head, Read, SERVER_PORT};
+use reflex_engine::{Addr, Dir};
 
 const CLIENT: u32 = 0xC0A8_0164;
 const SERVER: u32 = 0x8EFA_BD0E;
@@ -255,7 +255,10 @@ fn a_datagram_leads_to_the_same_target_but_is_another_conversation() {
 
     match (read(&quic, SERVER_PORT), read(&tcp, SERVER_PORT)) {
         (Read::Udp(datagram), Read::Tcp(wire)) => {
-            assert_ne!(datagram.flow, wire.flow, "разные транспорты — разные разговоры");
+            assert_ne!(
+                datagram.flow, wire.flow,
+                "разные транспорты — разные разговоры"
+            );
             assert_eq!(
                 (datagram.flow.src, datagram.flow.dst),
                 (wire.flow.src, wire.flow.dst),

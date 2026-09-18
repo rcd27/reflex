@@ -208,7 +208,7 @@ pub fn merged(into: Node, plus: Node) -> Node {
 pub struct BlindnessInstrument;
 
 impl BlindnessInstrument {
-    fn read(&self, sight: &Sight, _now_ms: u64) -> Told<()> {
+    fn read(&self, sight: &Sight) -> Told<()> {
         match sight {
             Sight::Full => Told::Nothing,
             Sight::Partial { .. } => Told::Blind,
@@ -229,7 +229,7 @@ impl reflex_core::mealy::Mealy for BlindnessInstrument {
     fn step(self, event: Self::In) -> (Self, (), Self::Log) {
         match event {
             reflex_core::DetectorEvent::Packet { input, .. } => {
-                let reading = self.read(&input, 0);
+                let reading = self.read(&input);
                 (self, (), smallvec::smallvec![reading])
             }
             reflex_core::DetectorEvent::Tick { .. } => (self, (), smallvec::SmallVec::new()),
@@ -510,15 +510,12 @@ mod blindness_passport_tests {
     /// всегда отвечающий `Blind`, честен и бесполезен.
     #[test]
     fn full_sight_permits_speech_and_partial_forbids_it() {
-        assert_eq!(BlindnessInstrument.read(&Sight::Full, 0), Told::Nothing);
+        assert_eq!(BlindnessInstrument.read(&Sight::Full), Told::Nothing);
         assert_eq!(
-            BlindnessInstrument.read(
-                &Sight::Partial {
-                    missed_up: 3,
-                    missed_down: 0
-                },
-                0
-            ),
+            BlindnessInstrument.read(&Sight::Partial {
+                missed_up: 3,
+                missed_down: 0
+            },),
             Told::Blind
         );
     }
