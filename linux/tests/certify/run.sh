@@ -111,6 +111,27 @@ run rewrite docker exec certify-queue certify rewrite 0 /shared/far.pcap "nonce-
 run mark    docker exec certify-queue certify mark 0 /shared/far.pcap "$MARK" "nonce-mark-$$" "$WITNESS:$PORT"
 echo
 
+echo "═══ ПАМЯТЬ НА КРАЕ: состояние переживает вердикт ═══"
+# ЧУЖИЕ БИТЫ САЖАЕТ МИР, А НЕ ПОДОПЫТНЫЙ. Правило `ct mark set` стоит ВЫШЕ очереди (priority -10
+# против 0), то есть запись conntrack приходит к нам уже помеченной чужим словом. Закон требует
+# двух вещей разом: наши биты встали и чужие целы — вердикт, стирающий чужую половину марки,
+# неотличим от исправного, пока в марке нет чужого слова.
+#
+# Свидетель — ДРУГАЯ ДВЕРЬ (дамп ctnetlink, `NFNL_SUBSYS_CTNETLINK`), не та, которой писали
+# (`NFNL_SUBSYS_QUEUE`). Читай мы своей же дверью, закон подтверждал бы кольцевание нашего кода, а
+# не то, что ядро запомнило.
+docker exec certify-queue sh -c "nft 'add chain inet certify plant { type filter hook output priority -10; }' && nft add rule inet certify plant udp dport $PORT ct mark set 0x00cc0000" >/dev/null 2>&1
+REMEMBER=$(mktemp)
+docker exec certify-queue certify remember 0 >"$REMEMBER" 2>&1 &
+remembering=$!
+sleep 1
+docker exec certify-queue certify probe "$WITNESS:$PORT" "nonce-remember-$$" >/dev/null 2>&1
+wait $remembering; remembered=$?
+tally remember "$(cat "$REMEMBER")" "$remembered"
+rm -f "$REMEMBER"
+docker exec certify-queue nft delete chain inet certify plant >/dev/null 2>&1
+echo
+
 echo "═══ ОБРЫВ: ДВЕ ГРАНИЦЫ, ДВА СВИДЕТЕЛЯ ═══"
 # ПОДОПЫТНЫЙ ТОЛЬКО ЖДЁТ, ПРОБУ ШЛЁТ КЛИЕНТ — и это не удобство устройства, а условие закона.
 # Останься сторона отправителя тем же процессом, что обрывает, — доставку извещения заверял бы
@@ -165,7 +186,7 @@ echo
 echo "═══ ИТОГ ═══"
 echo "  держится: $held · нарушено: $broken · без вердикта: $no_verdict"
 echo
-echo "  ОЖИДАЕТСЯ: 7 держится (законы) · 3 нарушено и 1 без вердикта (обезоруживание)."
+echo "  ОЖИДАЕТСЯ: 8 держится (законы) · 3 нарушено и 1 без вердикта (обезоруживание)."
 echo "  Всякое иное число — находка, и разбирать её надо до того, как поверить зелёному."
 echo
 echo "  НЕ ПРОВЕРЕНО ЗДЕСЬ, и это не забывчивость:"
@@ -180,7 +201,7 @@ echo "  Все прочие проверены в памятном мире: car
 
 $COMPOSE down -v >/dev/null 2>&1
 
-# КОД ВОЗВРАТА — ПО ЗАКОНАМ, А НЕ ПО ОБЕЗОРУЖИВАНИЮ. Семь держащихся законов есть условие
+# КОД ВОЗВРАТА — ПО ЗАКОНАМ, А НЕ ПО ОБЕЗОРУЖИВАНИЮ. Восемь держащихся законов есть условие
 # годности; красное обезоруживание — ожидаемое поведение, и смешивать их значило бы получить
 # зелёный прогон при мёртвой проверке.
-test "$held" -eq 7
+test "$held" -eq 8
