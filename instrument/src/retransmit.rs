@@ -158,11 +158,16 @@ impl crate::Instrument for RetransmitInstrument {
     /// О мире: цель не отвечает на просьбу — свойство пути.
     const SUBJECT: crate::Subject = crate::Subject::World;
 
-    /// Транспорт: повтор опознаётся номером последовательности TCP.
+    /// Транспорт: повтор опознаётся границей потока — `seq` у TCP, `DCID` у QUIC.
     const LAYER: crate::Layer = crate::Layer::Transport;
 
-    /// Только TCP: у QUIC повтора номера нет (RFC 9000) — потерянное едет с новым номером.
-    const PROTOCOLS: &'static [crate::Protocol] = &[crate::Protocol::Tcp];
+    /// TCP И QUIC. Прибор судит БУКВУ `Seen::Resent`, а чем повтор опознан — дело транспорта: у TCP
+    /// совпавший `seq`, у QUIC — совпавший `DCID` при датаграмме без единого нового байта
+    /// рукопожатия. Номер пакета у QUIC и правда всегда новый (RFC 9000) — на этом доводе строка
+    /// стояла и была верна, пока повтор не научились звать по `DCID` (`reflex::Quic`).
+    /// Цена молчания: QUIC-батарея потребителя брала прибор и получала от него беды, а паспорт
+    /// объявлял его на этом транспорте чужим — расхождение нашлось разбором, не прогоном.
+    const PROTOCOLS: &'static [crate::Protocol] = &[crate::Protocol::Tcp, crate::Protocol::Quic];
 
     /// Отвечали ли — прибор отвечает раньше всех в парке.
     const RUNG: Option<crate::Rung> = Some(crate::Rung::Answered);
