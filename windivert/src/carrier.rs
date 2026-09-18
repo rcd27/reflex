@@ -9,16 +9,17 @@
 use std::ffi::CString;
 use std::time::{Duration, Instant};
 
-use reflex::{Cause, IntoCarrier};
-use reflex_core::backend::Sink;
-use reflex_core::capability::{CanHold, CanInject, CanRefuse};
-use reflex_core::command::InjectablePacket;
-use reflex_core::edge::EdgeView;
-use reflex_core::held::{Answered, Delivered, Held, Observed, Refused, Terminal};
-use reflex_core::local::Local;
-use reflex_core::serves::Served;
-use reflex_core::Serves;
-use reflex_instrument::edge::Layout;
+// ВЕСЬ СЛОВАРЬ НОСИТЕЛЯ — ИЗ ФАСАДА, и это не стиль, а замер. До 18.09.2026 здесь стояло девять
+// строк в `reflex-core` и `reflex-instrument`: носитель из чужого крейта — тот самый случай, ради
+// которого `IntoCarrier` публичен, — писался ВТОРОЙ зависимостью, мимо объявленной двери. Течь не
+// была видна ни грепом, ни сборкой: обе зависимости в манифесте стоят законно (их держит
+// кроссплатформенный `witness.rs`), и пока имена брались отсюда, дверь молчала о том, что не
+// замкнута.
+use reflex::carrier::{
+    Answered, Delivered, EdgeView, Held, InjectablePacket, Layout, Local, Observed, Refused,
+    Served, Serves, Sink, Terminal,
+};
+use reflex::{CanHold, CanInject, CanRefuse, Cause, IntoCarrier};
 
 use crate::ffi;
 

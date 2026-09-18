@@ -63,7 +63,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use reflex_core::mark::Marked;
+/// РЕШЁННОЕ ЗНАЧЕНИЕ — реэкспорт рядом с [`Region`]: оно стоит исходом [`Told::decided`] и доводом
+/// всякого, кто кладёт решение снаружи. Область фасад отдавал, значение в ней — нет; прочесть
+/// положенное было нечем, не взяв `reflex-core`.
+pub use reflex_core::mark::Marked;
 pub use reflex_core::mark::Region;
 
 /// Положенное снаружи: чья цель, что решено, когда. Момент ставит АВТОР — иначе лента соврала бы о

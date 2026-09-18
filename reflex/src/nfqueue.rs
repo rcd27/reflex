@@ -22,7 +22,11 @@ use reflex_core::serves::Served;
 use reflex_core::Serves;
 use reflex_instrument::edge::Layout;
 use reflex_linux::conntrack::TimeoutBase;
-use reflex_linux::queue::{Answer, QueueSocket};
+/// СВЯЗАННЫЕ ТИПЫ НОСИТЕЛЯ НАРУЖУ — через [`crate::carrier`]: `Nfqueue` стоит на фасаде, и то,
+/// чем названы его `Carrier` (`Local<QueueSocket>`) и `Answer`, стоит там же. Иначе потребитель,
+/// взявшийся назвать тип открытого носителя, берёт `reflex-linux` второй зависимостью — и вместе с
+/// ней теряет переносимость, которую фасад обещает всем, что НИЖЕ первой строки цепочки.
+pub use reflex_linux::queue::{Answer, QueueSocket};
 use reflex_linux::rawsend::RawSender;
 
 use crate::{Cause, IntoCarrier};
