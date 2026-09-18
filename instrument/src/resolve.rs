@@ -392,7 +392,7 @@ mod tests {
     /// вующее внутреннее имя ставит `aa` по праву. Обвинить его значило бы объявить подделкой
     /// каждую опечатку во внутреннем имени.
     #[test]
-    fn хозяин_своей_зоны_отказывает_по_праву() {
+    fn the_owner_of_its_own_zone_denies_by_right() {
         assert_eq!(
             ResolutionInstrument.read(&denial_for("printer.lan")),
             None,
@@ -413,7 +413,7 @@ mod tests {
     /// зон из пяти (cloudflare, wikimedia, awsdns). Один `aa` обвинил бы и его — цена, названная
     /// вслух первой строкой `LIES`; конъюнкция её платит.
     #[test]
-    fn хозяин_зоны_кладёт_в_отказ_срок_отрицания_и_потому_не_подделка() {
+    fn a_denial_that_carries_a_negative_ttl_is_the_zone_owner_not_a_forgery() {
         let mut authentic = denial_for("rutracker.org");
         authentic.authority_records = 1;
 
@@ -437,7 +437,7 @@ mod tests {
     /// двух. Без флага `+ignore` этого не увидеть: `dig` молча переспрашивает по TCP и показывает
     /// уже целый ответ.
     #[test]
-    fn усечённое_сообщение_не_судится_вовсе() {
+    fn a_truncated_message_is_not_judged_at_all() {
         let mut cut = denial_for("rutracker.org");
         cut.truncated = true;
 
@@ -455,7 +455,7 @@ mod tests {
     /// сказал НИ СЛОВА. Клиент до транспорта не доходит вовсе, потому и транспортным приборам
     /// сказать нечего: разговора нет. Человек видит «сайта не существует», продукт молчит.
     #[test]
-    fn стёртое_имя_выдаёт_себя_присвоенной_авторитетностью() {
+    fn an_erased_name_gives_itself_away_by_claimed_authority() {
         let denied = claiming_authority(answer(1, NXDOMAIN, Vec::new()));
 
         assert_eq!(
@@ -486,7 +486,7 @@ mod tests {
     /// давало 1–2 удачных захода из восьми при потолке восемь из восьми; имена с одним адресом —
     /// шесть-восемь. Разрыв шёл ровно по числу потерянных адресов.
     #[test]
-    fn весь_ответ_доезжает_а_не_первый_адрес() {
+    fn the_whole_answer_arrives_not_just_the_first_address() {
         let five = vec![
             a_record([1, 1, 1, 1]),
             a_record([2, 2, 2, 2]),
@@ -515,7 +515,7 @@ mod tests {
     /// Порядок записей в ответе не обещан никем, и censor, дописавший заглушку второй, проходил
     /// мимо — прибор объявлял ответ честным.
     #[test]
-    fn увод_вторым_адресом_виден_так_же_как_первым() {
+    fn a_hijack_in_the_second_address_is_seen_as_well_as_in_the_first() {
         let sneaky = vec![a_record([93, 184, 216, 34]), a_record([10, 0, 0, 1])];
 
         match ResolutionInstrument.read(&answer(1, 0, sneaky)) {
@@ -541,7 +541,7 @@ mod tests {
 
     /// Имени не существует — не беда: поиск по суффиксам законно получает `NXDOMAIN`.
     #[test]
-    /// Вторая половина пары к [`стёртое_имя_выдаёт_себя_присвоенной_авторитетностью`]: честный
+    /// Вторая половина пары к [`an_erased_name_gives_itself_away_by_claimed_authority`]: честный
     /// `NXDOMAIN` приходит БЕЗ `aa`, и прибор обязан молчать. Поиск по суффиксам получает его на
     /// каждое имя по разу — прибор, кричащий на всякое «нет такого имени», был бы шумом. Без этой
     /// половины правило зелено и на приборе, который объявляет бедой любой отказ.

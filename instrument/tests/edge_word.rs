@@ -76,7 +76,7 @@ fn edged_carries_both_wire_and_view() {
 /// ничего и нет: не «пропустил наблюдение», а не получил ни одного, и фаза не сдвинулась бы никогда.
 /// Стенд блэкхола после переезда дал ровно это — ноль находок при живом дропе.
 #[test]
-fn край_доходит_даже_когда_провод_не_сужается() {
+fn the_edge_arrives_even_when_the_wire_does_not_narrow() {
     let syn = (Reading::Tcp(SeenTcp::Syn), 7u32);
     let edged =
         <Edged<Option<Seen>, u32> as Reads<(Reading, u32)>>::read(&syn).expect("край доходит");

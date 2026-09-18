@@ -43,8 +43,8 @@ impl Pace {
     /// let over_a_second = Pace { bytes: 40_000, over_nanos: 1_000_000_000 };
     /// assert_eq!(over_a_second.per_second(), Some(40_000));
     ///
-    /// let нулевое_окно = Pace { bytes: 1, over_nanos: 0 };
-    /// assert_eq!(нулевое_окно.per_second(), None, "бесконечный темп числом не назвать");
+    /// let a_zero_window = Pace { bytes: 1, over_nanos: 0 };
+    /// assert_eq!(a_zero_window.per_second(), None, "бесконечный темп числом не назвать");
     /// ```
     pub fn per_second(&self) -> Option<u64> {
         match self.over_nanos {

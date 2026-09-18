@@ -208,7 +208,7 @@ fn the_watch_axis_tells_the_three_silences_apart() {
 /// Заведено по замеру потребителя: пять его приборов не поверялись `says` вовсе, и он написал свою
 /// обёртку. Своя обёртка у каждого поверяющего — это два способа поверки, расходящиеся молча.
 #[test]
-fn слово_и_показание_спрашиваются_разными_помощниками() {
+fn a_word_and_a_reading_are_asked_by_different_helpers() {
     use reflex_instrument::agreement::{Agreement, AgreementInstrument};
     use reflex_instrument::{heard, says};
 

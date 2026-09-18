@@ -134,7 +134,7 @@ fn acquire_corrupted_pid_file() {
 /// читатель шёл искать процесс 0. Клетка (§7) говорит ровно то, что есть: держатель живой, номер
 /// неизвестен.
 #[test]
-fn номер_держателя_который_не_прочёлся_остаётся_неизвестным() {
+fn acquire_unreadable_holder_pid_stays_unknown() {
     let path = temp_pid_path();
 
     let _held = PidGuard::acquire(path.clone()).unwrap();

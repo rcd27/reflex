@@ -299,7 +299,7 @@ mod tests {
     /// Дыра съедает ответ цели — и обвинение обязано умолкнуть. Прибор судит по `down == 0`
     /// («вниз не пришло ничего»), а после объявленной потери ноль значит «не знаю», не «молчала».
     #[test]
-    fn дыра_снимает_обвинение_с_ответившей_цели() {
+    fn a_tear_clears_the_accusation_against_a_target_that_answered() {
         let instrument = RetransmitInstrument::new();
         let (instrument, _, _) = instrument.step(packet(hello(), 0));
         // цель ответила 1400 байт — но носитель объявил потерю, и наблюдение до нас не дошло

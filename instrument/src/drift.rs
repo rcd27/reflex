@@ -43,7 +43,7 @@ impl Point {
                 clean: clean.parse().ok()?,
                 content: content.parse().ok()?,
             }),
-            _не_та_арность => None,
+            _wrong_arity => None,
         }
     }
 }

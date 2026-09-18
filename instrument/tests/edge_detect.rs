@@ -262,7 +262,7 @@ fn a_foreign_writer_is_observed_and_left_alone() {
 /// разговоре, которого край не видит. И памятки быть не может: писать фазу в марку по незнанию
 /// значит выдумать состояние.
 #[test]
-fn без_края_прибор_молчит_и_ничего_не_помнит() {
+fn without_an_edge_it_says_nothing_and_remembers_nothing() {
     let silence: EdgeSilence<TestEdge> = EdgeSilence::new(WINDOW, layout());
 
     let (_next, (memo, said), ()) = silence.step(DetectorEvent::packet_now(Edged {

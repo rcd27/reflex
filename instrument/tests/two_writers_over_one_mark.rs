@@ -75,7 +75,7 @@ fn packet(
 
 /// ОДИН краевой прибор: гейт молчания работает — беда называется РОВНО ОДИН раз.
 #[test]
-fn один_краевой_прибор_говорит_единожды() {
+fn one_edge_instrument_speaks_just_once() {
     let blackhole = EdgeSilence::<Silent>::new(Duration::from_secs(2), layout());
     let mut mark = 0u32;
     let mut said = Vec::new();
@@ -95,7 +95,7 @@ fn один_краевой_прибор_говорит_единожды() {
 /// ДВА краевых прибора с разными окнами — та же марка, тот же разговор. Гейта молчания не
 /// остаётся: каждый пакет приносит беду заново.
 #[test]
-fn два_писателя_над_одной_маркой_ломают_гейт_молчания() {
+fn two_writers_over_one_mark_break_the_silence_gate() {
     let blackhole = EdgeSilence::<Silent>::new(Duration::from_secs(2), layout());
     let silence = EdgeSilence::<Silent>::new(Duration::from_secs(5), layout());
     let mut mark = 0u32;

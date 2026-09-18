@@ -51,7 +51,7 @@ fn sample() -> Vec<Counted> {
 /// о структуре. Разойдись любая — структуры нет, и остальные две ничего не спасают. Прежде они
 /// стояли тремя тестами по одному примеру каждый.
 #[test]
-fn счёт_есть_коммутативный_моноид_включая_насыщение() {
+fn counts_form_a_commutative_monoid_including_saturation() {
     let values = sample();
 
     for &one in &values {
@@ -92,7 +92,7 @@ fn счёт_есть_коммутативный_моноид_включая_на
 /// отдельное утверждение, и для счётчиков пакетов оно и есть главное: слияние узлов ДОБАВЛЯЕТ
 /// наблюдения, а не пересчитывает их заново.
 #[test]
-fn счёт_от_слияния_не_убывает() {
+fn counts_never_decrease_under_merge() {
     for &one in &sample() {
         for &other in &sample() {
             let sum = added(one, other);
@@ -120,7 +120,7 @@ fn счёт_от_слияния_не_убывает() {
 /// Цена нарушения названа замером: на `188.114.96.1` имён ≥69 (`dig`), и вернись ширина к
 /// названной цели — вред применился бы к шестидесяти девяти доменам через заднюю дверь.
 #[test]
-fn имя_перебивает_адрес_при_любой_ширине_и_любом_адресе() {
+fn a_name_outranks_the_address_at_any_width_and_any_address() {
     for address in [CDN, Addr(0x0A_0B_0C_0D), Addr(0), Addr(u32::MAX)] {
         assert_eq!(
             keyed(Naming::Spoken("x.com"), address, net_of),
@@ -150,7 +150,7 @@ fn имя_перебивает_адрес_при_любой_ширине_и_лю
 /// `Standing`, а не ключ. Разделить их ключом значило бы менять строку в момент приветствия, теряя
 /// всё накопленное до него.
 #[test]
-fn безымянная_цель_ключуется_шириной_а_ожидание_имени_строки_не_меняет() {
+fn an_unnamed_target_is_keyed_by_width_and_an_awaited_name_does_not_change_the_row() {
     for address in [CDN, Addr(0x0A_0B_0C_0D), Addr(0xFF_FF_FF_FF)] {
         let by_net = keyed(Naming::<&str>::Silent, address, net_of);
         let by_host = keyed(Naming::<&str>::Silent, address, host_of);
@@ -183,7 +183,7 @@ fn безымянная_цель_ключуется_шириной_а_ожида
 /// «эти три точки», а форму целиком, включая насыщение в ноль: плоскость не может видеть больше
 /// ядра, и отрицательная слепота была бы утверждением сильнее установленного.
 #[test]
-fn зрение_есть_насыщенная_разность_счетов_на_всех_парах() {
+fn sight_is_the_saturating_difference_of_counts_on_every_pair() {
     for &kernel in &sample() {
         for &engine in &sample() {
             let missed_up = kernel.up.saturating_sub(engine.up);
@@ -215,7 +215,7 @@ fn зрение_есть_насыщенная_разность_счетов_на
 /// какие именно — видно только пересчётом. Функция от двух КОНЕЧНЫХ множеств исчерпывается
 /// таблицей, и таблица эта короче четырёх тестов.
 #[test]
-fn слепота_и_наблюдение_сведены_полной_таблицей() {
+fn blindness_and_observation_are_settled_by_the_full_table() {
     let partial = Sight::Partial {
         missed_up: 333,
         missed_down: 898,

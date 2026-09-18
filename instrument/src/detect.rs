@@ -1050,7 +1050,7 @@ mod throttled_and_choked_tests {
     /// Прежде здесь делили «на `max(1)`», и наружу уходило большое КОНЕЧНОЕ число, неотличимое от
     /// настоящего замера: потребитель читал бы выдуманную величину как измеренную.
     #[test]
-    fn нулевое_окно_не_рождает_беду_о_величине() {
+    fn a_zero_window_yields_no_trouble_about_a_rate() {
         let said = run(
             ThrottledInstrument::over(Duration::ZERO),
             vec![
@@ -1556,7 +1556,7 @@ mod torn_blinds_tests {
 
     /// Стук, дыра вместо рукопожатия, повтор стука. Путь ЖИВ — `SYN+ACK` пришёл и пропал у нас.
     #[test]
-    fn дыра_не_делает_из_живого_пути_блэкхол() {
+    fn a_tear_does_not_turn_a_live_path_into_a_blackhole() {
         let start = Instant::now();
         let i = SynDropInstrument::new();
         let (i, _, _) = i.step(DetectorEvent::Packet {
@@ -1579,7 +1579,7 @@ mod torn_blinds_tests {
 
     /// Сброс от цели ПОСЛЕ её байтов — прощание, не перехват. Дыра съела эти байты.
     #[test]
-    fn дыра_не_делает_из_прощания_перехват() {
+    fn a_tear_does_not_turn_a_goodbye_into_an_interception() {
         let start = Instant::now();
         let i = RstInstrument::new();
         let (i, _, _) = i.step(DetectorEvent::packet_now(SeenTcp::Handshaken));
@@ -1598,7 +1598,7 @@ mod torn_blinds_tests {
 
     /// Цель отдавала байты, дыра их съела, терпение истекло. Задушенной она не является.
     #[test]
-    fn дыра_не_делает_из_отвечавшей_цели_задушенную() {
+    fn a_tear_does_not_turn_a_target_that_answered_into_a_choked_one() {
         let start = Instant::now();
         let i = ChokedInstrument::after(0, Duration::from_millis(500));
         let (i, _, _) = i.step(DetectorEvent::Packet {
@@ -1622,7 +1622,7 @@ mod torn_blinds_tests {
     /// Обрезанный кадр — та же дыра предметом: `Unread::Truncated` есть ПОТЕРЯ (так и назван в
     /// `core::parse::unread`), и он мог нести ответ цели.
     #[test]
-    fn обрезанный_кадр_ослепляет_наравне_с_дырой() {
+    fn a_truncated_frame_blinds_as_much_as_a_tear() {
         let start = Instant::now();
         let i = ChokedInstrument::after(0, Duration::from_millis(500));
         let (i, _, _) = i.step(DetectorEvent::Packet {
@@ -1646,7 +1646,7 @@ mod torn_blinds_tests {
 
     /// Вторая половина: чужой протокол ответом цели быть не мог — способность обвинять цела.
     #[test]
-    fn чужой_протокол_способности_обвинять_не_отнимает() {
+    fn an_alien_protocol_does_not_take_away_the_power_to_accuse() {
         let start = Instant::now();
         let i = ChokedInstrument::after(0, Duration::from_millis(500));
         let (i, _, _) = i.step(DetectorEvent::Packet {
@@ -1673,7 +1673,7 @@ mod torn_blinds_tests {
     /// возвращает ему зрение. `NoBytes` при этом невозможен навсегда — он утверждает обо ВСЕЙ
     /// истории разговора, а её свидетелем прибор быть перестал.
     #[test]
-    fn после_дыры_прибор_снова_видит_но_об_истории_больше_не_свидетель() {
+    fn after_a_tear_it_sees_again_but_is_no_longer_a_witness_to_the_history() {
         let start = Instant::now();
         let i = SilenceInstrument::after(Duration::from_millis(1_000));
         let (i, _, _) = i.step(DetectorEvent::Packet {

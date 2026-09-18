@@ -67,7 +67,7 @@ fn declared() -> (BTreeSet<String>, BTreeSet<String>) {
 /// имён, и в нём объявлены известные режимы лжи прибора. Прибор без паспорта для всего этого
 /// невидим — он работает, говорит, а в реестре его нет.
 #[test]
-fn у_каждого_прибора_есть_паспорт() {
+fn every_instrument_has_a_passport() {
     let (instruments, passports) = declared();
 
     let naked: Vec<&String> = instruments.difference(&passports).collect();
@@ -85,7 +85,7 @@ fn у_каждого_прибора_есть_паспорт() {
 /// — и он станет вечно зелёным, охраняя ничто. Числа сверяются с порядком величины, а не с точным
 /// значением: приборы заводятся и снимаются, и тест не должен краснеть от каждого нового.
 #[test]
-fn разбор_нашёл_и_приборы_и_паспорта() {
+fn the_scan_found_both_instruments_and_passports() {
     let (instruments, passports) = declared();
 
     assert!(
