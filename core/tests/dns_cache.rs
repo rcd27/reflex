@@ -1,6 +1,7 @@
 #![cfg(feature = "dns")]
 
 use std::net::Ipv4Addr;
+use std::time::{Duration, Instant};
 
 use reflex_core::dns::{DnsCache, DnsDirection, DnsMessage};
 
@@ -107,48 +108,76 @@ fn ignore_dns_query() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: DnsCache
+// Карта «адрес → имя»
 // ---------------------------------------------------------------------------
 
+/// ЗАПИСЬ ЧИТАЕТСЯ ДО КОНЦА СВОЕГО СРОКА, и срок назначил отвечающий, а не мы.
 #[test]
-fn cache_insert_and_lookup() {
+fn запись_читается_до_конца_своего_срока() {
     let mut cache = DnsCache::new(100);
     let ip: Ipv4Addr = "93.184.216.34".parse().unwrap();
+    let t0 = Instant::now();
 
-    cache.insert("example.com", &[ip], 300.0, 0.0);
+    cache.insert("example.com", &[ip], Duration::from_secs(300), t0);
 
-    assert_eq!(cache.lookup(ip, 0.0), Some("example.com"));
-    assert_eq!(cache.lookup(ip, 299.0), Some("example.com"));
+    assert_eq!(cache.lookup(ip, t0), Some("example.com"));
+    assert_eq!(
+        cache.lookup(ip, t0 + Duration::from_secs(299)),
+        Some("example.com"),
+        "до истечения имя называется"
+    );
 }
 
+/// ИСТЁКШАЯ ЗАПИСЬ МОЛЧИТ, А НЕ НАЗЫВАЕТ СТАРОЕ ИМЯ: адрес, переживший TTL, принадлежит уже не той
+/// цели, и назвать прежнюю значило бы соврать приборам о том, с кем идёт разговор.
+///
+/// Граница включительна: секунда TTL — обещание отвечающего, а не наше округление.
 #[test]
-fn cache_expired_entry_returns_none() {
+fn истёкшая_запись_молчит_а_не_называет_старое_имя() {
     let mut cache = DnsCache::new(100);
     let ip: Ipv4Addr = "1.2.3.4".parse().unwrap();
+    let t0 = Instant::now();
 
-    cache.insert("example.com", &[ip], 60.0, 0.0);
+    cache.insert("example.com", &[ip], Duration::from_secs(60), t0);
 
-    // At TTL boundary — still valid
-    assert_eq!(cache.lookup(ip, 60.0), Some("example.com"));
-    // Past TTL — expired
-    assert_eq!(cache.lookup(ip, 60.1), None);
+    assert_eq!(
+        cache.lookup(ip, t0 + Duration::from_secs(60)),
+        Some("example.com"),
+        "ровно на границе срок ещё держится"
+    );
+    assert_eq!(
+        cache.lookup(ip, t0 + Duration::from_millis(60_100)),
+        None,
+        "за границей — молчание, а не прежнее имя"
+    );
 }
 
+/// ТЕСНОЙ КАРТЕ МЕСТО ОСВОБОЖДАЕТ САМАЯ СТАРАЯ ЗАПИСЬ — по времени ВСТАВКИ, не последнего чтения:
+/// срок назначил отвечающий, и наше обращение к записи его не продлевает.
 #[test]
-fn cache_evicts_oldest_when_full() {
+fn тесной_карте_место_освобождает_самая_старая_запись() {
     let mut cache = DnsCache::new(2);
+    let t0 = Instant::now();
+    let через = |secs| t0 + Duration::from_secs(secs);
 
     let ip1: Ipv4Addr = "1.1.1.1".parse().unwrap();
     let ip2: Ipv4Addr = "2.2.2.2".parse().unwrap();
     let ip3: Ipv4Addr = "3.3.3.3".parse().unwrap();
 
-    cache.insert("first.com", &[ip1], 300.0, 1.0);
-    cache.insert("second.com", &[ip2], 300.0, 2.0);
-    cache.insert("third.com", &[ip3], 300.0, 3.0);
+    cache.insert("first.com", &[ip1], Duration::from_secs(300), через(1));
+    cache.insert("second.com", &[ip2], Duration::from_secs(300), через(2));
+    cache.insert("third.com", &[ip3], Duration::from_secs(300), через(3));
 
-    // first.com (oldest, inserted_at=1.0) should be evicted
-    assert_eq!(cache.len(), 2);
-    assert_eq!(cache.lookup(ip1, 3.0), None);
-    assert_eq!(cache.lookup(ip2, 3.0), Some("second.com"));
-    assert_eq!(cache.lookup(ip3, 3.0), Some("third.com"));
+    assert_eq!(cache.len(), 2, "предел карты держится");
+    assert_eq!(
+        cache.lookup(ip1, через(3)),
+        None,
+        "старейшая уступила место"
+    );
+    assert_eq!(cache.lookup(ip2, через(3)), Some("second.com"));
+    assert_eq!(
+        cache.lookup(ip3, через(3)),
+        Some("third.com"),
+        "свежий ответ входит всегда — иначе полная карта перестала бы узнавать новое"
+    );
 }

@@ -5,14 +5,24 @@
 //! Карта ограничена ОБОИМИ краями, и края разные по природе. Срок (`ttl`) берётся из самого ответа:
 //! имя, пережившее свой TTL, называет уже не ту цель. Число записей — наш предел: наблюдатель
 //! ответов на объём чужого трафика не влияет, а память обязана остаться конечной (канон §4).
+//!
+//! ЧАСЫ ЗДЕСЬ ТЕ ЖЕ, ЧТО У ВСЕГО ДЕРЕВА (`Instant`/`Duration`, §8), хотя TTL приходит с провода
+//! числом секунд. Дверь, берущая своё время, заставляет потребителя завести второе — а он собрал
+//! цепочку на часах носителя, и сводить их пришлось бы ему, молча и у себя. Тот же приём уже
+//! применён к более трудному случаю: [`crate::pcap::read`] переводит штампы чужой записи в
+//! `base + Duration`, оставляя календарь отдельным полем.
+//!
+//! Тип попутно снимает клетку, которой у предмета нет: у моментов времени не бывает
+//! несравнимости, и порядок вытеснения больше не решает, что делать с `NaN`.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+use std::time::{Duration, Instant};
 
 struct Entry {
     domain: String,
-    expires_at: f64,
-    inserted_at: f64,
+    expires_at: Instant,
+    inserted_at: Instant,
 }
 
 pub struct DnsCache {
@@ -35,13 +45,13 @@ impl DnsCache {
     /// Тесно становится ПОСЛЕ вставки, не вместо неё: свежий ответ входит всегда, а место под него
     /// освобождают старые. Иначе полная карта перестала бы узнавать новое — и тем прочнее, чем
     /// дольше живёт.
-    pub fn insert(&mut self, domain: &str, ips: &[Ipv4Addr], ttl_secs: f64, now: f64) {
+    pub fn insert(&mut self, domain: &str, ips: &[Ipv4Addr], ttl: Duration, now: Instant) {
         for &ip in ips {
             self.entries.insert(
                 ip,
                 Entry {
                     domain: domain.to_owned(),
-                    expires_at: now + ttl_secs,
+                    expires_at: now + ttl,
                     inserted_at: now,
                 },
             );
@@ -54,7 +64,7 @@ impl DnsCache {
 
     /// Истёкшая запись отвечает `None`, но из карты не уходит: чтение карту не правит. Уборка —
     /// отдельный шаг ([`DnsCache::cleanup`]), и зовёт его тот, кто знает свой темп.
-    pub fn lookup(&self, ip: Ipv4Addr, now: f64) -> Option<&str> {
+    pub fn lookup(&self, ip: Ipv4Addr, now: Instant) -> Option<&str> {
         let entry = self.entries.get(&ip)?;
         if now <= entry.expires_at {
             Some(entry.domain.as_str())
@@ -63,7 +73,7 @@ impl DnsCache {
         }
     }
 
-    pub fn cleanup(&mut self, now: f64) {
+    pub fn cleanup(&mut self, now: Instant) {
         self.entries.retain(|_, entry| now <= entry.expires_at);
     }
 
@@ -81,11 +91,7 @@ impl DnsCache {
         let oldest_ip = self
             .entries
             .iter()
-            .min_by(|a, b| {
-                a.1.inserted_at
-                    .partial_cmp(&b.1.inserted_at)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .min_by_key(|(_, entry)| entry.inserted_at)
             .map(|(&ip, _)| ip);
 
         if let Some(ip) = oldest_ip {
