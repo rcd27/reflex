@@ -24,8 +24,9 @@
 //! ```sh
 //! sudo nft 'add table inet reflex_demo'
 //! sudo nft 'add chain inet reflex_demo out { type filter hook output priority -150; }'
-//! # пропускаем свои инъекции (метка reflex), остальной :443 — в очередь
-//! sudo nft 'add rule inet reflex_demo out tcp dport 443 meta mark != 0xBB queue num 200'
+//! # пропускаем свои инъекции (метка reflex в своей области), остальной :443 — в очередь;
+//! # сравнение МАСКОЙ: марку на машине пишем не мы одни, и чужой бит отменил бы признак
+//! sudo nft 'add rule inet reflex_demo out tcp dport 443 meta mark and 0xc0000000 != 0x40000000 queue num 200'
 //! cargo run -p sever-silent-drop
 //! # снять правила: sudo nft 'delete table inet reflex_demo'
 //! ```

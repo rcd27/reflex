@@ -138,7 +138,13 @@ fn the_stands_carry_the_current_inject_mark_and_compare_by_mask() {
 
     let mut wrong: Vec<String> = Vec::new();
     let mut looked = 0;
-    for script in under(&root().join("examples"), "sh") {
+    // ДВА РОДА ФАЙЛОВ, И ВТОРОЙ НАШЁЛСЯ ПРОМАХОМ ЭТОГО ЖЕ СТОРОЖА: правило по марке живёт не только
+    // в скриптах стендов, но и в докблоке примера («как запустить»). Первая редакция смотрела `sh`
+    // и пропустила `sever-silent-drop/src/main.rs`, где рецепт запуска остался со старым словом —
+    // читатель, скопировавший его, получил бы очередь, ловящую свои же инъекции.
+    let mut where_to_look = under(&root().join("examples"), "sh");
+    where_to_look.extend(under(&root().join("examples"), "rs"));
+    for script in where_to_look {
         let Ok(text) = std::fs::read_to_string(&script) else {
             continue;
         };
