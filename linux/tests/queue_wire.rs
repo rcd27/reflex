@@ -136,7 +136,7 @@ fn message_bodies_have_the_sizes_the_kernel_expects() {
 fn flags_request_sets_conntrack_and_fail_open_in_flag_and_mask() {
     let built = flags_request(200, 1);
     // NFQA_CFG_FLAGS = 5, NFQA_CFG_MASK = 4, NFQA_CFG_F_CONNTRACK = 0x0002, FAIL_OPEN = 0x0001, be32.
-    // Без FAIL_OPEN ядро роняет пакет, которого мы не успели забрать (канарейка 14.09.2026: 9212).
+    // Без FAIL_OPEN ядро роняет пакет, которого мы не успели забрать (поле, 14.09.2026: 9212).
     assert!(
         contains_be32_attr(&built, 5, 0x0003),
         "оба флага выставлены"

@@ -27,7 +27,7 @@ impl TcProgram {
         Self::attach_named(interface, bpf_bytes, "reflex_steer", TcAttachType::Ingress)
     }
 
-    /// `reflex_return` на INGRESS nevod0: ОБРАТНАЯ половина круга. netstack пишет ответ в nevod0 →
+    /// `reflex_return` на INGRESS несущей: ОБРАТНАЯ половина круга. netstack пишет ответ в несущую →
     /// программа `bpf_redirect_neigh` доставляет его клиенту через br0, минуя сломанный форвард.
     pub fn attach_return(interface: &str, bpf_bytes: &[u8]) -> Result<Self, String> {
         Self::attach_named(interface, bpf_bytes, "reflex_return", TcAttachType::Ingress)
@@ -36,7 +36,7 @@ impl TcProgram {
     /// `reflex_observe` на КЛИЕНТ-порту (clsact ingress+egress): наблюдение проходящего флоу для
     /// witness — БЕЗ лифта/возврата (аддитивно, транзит невредим). Направление из хука: ingress =
     /// от клиента (Upstream), egress = к клиенту (Downstream). Отдаёт держатель программ (Drop
-    /// отцепит, RAII) + async-поток `FlowEvents` из общего `RingBuf`. Потребитель (nevod) фолдит
+    /// отцепит, RAII) + async-поток `FlowEvents` из общего `RingBuf`. Потребитель фолдит
     /// поток `inline_witness`'ом в `(dst, Reach)`. Тот же поток позже поедет `ByteFlow` (Правило 9).
     pub fn attach_observe(
         client_iface: &str,
@@ -67,11 +67,11 @@ impl TcProgram {
     }
 
     /// Фаза 2: ОДИН `Ebpf` под ВЕСЬ inline-датаплейн — `reflex_observe` (наблюдение, eth1 in+eg) +
-    /// `reflex_steer` (лифт, eth1 ingress) + `reflex_return` (возврат, nevod0 ingress). Карты ОБЩИЕ,
+    /// `reflex_steer` (лифт, eth1 ingress) + `reflex_return` (возврат, ingress несущей). Карты ОБЩИЕ,
     /// и это КРИТИЧНО: вердикт witness'а населяет `STEER_TARGETS` (`add_steer_target`), который читает
     /// `reflex_steer`; `CLIENT_MACS` пишет steer, читает return. Раздельная загрузка = изолированные
     /// карты, вердикт не долетит до лифта. Возвращает держатель (Drop отцепит всё) + поток `FlowEvents`.
-    /// `client_iface` (eth1) несёт steer+observe; `return_iface` (nevod0) должен СУЩЕСТВОВАТЬ до вызова.
+    /// `client_iface` (eth1) несёт steer+observe; `return_iface` (несущая) должен СУЩЕСТВОВАТЬ до вызова.
     /// ifindex'ы/MAC'и ставит вызывающий (`set_steer_*`/`set_return_*`), цели — `add_steer_target`.
     pub fn attach_inline(
         client_iface: &str,
@@ -84,7 +84,7 @@ impl TcProgram {
         // ОДИН фильтр на eth1 ingress: `reflex_steer` САМ эмитит upstream-witness (observe встроен) —
         // TC обрывает цепочку фильтров на `TC_ACT_OK`, два фильтра на одном хуке не сосуществуют
         // (замерено: observe_up рядом со steer не давал событий). observe_down — отдельный хук
-        // (egress), конфликта нет. return — на nevod0.
+        // (egress), конфликта нет. return — на несущей.
         Self::load_attach(
             &mut bpf,
             "reflex_steer",
@@ -118,8 +118,8 @@ impl TcProgram {
     /// Грузит объект ОДИН раз и цепляет ОБА хука круга из ОДНОГО `Ebpf`: `reflex_steer` на INGRESS
     /// `steer_iface` (учит `CLIENT_MACS`) + `reflex_return` на INGRESS `return_iface` (читает её). Карты
     /// ОБЩИЕ — иначе (раздельная загрузка) две изолированные `CLIENT_MACS`, learned-MAC не шарится
-    /// (замерено: nevod терминирует, а reflex_return промахивается по dst-MAC → SYNACK=0). `interface` =
-    /// steer_iface (для стата/лога). nevod0 (return_iface) должен СУЩЕСТВОВАТЬ до вызова.
+    /// (замерено: потребитель терминирует, а reflex_return промахивается по dst-MAC → SYNACK=0). `interface` =
+    /// steer_iface(для стата/лога). несущая (`return_iface`) должна СУЩЕСТВОВАТЬ до вызова.
     pub fn attach_steer_and_return(
         steer_iface: &str,
         return_iface: &str,
@@ -227,7 +227,7 @@ impl TcProgram {
     }
 
     /// Снять цель лифта — обратная половина `add_steer_target`, которой не существовало вовсе
-    /// (#249): карта только росла, и адрес, переставший цензурироваться, оставался лифтнутым
+    ///: карта только росла, и адрес, переставший цензурироваться, оставался лифтнутым
     /// НАВСЕГДА: знак переживает землю, и платит за это владелец — выигрыш `by-map` по CPU медленно
     /// утекает обратно.
     ///
@@ -292,7 +292,7 @@ impl TcProgram {
         }
     }
 
-    /// Режим лифта (#227): `Surgical` (лишь `STEER_TARGETS`) · `All443` (весь HTTPS) · `ByMap`
+    /// Режим лифта: `Surgical` (лишь `STEER_TARGETS`) · `All443` (весь HTTPS) · `ByMap`
     /// (карта `STEER_MAP` ∨ выученное). Ставится из env при подъёме датаплейна.
     ///
     /// Имя карты осталось `STEER_ALL`, хотя значений теперь три, и это НЕ забытое переименование.
@@ -313,7 +313,7 @@ impl TcProgram {
         Ok(())
     }
 
-    /// Вставить префикс в КАРТУ ЛИФТА (#227): `dst ∈ STEER_MAP` в режиме `ByMap` входит в датаплейн,
+    /// Вставить префикс в КАРТУ ЛИФТА: `dst ∈ STEER_MAP` в режиме `ByMap` входит в датаплейн,
     /// прочее остаётся в L2-мосте на скорости провода. Зеркало `add_prior_floor` — тот же тип карты
     /// и тот же формат ключа, разница лишь в предмете (что ЛИФТИМ против того, что кладём в пол).
     ///
@@ -352,7 +352,7 @@ impl TcProgram {
         Ok(())
     }
 
-    /// ifindex устройства несущей (nevod0) для L2-РЕДИРЕКТА (`bpf_redirect`): eBPF отправит целевой
+    /// ifindex устройства несущей для L2-РЕДИРЕКТА (`bpf_redirect`): eBPF отправит целевой
     /// кадр прямо в xmit устройства, минуя ip_rcv/ip_forward → обходит forward→tun дроп и
     /// conntrack-игнор лифтнутых кадров (L2-native, как AF_PACKET). 0 = fallback на MAC-lift.
     pub fn set_steer_ifindex(&mut self, ifindex: u32) -> Result<(), String> {
@@ -386,7 +386,7 @@ impl TcProgram {
     /// (BL-235, tun-двигатель): карты ОБЩИЕ — `CLIENT_MACS` выучен `reflex_steer` на eth1-ingress,
     /// читается возвратом по dst-IP ответа. sing-box пишет ответ пола (сырой L3) в свой tun → он
     /// приходит на INGRESS tun → `reflex_return` клеит Ethernet + `bpf_redirect(eth1)` клиенту (зеркало
-    /// возврата с nevod0). Программа уже `load()`'нута (в `attach_inline`) — здесь ТОЛЬКО `attach()`,
+    /// возврата с несущей). Программа уже `load()`'нута (в `attach_inline`) — здесь ТОЛЬКО `attach()`,
     /// повторный `load()` нельзя. Устройство должно СУЩЕСТВОВАТЬ (sing-box поднял tun).
     pub fn attach_return_extra(&mut self, device: &str) -> Result<(), String> {
         let _ = tc::qdisc_add_clsact(device);
@@ -557,7 +557,7 @@ impl TcProgram {
     /// ВОЗРАСТ последнего возвратного пакета per-src(сервер) — витнес столла по ШТАМПУ ПРИХОДА
     /// (`UDP_RETURN_STAMP`), а не по «был ли байт в окне поллера». Разница принципиальна: окно
     /// поллера короче суммы «RTT + фаза окна», поэтому у ЖИВОГО потока часть окон приходит пустыми, и
-    /// вердикт по окну оговаривает живой поток (#182 — игровые сессии рвались). Штамп ставится
+    /// вердикт по окну оговаривает живой поток ( — игровые сессии рвались). Штамп ставится
     /// приёмом пакета в eBPF, значит «поллер узнал позже» из вердикта уходит совсем.
     ///
     /// Часы снимаются ДО чтения карты НАМЕРЕННО: пакет, пришедший между двумя действиями, даст штамп
@@ -732,7 +732,7 @@ impl FlowEvents {
     }
 }
 
-/// Async-поток НАБЛЮДЕНИЙ из кольца `SIGHT_EVENTS` — зрение без хвата (#249). eBPF копирует сюда
+/// Async-поток НАБЛЮДЕНИЙ из кольца `SIGHT_EVENTS` — зрение без хвата. eBPF копирует сюда
 /// начало рукопожатия НЕлифтнутого транзита; здесь читаем копии, чтобы наверху достать имя.
 ///
 /// Отдельный поток, а не ветка `FlowEvents`: там 16-байтовые события КАЖДОГО кадра, здесь —

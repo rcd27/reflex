@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# ВТОРОЙ ОРАКУЛ ДЛЯ ВЗВЕШИВАНИЯ (#320, срез B, шаг B7). Устроен ИНАЧЕ: греп по отслеживаемым
+# ВТОРОЙ ОРАКУЛ ДЛЯ ВЗВЕШИВАНИЯ (срез B, шаг B7). Устроен ИНАЧЕ: греп по отслеживаемым
 # файлам вместо компилятора.
 #
 # Зачем. У нас уже был случай, когда граф достижимости объявил `health.rs` неподключённым, потому
-# что `nevod::health::init()` зовётся без `use`. Вывод, у которого ОДИН оракул, ещё не вывод.
+# что `health::init()` зовётся без `use`. Вывод, у которого ОДИН оракул, ещё не вывод.
 #
 # Чем отличаются оракулы, и почему расхождение — находка, а не повод подправить число:
 #   * компилятор видит ПОТЕРЮ ДОСТУПА в том, что реально собирается (`--bins`), и слеп к тестам;
@@ -20,13 +20,20 @@ set -u
 
 [ $# -ge 1 ] || { echo "нужны имена типов: oracle.sh Fate Told …" >&2; exit 2; }
 
+# Чужие подмодули исключаются ПРИЗНАКОМ, а не именем: имя принадлежит чужому дереву, и скрипт
+# фреймворка знать его не обязан — принадлежность классу подтверждается признаком, а не именем
+# (§10.9). Подмодулей нет — фильтр пуст, и список остаётся полным.
+foreign() {
+    git config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null |
+        awk '{ print "^" $2 "/" }'
+}
+
 files="$(mktemp)"
 trap 'rm -f "$files"' EXIT
-git ls-files --recurse-submodules '*.rs' > "$files"
+git ls-files --recurse-submodules '*.rs' | { if [ -n "$(foreign)" ]; then grep -vEf <(foreign); else cat; fi; } > "$files"
 
 for name in "$@"; do
-  # Невод 1 исключён: deprecated, в парк не поедет.
-  readers="$(grep -l -w "$name" $(grep -v '^nevod/' "$files") 2>/dev/null | grep -v '^nevod/' || true)"
+  readers="$(grep -l -w "$name" $(cat "$files") 2>/dev/null || true)"
   outside="$(printf '%s\n' "$readers" | grep -v '^[[:space:]]*$' || true)"
   count="$(printf '%s\n' "$outside" | grep -c . || true)"
   printf '%s\t%s\t%s\n' "$name" "$count" "$(printf '%s' "$outside" | paste -sd, -)"

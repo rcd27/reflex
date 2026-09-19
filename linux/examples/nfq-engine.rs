@@ -1,4 +1,4 @@
-//! ЭТАЛОН ДВИЖКА — КАК ВЫГЛЯДИТ ОБРАБОТКА СЕТЕВОГО СЕМЕЙСТВА (#326).
+//! ЭТАЛОН ДВИЖКА — КАК ВЫГЛЯДИТ ОБРАБОТКА СЕТЕВОГО СЕМЕЙСТВА.
 //!
 //! Читается за один экран, и это условие, а не пожелание: форму воспроизводит не тот, кто прав, а
 //! тот, на кого можно показать пальцем. Цена образца, написанного ручными индексами (`payload[9]`,
@@ -52,9 +52,9 @@
 //! # Запуск
 //!
 //! ```sh
-//! sudo nft 'add table inet nevod_demo'
-//! sudo nft 'add chain inet nevod_demo out { type filter hook output priority -150; }'
-//! sudo nft 'add rule inet nevod_demo out tcp dport 443 meta mark != 0xBB queue num 200'
+//! sudo nft 'add table inet reflex_demo'
+//! sudo nft 'add chain inet reflex_demo out { type filter hook output priority -150; }'
+//! sudo nft 'add rule inet reflex_demo out tcp dport 443 meta mark != 0xBB queue num 200'
 //! cargo run --example nfq-engine --features nfqueue
 //! ```
 
@@ -190,7 +190,7 @@ fn act(action: Action, segment: &TcpSegment, ip: &[u8]) -> Plan {
             answer: NfqueueBackend::mark(BYPASS),
             inject: vec![decoy(segment)],
         },
-        // ОБРЫВ ЕСТЬ ПАРА, И ОБЕ ЕГО ПОЛОВИНЫ ЗДЕСЬ (#326, 05.09.2026).
+        // ОБРЫВ ЕСТЬ ПАРА, И ОБЕ ЕГО ПОЛОВИНЫ ЗДЕСЬ (05.09.2026).
         //
         // Прежняя редакция этого файла отвечала одним отказом (`inject: Vec::new()`), и это была
         // не экономия, а неверное определение обрыва, стоявшее в ЭТАЛОНЕ. Дроп без извещения —

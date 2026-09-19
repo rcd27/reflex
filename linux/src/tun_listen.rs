@@ -54,9 +54,9 @@ const CTRL_BUF: usize = 16 * 1024; // control-буфер стороны стри
 const LISTEN_MTU: usize = 1500;
 const IDLE_POLL: Duration = Duration::from_millis(50); // страховочный тик, если smoltcp не дал delay
 const FRAME_CHAN_CAP: usize = 256; // bounded пакетный канал (насос backpressure'ит на переполнении)
-const DEFAULT_FLOW_CAP: usize = 512; // FlowPermit-потолок по умолчанию (env NEVOD_FLOW_CAP переопределит)
+const DEFAULT_FLOW_CAP: usize = 512; // FlowPermit-потолок по умолчанию (env REFLEX_FLOW_CAP переопределит)
                                      // WitnessedLease backstop: молчание байт-witness дольше этого → abort. СТРОГО ПОЗЖЕ релейного
-                                     // `FLOW_IDLE`=120с (`nevod catch.rs`): в норме флоу реапит релей (idle-splice) → Drop→abort;
+                                     // срока простоя у потребителя (120 с): в норме флоу реапит он сам (idle-splice) → Drop→abort;
                                      // backstop добивает лишь ЗАВИС-кейс (write_all под отвалившейся ногой, корень #3), которого релей не
                                      // достал. Раньше 120с рубил бы легитимно-idle соединения, что релей считает живыми. Не 2ч (анти-паттерн).
 const BYTE_IDLE_MS: u64 = 180_000;
@@ -258,7 +258,7 @@ fn wake(slot: &mut Option<Waker>) {
 }
 
 /// ОБА КОНЦА нового флоу, взятые из одного IP-заголовка. Поля названы, а не разложены по позициям
-/// кортежа: концы — величины одного типа, и перепутать их местами кортеж позволяет молча (#258).
+/// кортежа: концы — величины одного типа, и перепутать их местами кортеж позволяет молча.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SynEnds {
     /// КТО открыл флоу — устройство в локальной сети владельца. До 15.08.2026 выбрасывался здесь же,
@@ -278,7 +278,7 @@ fn parse_syn(frame: &[u8]) -> Option<SynEnds> {
     }
     let tcp = TcpPacket::new_checked(ip.payload()).ok()?;
     // SocketAddrV4 (не SocketAddr): `From<SocketAddrV4> for IpListenEndpoint` доступен при одном
-    // proto-ipv4 (SocketAddr-конверсия smoltcp требует ещё proto-ipv6 — не тянем, nevod0 IPv4-only).
+    // proto-ipv4(SocketAddr-конверсия smoltcp требует ещё proto-ipv6 — не тянем, несущая IPv4-only).
     (tcp.syn() && !tcp.ack()).then(|| SynEnds {
         src: SocketAddrV4::new(ip.src_addr(), tcp.src_port()),
         dst: SocketAddrV4::new(ip.dst_addr(), tcp.dst_port()),
@@ -287,7 +287,7 @@ fn parse_syn(frame: &[u8]) -> Option<SynEnds> {
 
 /// Собрать smoltcp-iface для ПРОЗРАЧНОГО listen: medium-ip, placeholder-адрес `0.0.0.1/0` + дефолт-роут
 /// на себя, `set_any_ip(true)` — iface принимает пакет на ЛЮБОЙ dst (истинную цель несёт listen-сокет).
-/// Зеркалит netstack-smoltcp `stack.rs` (тот же приём для tun2socks-модели), но IPv4-only (nevod0).
+/// Зеркалит netstack-smoltcp `stack.rs` (тот же приём для tun2socks-модели), но IPv4-only(несущая).
 fn build_iface(device: &mut ChannelDevice, seed: u64) -> Interface {
     let mut cfg = IfaceConfig::new(HardwareAddress::Ip);
     cfg.random_seed = seed; // ISN-разброс без rand-депа
@@ -513,10 +513,10 @@ fn service_sockets(
     }
 }
 
-/// Резолв FlowPermit-потолка: env `NEVOD_FLOW_CAP` (число) переопределяет дефолт. Потолок = связка
+/// Резолв FlowPermit-потолка: env `REFLEX_FLOW_CAP` (число) переопределяет дефолт. Потолок = связка
 /// рабочего набора с КОНСТАНТОЙ, не с приходящим морем флоу (проекция `FlowPermit.tla`, Cap).
 fn resolve_flow_cap() -> usize {
-    std::env::var("NEVOD_FLOW_CAP")
+    std::env::var("REFLEX_FLOW_CAP")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&c| c > 0)
@@ -662,7 +662,7 @@ mod tests {
         assert_eq!(parse_syn(&ack), None, "не-SYN не порождает новый флоу");
     }
 
-    /// ОБА КОНЦА, а не один (#258): источник лежит в том же IP-заголовке, что и цель, и до 15.08.2026
+    /// ОБА КОНЦА, а не один: источник лежит в том же IP-заголовке, что и цель, и до 15.08.2026
     /// молча выбрасывался. Цена выброса измерена на живом отчёте из поля: спаны ловца не несли
     /// устройство, и жалоба «у Дианы не работает» не приземлялась ни на что — весь TCP парка
     /// наблюдался без того, КТО его открыл.
@@ -793,7 +793,7 @@ mod tests {
             "10.0.0.1:80".parse().unwrap(),
             "accept отдал ИСТИННЫЙ dst из SYN"
         );
-        // #258: источник обязан ПЕРЕЖИТЬ путь SYN → ingest → канал → accept, а не только разбор
+        //: источник обязан ПЕРЕЖИТЬ путь SYN → ingest → канал → accept, а не только разбор
         // кадра. Сверяется порт (40000 — тот, которым клиент открывался): адрес зависит от
         // идентичности egress-стека, а порт назначен здесь же и потому различает.
         assert_eq!(

@@ -46,17 +46,17 @@ static STEER_MAC: Array<u8> = Array::with_max_entries(6, 0);
 #[map]
 static STEER_STATS: Array<u64> = Array::with_max_entries(STEER_STAT_SLOTS, 0);
 
-// ifindex устройства несущей (nevod0) для L2-РЕДИРЕКТА (`bpf_redirect`): userspace ставит перед attach.
+// ifindex устройства несущей для L2-РЕДИРЕКТА (`bpf_redirect`): userspace ставит перед attach.
 // Редирект отправляет кадр прямо в xmit устройства на TC-хуке, МИНУЯ `ip_rcv`/`ip_forward` целиком —
 // обходит forward→tun дроп И conntrack-игнор лифтнутых кадров (измерено 2026-07-07: L3-доставка
-// лифтнутого мостового кадра на этой коробке ломается при brnf=0). 0 = не редиректить (fallback на
+// лифтнутого мостового кадра на этой машине ломается при brnf=0). 0 = не редиректить (fallback на
 // MAC-lift, legacy). Это L2-native путь, как AF_PACKET — ничего не входит в L3, ломаться нечему.
 #[map]
 static STEER_IFINDEX: Array<u32> = Array::with_max_entries(1, 0);
 
 // ifindex устройства НАЗАД к клиенту (eth1, порт клиента) для ОБРАТНОГО L2-редиректа. Датаплейн —
-// КРУГ: вход мы сделали L2-native (`bpf_redirect(nevod0)`), и ВЫХОД netstack→клиент делаем ЗЕРКАЛЬНО.
-// Обычный kernel-форвард nevod0→br0 эта коробка РОНЯЕТ (измерено: 176 SYN-ACK на nevod0, 0 на br0), а
+// КРУГ: вход мы сделали L2-native(`bpf_redirect(в несущую)`), и ВЫХОД netstack→клиент делаем ЗЕРКАЛЬНО.
+// Обычный kernel-форвард несущая→мост машина РОНЯЕТ (замерено: 176 SYN-ACK на несущей, 0 на мосту), а
 // `bpf_redirect_neigh(br0)` возвращал rc=7, но ядро роняло кадр ПОЗЖЕ на резолве neigh/mgmt-IP (модель
 // SteerDatapath `.neigh-fragile` RED). `.tobe` = `reflex_return` сам клеит Ethernet (`change_head`+
 // `store_bytes` из RETURN_MAC) и `bpf_redirect(eth1)` — БЕЗ FIB/neigh/mgmt-IP, как AF_PACKET. 0 = off.
@@ -74,13 +74,13 @@ static RETURN_SRC_MAC: Array<u8> = Array::with_max_entries(6, 0);
 #[map]
 static CLIENT_MACS: HashMap<u32, [u8; 6]> = HashMap::with_max_entries(1024, 0);
 
-// Наблюдаемость reflex_return: [0]=seen (кадров на nevod0-ingress), [1]=ipv4, [2]=последний rc
+// Наблюдаемость reflex_return: [0]=seen(кадров на ingress несущей), [1]=ipv4, [2]=последний rc
 // (7=TC_ACT_REDIRECT успех bpf_redirect(eth1); отрицательное как u64 = ошибка change_head/store).
 #[map]
 static RETURN_STATS: Array<u64> = Array::with_max_entries(3, 0);
 
 // Наблюдение проходящего флоу (`reflex_observe`): пакет-события транзита → userspace-witness
-// (`inline_witness` в неводе фолдит их в `(dst, Reach)`). ОТДЕЛЬНО от лифта/возврата — pure
+// (`inline_witness` у потребителя фолдит их в `(dst, Reach)`). ОТДЕЛЬНО от лифта/возврата — pure
 // observation, всегда TC_ACT_OK. Общий backend: тот же поток событий позже поедет `ByteFlow`.
 // 256 KiB кольца хватает на всплеск SYN'ов страницы; переполнение = потеря события (не краш),
 // witness идемпотентен к пропущенному не-классифицирующему пакету.
@@ -329,7 +329,7 @@ unsafe fn try_steer(ctx: &TcContext) -> Result<i32, ()> {
 
     // L2-РЕДИРЕКТ (если ifindex несущей задан): кадр идёт прямо в xmit устройства, МИНУЯ ip_rcv/
     // ip_forward → обходит forward→tun дроп и conntrack-игнор (L2-native, как AF_PACKET). Возвращаем
-    // код `bpf_redirect` (TC_ACT_REDIRECT). Кадр несёт Ethernet-заголовок — nevod0 (IFF_NO_PI) снимет
+    // код `bpf_redirect` (TC_ACT_REDIRECT). Кадр несёт Ethernet-заголовок — несущая (IFF_NO_PI) снимет
     // его в read-pump (или eth-strip в eBPF — следующий шаг после замера доставки).
     if let Some(ifx) = STEER_IFINDEX.get(0) {
         let ifindex = *ifx;
@@ -436,7 +436,7 @@ unsafe fn try_steer_udp(ip_start: *const u8, data: *const u8, data_end: *const u
         return TC_ACT_OK; // DNS/QUIC → нативный транзит (direct)
     }
 
-    // ЛИФТ в мозг (nevod0): выучить MAC downstream-next-hop (портируемый возврат) + bpf_redirect.
+    // ЛИФТ в мозг (несущая): выучить MAC downstream-next-hop(портируемый возврат) + bpf_redirect.
     bump(SteerStat::TargetHit);
     if data.add(12) as usize > data_end as usize {
         return TC_ACT_OK; // границы eth src-MAC (data[6..12]) для verifier
@@ -467,11 +467,11 @@ unsafe fn try_steer_udp(ip_start: *const u8, data: *const u8, data_end: *const u
     TC_ACT_OK // STEER_IFINDEX не задан → транзит (UDP L3-MAC-fallback не поддержан — legacy-путь)
 }
 
-// ── reflex_return (TC INGRESS на nevod0): ОБРАТНАЯ половина круга (L2RedirectEth1) ──
-// netstack пишет ответ (src=цель, dst=клиент) в nevod0 → ядро получает его на nevod0-ingress СЫРЫМ IP
+// ── reflex_return(TC INGRESS на несущей): ОБРАТНАЯ половина круга (L2RedirectEth1) ──
+// netstack пишет ответ (src=цель, dst=клиент) в несущую → ядро получает его на её ingress СЫРЫМ IP
 // (tun IFF_NO_PI, без Ethernet). Мы ЗЕРКАЛИМ проверенный вход: сами клеим L2-заголовок из RETURN_MAC
 // (dst=client, src=box) и `bpf_redirect(eth1)` прямо в xmit порта клиента — МИНУЯ kernel-форвард (ЧД на
-// коробке) И neigh-резолв (провал `bpf_redirect_neigh`, модель `.neigh-fragile`). Проекция `.tobe`.
+// машине) И neigh-резолв (провал `bpf_redirect_neigh`, модель `.neigh-fragile`). Проекция `.tobe`.
 #[classifier]
 pub fn reflex_return(ctx: TcContext) -> i32 {
     match unsafe { try_return(&ctx) } {
@@ -486,7 +486,7 @@ unsafe fn try_return(ctx: &TcContext) -> Result<i32, ()> {
     let data_end = ctx.data_end() as *const u8;
 
     if let Some(p) = RETURN_STATS.get_ptr_mut(0) {
-        unsafe { *p += 1 } // seen: кадр на nevod0-ingress
+        unsafe { *p += 1 } // seen: кадр на ingress несущей
     }
 
     if data.add(1) as usize > data_end as usize {
