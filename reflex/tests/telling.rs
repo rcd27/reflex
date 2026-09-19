@@ -135,8 +135,36 @@ fn overlapping_regions_do_not_let_the_engine_come_up() {
 
     let why = report.why().unwrap_or_default();
     assert!(
-        why.contains("пересекается"),
+        why.contains("делят биты"),
         "отказ обязан назвать причину пересечения; сказано: {why:?}"
+    );
+}
+
+/// ТРЕТЬЯ ПАРА, КОТОРОЙ НЕ БЫЛО: область решений против области МЕТКИ ВПРЫСКА носителя.
+///
+/// До 20.09.2026 решения сверялись только с приборами — носитель в проверку не входил вовсе.
+/// Пересекись они, наш собственный RST перестал бы опознаваться как свой (метку впрыска затёрло бы
+/// решением) и вернулся бы в свою же очередь, а движок принялся бы разбирать собственный след как
+/// чужой трафик.
+///
+/// Носитель здесь — очередь, а не бумага: заявки на марку есть только у того, кто в марку пишет.
+#[test]
+fn a_decision_region_over_the_carrier_inject_mark_is_refused() {
+    // Биты 30..31 — область метки впрыска (`core::mark::injecting`).
+    let clashing = Region::new(0xC000_0000).expect("связная область");
+
+    let report = engine(Nfqueue::queue(200))
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Always))
+        .telling(Telling::over(clashing))
+        .on(|_target: &str, _distress: Distress| {})
+        .run();
+
+    let why = report.why().unwrap_or_default();
+    assert!(
+        why.contains("«область метки впрыска»") && why.contains("делят биты"),
+        "отказ обязан назвать носителя стороной столкновения; сказано: {why:?}"
     );
 }
 

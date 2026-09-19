@@ -97,7 +97,7 @@ fn a_layout_over_the_inject_mark_is_refused_before_anything_opens() {
 
     let why = refused.why().expect("пересечение обязано стать причиной");
     assert!(
-        why.contains("пересекается с областью метки впрыска"),
+        why.contains("«область метки впрыска»") && why.contains("делят биты"),
         "причина названа не та: {why}"
     );
 }
@@ -117,7 +117,71 @@ fn a_layout_beside_the_inject_mark_passes_the_check() {
 
     let why = refused.why().unwrap_or("");
     assert!(
-        !why.contains("пересекается с областью метки впрыска"),
+        !why.contains("делят биты"),
         "умолчание раскладки не пересекается с меткой впрыска, а отвергнуто им: {why}"
+    );
+}
+
+/// МЕТКА УВОДА, ЗАДЕВАЮЩАЯ РАСКЛАДКУ ПРИБОРОВ, — отказ значением.
+///
+/// Пара, которая до 20.09.2026 не проверялась НИКЕМ: метка увода приходит числом и сверялась ни с
+/// чем. Беда её тихая и злая: памятка прибора пишется в свои биты, а если хоть один из них входит в
+/// слово увода, ядро примет обычный разговор за помеченный и уведёт его в чужую ногу — по правилу,
+/// которое мы сами же и просили поставить.
+#[test]
+fn a_steering_mark_that_touches_the_instrument_layout_is_refused() {
+    // Умолчание раскладки — 0x0FFF_E000; метка поднимает бит 13, лежащий внутри неё.
+    let refused = engine(Nfqueue::queue(200).steering(0x0000_2000, "reflex0"))
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .on(|_target, _distress| {})
+        .run();
+
+    let why = refused.why().expect("задетая область обязана стать причиной");
+    assert!(
+        why.contains("«метка увода»") && why.contains("задевает"),
+        "причина названа не та: {why}"
+    );
+}
+
+/// МЕТКА УВОДА, ЗАДЕВАЮЩАЯ ОБЛАСТЬ ВПРЫСКА, — тоже отказ.
+///
+/// Вторая из трёх пар, которых не было. Здесь беда обратная первой: наш собственный RST,
+/// помеченный как «не возвращать в очередь», уехал бы ещё и в ногу увода.
+#[test]
+fn a_steering_mark_that_touches_the_inject_region_is_refused() {
+    let refused = engine(Nfqueue::queue(200).steering(0x4000_0001, "reflex0"))
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .on(|_target, _distress| {})
+        .run();
+
+    let why = refused.why().expect("задетая область обязана стать причиной");
+    assert!(
+        why.contains("«метка увода»") && why.contains("«область метки впрыска»"),
+        "причина названа не та: {why}"
+    );
+}
+
+/// ПАРА К ДВУМ ПРЕДЫДУЩИМ: метка увода, не задевающая ничего, проходит.
+///
+/// Без неё обе проверки выше зелены и на законе «всякий увод запрещён», а такой закон отнимает у
+/// потребителя рабочую дверь целиком.
+#[test]
+fn a_steering_mark_beside_every_region_passes_the_check() {
+    // Биты 0..7 не заняты ни раскладкой (13..27), ни впрыском (30..31).
+    let refused = engine(Nfqueue::queue(200).steering(0x0000_00BB, "reflex0"))
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .on(|_target, _distress| {})
+        .run();
+
+    let why = refused.why().unwrap_or("");
+    assert!(
+        !why.contains("задевает"),
+        "метка вне всех областей отвергнута: {why}"
     );
 }
