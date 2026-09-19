@@ -102,6 +102,12 @@ pub use reflex_core::effect::Effect;
 use reflex_core::flow_table::FlowTable;
 use reflex_core::held::{Held, Terminal};
 use reflex_core::interleave::Interleave;
+/// ЗАЯВКА НА БИТЫ МАРКИ — реэкспорт: стоит в исходе [`IntoCarrier::claims`], а её реализует всякий,
+/// кто приносит СВОЙ носитель. Назвать тип он обязан, чтобы объявить метод, — значит взять имя ему
+/// положено у фасада, а не второй зависимостью на фундамент (закон замкнутости двери).
+///
+/// [`Region`] рядом по той же причине: заявку-область без него не построить.
+pub use reflex_core::mark::{Claim, Region};
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 /// ПОРТ НАБЛЮДЕНИЯ — реэкспорт, потому что стоит доводом [`Detecting::naming`], стадии самой
