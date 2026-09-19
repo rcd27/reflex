@@ -1911,13 +1911,39 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// нет — им достаётся пустой срез, и строить из него нечего. Иначе слово ЧУЖОГО разговора
     /// рвало бы разговор, привёзший пакет. Тишина потому и обрывается следующим повтором клиента, а
     /// не узлом.
-    pub fn act<F: FnMut(&str, S) -> Act<C::Carrier>>(self, react: F) -> Acting<C, T, F, H, S>
+    pub fn act<F: FnMut(&str, S) -> Act<C::Carrier>>(
+        self,
+        react: F,
+    ) -> Acting<C, T, ByName<F>, H, S>
     where
         C::Carrier: CanHold,
     {
         Acting {
             detecting: self,
-            react,
+            react: ByName(react),
+        }
+    }
+
+    /// ДЕЙСТВОВАТЬ, ВЗЯВ АДРЕС ЦЕЛИКОМ — та же дверь, что [`Detecting::act`], вторая её форма; пара
+    /// к [`Detecting::on_addressed`] у наблюдения.
+    ///
+    /// Нужна там, где решение трогать мир принимается по признаку, который говорит ЯДРО, а не по
+    /// имени цели: [`Whom::edge`] несёт марку разговора и счётчики края на момент этой буквы.
+    /// Заказано замером потребителя (19.09.2026): обрыв обязан случиться только на разговоре,
+    /// идущем под маркой лечения, — беда на разговоре, идущем другим путём, есть беда того пути.
+    ///
+    /// Без неё потребителю оставалось держать свою карту «цель → план»: второй источник правды о
+    /// том, что ядро и так говорит на каждом пакете, и расходится он молча (§4.1).
+    pub fn act_addressed<F: FnMut(Whom<'_>, S) -> Act<C::Carrier>>(
+        self,
+        react: F,
+    ) -> Acting<C, T, Addressed<F>, H, S>
+    where
+        C::Carrier: CanHold,
+    {
+        Acting {
+            detecting: self,
+            react: Addressed(react),
         }
     }
 }
@@ -2285,6 +2311,30 @@ impl<S, F: FnMut(Whom<'_>, S)> Reaction<S> for Addressed<F> {
     }
 }
 
+/// Как реакция ДЕЙСТВИЯ принимает адрес — пара к [`Reaction`], и обёртки у них ОДНИ И ТЕ ЖЕ
+/// ([`ByName`], [`Addressed`]): предмет один — «как реакция узнаёт, о ком речь», — и разводить его
+/// по двум словарям значило бы завести два закона одному вопросу.
+///
+/// Действию адрес нужнее, чем наблюдению, и это не вкус: акт трогает мир, а признак, по которому
+/// решают трогать, приходит от ЯДРА с каждой буквой (`Whom::edge`). Без этой формы потребителю
+/// оставалось держать свою карту «цель → план» — второй источник правды о том, что ядро и так
+/// говорит.
+pub trait Acts<K: CanHold, S> {
+    fn call(&mut self, whom: Whom<'_>, word: S) -> Act<K>;
+}
+
+impl<K: CanHold, S, F: FnMut(&str, S) -> Act<K>> Acts<K, S> for ByName<F> {
+    fn call(&mut self, whom: Whom<'_>, word: S) -> Act<K> {
+        (self.0)(whom.target, word)
+    }
+}
+
+impl<K: CanHold, S, F: FnMut(Whom<'_>, S) -> Act<K>> Acts<K, S> for Addressed<F> {
+    fn call(&mut self, whom: Whom<'_>, word: S) -> Act<K> {
+        (self.0)(whom, word)
+    }
+}
+
 /// СМОТРЕТЬ: реакция потребителя, мира не касающаяся.
 struct Watch<F>(F);
 
@@ -2305,10 +2355,10 @@ impl<K, S, F> Voice<K, S> for Do<F>
 where
     K: CanHold + CanInject,
     K::Error: std::fmt::Debug,
-    F: FnMut(&str, S) -> Act<K>,
+    F: Acts<K, S>,
 {
     fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        let (_word, effects) = emit::<K>((self.0)(whom.target, word), seen);
+        let (_word, effects) = emit::<K>(self.0.call(whom, word), seen);
         effects
     }
 
@@ -2860,7 +2910,7 @@ where
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     <C::Carrier as Sink>::Error: std::fmt::Debug,
     T: Transport,
-    F: FnMut(&str, S) -> Act<C::Carrier>,
+    F: Acts<C::Carrier, S>,
 {
     /// ДЕЙСТВОВАТЬ. Тот же ведущий цикл, что и у `.on` (приватная `drive`, не ссылка — см. выше), —
     /// отличается только голосом `Do`: он переводит акт в команды и отдаёт их СТОКУ НОСИТЕЛЯ.
