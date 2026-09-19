@@ -81,7 +81,7 @@ echo "── имена, названные кодом (всё, что стои�
 MATH="Set|In|Out|S|X|Y|K|R|W|B|T|E|F|H|U|id_A|id_X|Packet|Conversation|Target|Flow|Named|Unnamed|Addr|Reproduced|Unstable|NoTape|Silent|Nothing|Blind|Torn|Idle|Answered|Full|Partial|Held|Broken|Invalid|One|Each|Nobody|Awaited|Spoken|Advanced|NotReady|Failed|Quantity|State|Event|Verdict|Series|Sink|Source|Serves|Tick|Opaque"
 CANON="$DOCS/2026-09-08-reflex-one-machine-vision.md"
 # Токены с `/` и `.` — адреса (их держит первый блок), голый хекс — ссылка на коммит.
-grep -ohP '`[^`]+`' "$CANON" | tr -d '`' | tr ' ' '\n' \
+grep -vP '^\*Сторож:\*' "$CANON" | grep -ohP '`[^`]+`' | tr -d '`' | tr ' ' '\n' \
   | grep -vP '[/.]' | grep -vP '^[0-9a-f]{7,}$' \
   | grep -oP '^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*' \
   | grep -vP "^($MATH)$" | sort -u | while read -r name; do
@@ -91,6 +91,33 @@ grep -ohP '`[^`]+`' "$CANON" | tr -d '`' | tr ' ' '\n' \
         echo x >> /tmp/canon-bad.$$
     fi
 done
+
+echo "── сторожа, названные каноном ──"
+# ЧЕТВЁРТЫЙ БЛОК: та же идиома, что держит докблоки (`core/tests/docblock_guards.rs`), перенесена на
+# канон. Раздел, утверждающий поведение, называет ТЕСТ по имени — и переименуй тест, снеси его,
+# скопируй раздел без переноса строки, скрипт краснеет.
+#
+# Зачем это здесь. Инвентаризация 20.09.2026 замерила связь «закон ↔ сторож»: на шестьдесят
+# нумерованных положений в коде нашлось семнадцать ссылок, покрывающих одиннадцать номеров.
+# Остальные держались памятью пишущего — ровно тем, чем Правило 10.10 держалось до `stands.rs`.
+# Блок НЕ проверяет, что сторож сторожит ИМЕННО этот закон: он ловит утечку связи, не её отсутствие
+# и не её ложность. Тот же предел, что у докблоков, и назван он по той же причине.
+grep -ohP '^\*Сторож:\*[^\n]*' "$DOCS"/*.md > /tmp/canon-watch.$$ || true
+# ПУСТОТА — ТОЖЕ ОТКАЗ (Следствие 10.9): блок, не нашедший ни одного имени, зелен по той же
+# причине, по какой зелен сломанный. Строка `*Сторож:*` могла уехать при правке канона целиком.
+NAMED=$(grep -oP '(?<=^|[ ,(])`\K[a-z_][a-z0-9_]*(?=`)' /tmp/canon-watch.$$ 2>/dev/null | wc -l)
+if [ "$NAMED" -eq 0 ]; then
+    echo "  СТОРОЖЕЙ НЕ НАЗВАНО НИ ОДНОГО — блок проверяет пустоту"
+    echo x >> /tmp/canon-bad.$$
+fi
+grep -ohP '(?<=^|[ ,(])`\K[a-z_][a-z0-9_]*(?=`)' /tmp/canon-watch.$$ 2>/dev/null \
+  | sort -u | while read -r guard; do
+    if ! grep -rqE --include='*.rs' "fn $guard\b" . 2>/dev/null; then
+        echo "  СТОРОЖ ПРОПАЛ: $guard — канон называет его, функции с таким именем в дереве нет"
+        echo x >> /tmp/canon-bad.$$
+    fi
+done
+rm -f /tmp/canon-watch.$$
 
 BAD=$( [ -f /tmp/canon-bad.$$ ] && wc -l < /tmp/canon-bad.$$ || echo 0 )
 rm -f /tmp/canon-bad.$$

@@ -28,6 +28,8 @@
 *Реализация:* `core/src/mealy.rs` (`trait Mealy`, `fn step`). Показания (`type Log`) вынесены
 в §3.4 и структуры коалгебры не меняют.
 
+*Сторож:* `composition_carries_the_state_of_both_links`, `lifting_carries_one_machine_through_the_whole_stream`.
+
 **Опр. 1.2.** Функция `g : In^ω → Out^ω` *каузальна*, если `n`-й член `g(σ)` зависит только от
 `σ₀…σₙ`.
 
@@ -79,6 +81,9 @@ In  =  Packet ⊔ Tick ⊔ Opaque ⊔ Torn
 
 *Реализация:* `core/src/detector.rs` (`enum DetectorEvent`).
 
+*Сторож:* `a_hidden_input_is_caught_as_instability` — скрытый вход виден расхождением двух
+прогонов одной ленты (§10), и это единственный способ его увидеть: типом он не ловится.
+
 ## 3. Композиция
 
 **Опр. 3.1.** Для `β : S → (S × B)^A` и `γ : T → (T × C)^B`:
@@ -102,6 +107,10 @@ In  =  Packet ⊔ Tick ⊔ Opaque ⊔ Torn
 скобочности суть разные типы. Совпадают они поведением, не представлением.
 
 *Реализация:* `core/src/mealy.rs` (`Compose`, `Id`, `MealyExt::then`).
+
+*Сторож:* `composition_is_associative`, `identity_is_neutral_on_both_sides`,
+`watching_alongside_changes_no_word`. Предел сторожей назван в их собственной шапке: они держат
+регрессию подписи, а не логику — сломать `Compose`, сохранив сигнатуру, не даёт компилятор.
 
 **3.4. Показания.** Показания композиции — произведение показаний звеньев,
 `Log(γ ∘ β) = Log(β) × Log(γ)`. Произведение, а не общий словарь: автор показания назван позицией
@@ -139,6 +148,9 @@ Conversation ≅ ∐_{k ∈ Flow} Packet          Target ≅ ∐_{k ∈ Addr} Co
 
 *Реализация:* `core/src/word.rs` (`Base::Fibre`), `engine/src/row.rs` (`TargetKey`).
 
+*Сторож:* `a_target_key_carries_either_a_name_or_an_address`,
+`the_order_of_arrival_is_invisible_to_the_join`, `a_target_whose_layer_emptied_out_yields_no_word`.
+
 ### 4.1. Автор обязателен
 
 **Опр. 4.5.** Ресурс `r`, участвующий в шаге, *несёт автора*, если он либо занимает позицию в
@@ -162,6 +174,8 @@ Conversation ≅ ∐_{k ∈ Flow} Packet          Target ≅ ∐_{k ∈ Addr} Co
   (`core/src/tape.rs`, `core/src/interleave.rs`);
 * по позиции — писатель объявлен типом: `IntoProbe::Home`, `MarkHome = MarkSilent ⊔ MarkWriter`
   (`reflex/src/lib.rs`); второй писатель одного ресурса не собирается.
+
+*Сторож:* `two_writers_over_one_mark_break_the_silence_gate`, `one_edge_instrument_speaks_just_once`.
 
 ## 5. Слово: полурешётка с поглощающим нулём
 
@@ -209,6 +223,10 @@ Conversation ≅ ∐_{k ∈ Flow} Packet          Target ≅ ∐_{k ∈ Addr} Co
 *Реализация:* `core/src/word.rs` (`trait Within`, `trait Descends`), `core/src/disclosure.rs`
 (`Disclosed`, `joined_with`, `stood_on`).
 
+*Сторож:* `waiting_is_allowed_where_the_region_tolerates_it`, `knowledge_never_decreases`,
+`repeating_the_same_event_adds_nothing`, `the_order_of_events_does_not_matter`,
+`freezing_is_deliberately_not_commutative`.
+
 ## 6. Область определённости: restriction-категория
 
 **Опр. 6.1.** Категория с *ограничением* сопоставляет каждому морфизму `f : A → B` идемпотент
@@ -231,6 +249,9 @@ f ∘ f̄  =  f
 наблюдательном равенстве: идемпотентность, коммутативность и ассоциативность встречи, единица
 встречи, сохранение тождества и композиции, и сама аксиома Опр. 6.1
 (`os/tests/restriction_laws.rs`).
+
+*Сторож:* `meet_is_idempotent`, `meet_is_commutative`, `meet_is_associative`,
+`always_true_level_is_the_unit_of_meet`, `map_preserves_identity`.
 
 Машины §1–§5 идемпотента `f̄` НЕ несут: в `core`, `engine`, `instrument` и фасаде его нет, и
 `reflex-os` не входит в граф зависимостей ни одного из них. Раздел описывает структуру, соседнюю
@@ -297,6 +318,10 @@ Verdict = Held ⊔ Broken ⊔ Invalid
 
 *Реализация:* `core/src/detector.rs`.
 
+*Сторож:* `nothing_seen_while_blind_is_not_the_same_as_nothing_happened`,
+`a_gap_carries_its_own_moment`. Обязанность Опр. 7.4 сторожа не имеет и иметь не может —
+проверяется мутацией (§12.8).
+
 ## 8. Время: буква входа
 
 **Опр. 8.1.** `Tick ∈ In`. Часов у морфизма нет; периодичность выражается сеткой узлов, а не сном.
@@ -315,6 +340,10 @@ Verdict = Held ⊔ Broken ⊔ Invalid
 окнам сетки, отнесёт его к окну, закрытому в `u`, то есть к чужому окну. ∎
 
 *Реализация:* `core/src/interleave.rs`, `core/src/grid.rs`.
+
+*Сторож:* `the_nodes_a_packet_stepped_over_come_out_before_it`,
+`a_node_is_handed_out_exactly_once`, `a_node_belongs_to_exactly_one_interval`,
+`moments_never_decrease_across_the_whole_stream`.
 
 ## 9. Мир: функтор из морфизма в драйвер
 
@@ -337,6 +366,9 @@ Verdict = Held ⊔ Broken ⊔ Invalid
 именно в тишине. ∎
 
 *Реализация:* `core/src/backend.rs`, `core/src/serves.rs`.
+
+*Сторож:* `an_empty_carrier_waits_out_the_deadline`, `work_comes_back_at_once`,
+`a_receive_error_waits_out_the_deadline_too`.
 
 ### 9.1. Способности
 
@@ -373,10 +405,19 @@ conntrack нагрузки не наблюдает.
 
 *Реализация:* `core/src/capability.rs`, `core/src/edge.rs`.
 
+*Сторож:* `every_capability_has_its_own_gate_on_claiming_it`,
+`the_scan_found_every_declaration_and_not_a_silent_zero`. Правила 9.5 и 9.6 сторожа не имеют:
+первое о том, чего носитель НЕ заявил, второе — о широте обещания; оба суть свойства постановки,
+не текста.
+
 ### 9.2. Подъём
 
 `Lift` поднимает морфизм в поток; функтор идёт только вверх. Стену образует конкурентность, а не
 время: у шага второй нити нет. Поток есть один из драйверов, не носитель категории.
+
+*Сторож:* `lifting_preserves_identity`, `lifting_preserves_composition`,
+`lifting_carries_both_halves_of_the_log`, `lifting_yields_exactly_one_word_per_letter`. Законы
+функтора предъявлены 20.09.2026; до того слово «функтор» стояло здесь без единого закона.
 
 **Опр. 9.8 (набор цепочек).** Набор — драйвер того же рода, что поток. Он не композирует машины
 (§3: композиция проводит влияние, здесь его нет), не смешивает их слова и не имеет собственного
@@ -486,12 +527,19 @@ Replayed  =  Reproduced ⊔ Unstable(at) ⊔ NoTape ⊔ Silent
 двадцать — первое число было замером нашего терпения. Наш стенд обрыва до этих правок не имел
 контроля вовсе и объявил бы зелёным прогон, в котором доказывать было нечего.
 
+*Сторож:* `a_stand_that_changes_the_world_measures_a_control`,
+`the_stands_carry_the_current_inject_mark_and_compare_by_mask`.
+
 *Реализация:* `examples/sever-silent-drop/lab/engine/run.sh` (контроль), `reflex/tests/stands.rs`
 (сторож: стенд примера, чей код зовёт действие, обязан снимать контроль и судить по нему).
 Сторож держит лишь механически проверяемое — что контроль ЕСТЬ и ВЛИЯЕТ на вердикт; (а) и (б) суть
 свойства постановки замера и типом невыразимы, как обязанность ослепнуть (Опр. 7.4).
 
 *Реализация:* `core/src/certify/`, `scripts/portable.sh`, `scripts/canon.sh`.
+
+*Сторож:* `a_pure_machine_replays_itself`, `a_hidden_input_is_caught_as_instability`,
+`an_empty_tape_is_not_a_verdict`, `silence_in_both_runs_is_not_evidence`,
+`a_window_is_judged_mid_run_not_at_the_end`.
 
 ## 11. Наружу: один контракт
 
@@ -532,6 +580,10 @@ engine(носитель)
 потребитель с ними сделал.
 
 *Реализация:* `reflex/src/lib.rs`.
+
+*Сторож:* `the_layout_comes_from_the_carrier`, `the_carrier_names_itself_for_the_report`,
+`the_readings_of_two_chains_arrive_as_one_stream`. Утв. 11.1 («это выражение, а не строитель»)
+держит компилятор: перестановки не собираются, и сторож им не нужен.
 
 ## 12. Открытое
 
