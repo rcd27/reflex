@@ -14,7 +14,8 @@ set -u
 
 TARGET=${TARGET:-rutracker.org}   # тихий дроп по SNI на вантаже
 QUEUE=200
-MARK=0xBB                         # reflex::INJECT_MARK — метка своих инъекций
+MARK=0x40000000                   # reflex::INJECT_MARK — значение метки своих инъекций
+MARK_MASK=0xc0000000              # core::mark::injecting() — область, в которой она живёт
 LOG=/tmp/reflex.log
 
 echo "[стенд] цель=$TARGET  очередь=$QUEUE  метка_инъекций=$MARK"
@@ -40,11 +41,15 @@ if ! kill -0 "$ENGINE" 2>/dev/null; then
 fi
 
 # :443 в очередь ОБЕ стороны, но свои инъекции (метка) пропускаем — RST не должен вернуться в очередь.
+#
+# СРАВНЕНИЕ МАСКОЙ, А НЕ СЛОВОМ. Марку на машине пишем не мы одни: сравни правило всё слово — и
+# один чужой бит в ней отменил бы признак «это наш впрыск», а RST вернулся бы в свою же очередь.
+# Маска — та самая область, в которой метка объявлена (`core::mark::injecting`).
 nft add table inet reflex_lab
 nft add chain inet reflex_lab out '{ type filter hook output priority -150; policy accept; }'
-nft add rule  inet reflex_lab out tcp dport 443 meta mark != $MARK queue num 200
+nft add rule  inet reflex_lab out tcp dport 443 meta mark and $MARK_MASK != $MARK queue num 200
 nft add chain inet reflex_lab inp '{ type filter hook input priority -150; policy accept; }'
-nft add rule  inet reflex_lab inp tcp sport 443 meta mark != $MARK queue num 200
+nft add rule  inet reflex_lab inp tcp sport 443 meta mark and $MARK_MASK != $MARK queue num 200
 
 # ЗАМЕР: сколько curl провисел до обрыва. Без нас тихий дроп держит до ~12с.
 t0=$(date +%s%3N)

@@ -120,3 +120,48 @@ fn a_stand_that_changes_the_world_measures_a_control() {
         "стенды, меряющие мир, который сами изменяют, без контроля (Правило 10.10): {naked:?}"
     );
 }
+
+/// СТОРОЖ КОПИИ: число метки впрыска в скриптах стендов обязано совпадать с домом.
+///
+/// Скрипт — третья копия того же числа (первая — `core::mark::injecting`, вторая —
+/// `reflex::INJECT_MARK`), и копии расходятся молча. Здесь расхождение не даёт красного теста
+/// вообще: правило ядра начинает пропускать не то слово, впрыск возвращается в свою же очередь, и
+/// движок разбирает собственный RST как чужой трафик — на стенде это выглядит работой.
+///
+/// Сторож требует двух вещей сразу, и вторая важнее первой: значение — текущее, а сравнение —
+/// МАСКОЙ. Правило, сверяющее всё слово марки, ломается от одного чужого бита, поставленного
+/// соседом по машине; на нашей линии соседей трое.
+#[test]
+fn the_stands_carry_the_current_inject_mark_and_compare_by_mask() {
+    let word = format!("{:#x}", reflex::INJECT_MARK);
+    let mask = format!("{:#x}", reflex_core::mark::injecting().mask());
+
+    let mut wrong: Vec<String> = Vec::new();
+    let mut looked = 0;
+    for script in under(&root().join("examples"), "sh") {
+        let Ok(text) = std::fs::read_to_string(&script) else {
+            continue;
+        };
+        // Предмет — только скрипты, которые о метке впрыска вообще говорят.
+        if !text.contains("meta mark") {
+            continue;
+        }
+        looked += 1;
+        let name = script.display().to_string();
+        if !text.contains(&word) {
+            wrong.push(format!("{name}: метка впрыска не {word}"));
+        }
+        if !text.contains(&mask) {
+            wrong.push(format!("{name}: сравнение не маской {mask}"));
+        }
+    }
+
+    assert!(
+        looked > 0,
+        "ни одного скрипта с правилом по марке — сторож проверяет пустоту (Следствие 10.9)"
+    );
+    assert!(
+        wrong.is_empty(),
+        "скрипты стендов разошлись с домом метки впрыска: {wrong:?}"
+    );
+}
