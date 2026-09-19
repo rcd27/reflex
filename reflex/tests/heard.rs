@@ -278,3 +278,56 @@ fn a_single_chain_gives_a_turn_even_when_the_wire_is_silent() {
         "провод молчал — цепочка обязана вернуть ход"
     );
 }
+
+/// ПРАВИЛО ОБРЫВА С ТЕРМИНАЛОМ — ОТКАЗ, А НЕ МОЛЧАНИЕ.
+///
+/// Замер 20.09.2026 на этом же сочинённом проводе: цепочка с объявленным правилом и терминалом
+/// `.on` собиралась, запускалась и отдавала показания — а впрысков давала НОЛЬ. Правило читает
+/// `Detecting::heard`, складывая его в голос показаний; терминал идёт другим голосом, и правило до
+/// него не доезжает вовсе. Снаружи это выглядело исправной работой: слова идут, лечения нет.
+///
+/// Пара к тестам выше, где то же правило с `.heard()` рвёт: без неё «правило работает» доказано
+/// лишь для одного пути из двух, а второй молчит.
+#[test]
+fn a_severing_rule_with_a_terminal_is_refused_instead_of_being_ignored() {
+    let paper = scenario();
+    let injected = paper.injected();
+
+    let report = engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Crier::always())
+        .severing(|word: &Distress| matches!(word, Distress::NoBytes))
+        .on(|_target: &str, _distress: Distress| {})
+        .run();
+
+    let why = report.why().expect("цепочка обязана отказаться, а не молчать");
+    assert!(
+        why.contains("правило обрыва") && why.contains("терминалом"),
+        "причина названа не та: {why}"
+    );
+    assert!(
+        paper::taken(injected).is_empty(),
+        "отказ обязан наступить ДО первого оборота — мир не тронут"
+    );
+}
+
+/// ВТОРАЯ ПОЛОВИНА: терминал БЕЗ правила проходит как прежде.
+///
+/// Без неё закон выше зелен и на проверке «всякий терминал запрещён», а такая проверка отнимает у
+/// потребителя основную дверь целиком.
+#[test]
+fn a_terminal_without_a_rule_runs_as_before() {
+    let report = engine(scenario())
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Crier::always())
+        .on(|_target: &str, _distress: Distress| {})
+        .run();
+
+    assert!(
+        report.why().is_none(),
+        "цепочка без правила обязана дойти до конца: {:?}",
+        report.why()
+    );
+}
