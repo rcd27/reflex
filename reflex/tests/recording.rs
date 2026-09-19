@@ -546,3 +546,28 @@ fn the_declared_target_port_decides_whose_body_is_not_written() {
         "кадр с чужого порта пишется целиком, вместе с телом: {as_stranger} против {as_target}"
     );
 }
+
+/// ЗАБЫТЫЙ ДОВОД ЗАПУСКА — СВОЯ ПРИЧИНА, а не чужая.
+///
+/// Пустой путь ОС читает как отсутствующий файл, и отказ приходил её словами: «запись не прочитана
+/// (): No such file or directory». Причиной названо чужое, предмет — наш: спросить забыли. Примеры
+/// берут путь аргументом, и этот исход человек видит первым, когда аргумент не написал.
+#[test]
+fn a_recording_without_a_path_says_the_path_is_missing() {
+    let refused = pcap("")
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(secs(5)))
+        .on(|_target, _distress| {})
+        .run();
+
+    let why = refused.why().expect("отказ обязан назвать причину");
+    assert!(
+        why.contains("путь к записи не задан"),
+        "причиной названо чужое: {why}"
+    );
+    assert!(
+        !why.contains("No such file"),
+        "отказ ОС о пустом имени не есть наш предмет: {why}"
+    );
+}

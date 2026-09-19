@@ -250,6 +250,16 @@ impl IntoCarrier for Recording {
     type Carrier = Local<PcapFile>;
 
     fn open(self) -> Result<Local<PcapFile>, Cause> {
+        // ПУТЬ НЕ ЗАДАН — своя клетка, а не отказ файловой системы (§7: «не спросили» ≠ «не нашли»).
+        // Пустое имя ОС трактует как несуществующий файл, и наружу шло «запись не прочитана ():
+        // No such file or directory» — причиной названо чужое, а пустые скобки читатель обязан
+        // расшифровать сам. Примеры берут путь доводом запуска (`replay-recording`, `second-order`),
+        // и забытый довод — первый исход, который они показывают человеку.
+        if self.path.as_os_str().is_empty() {
+            return Err(Cause(
+                "путь к записи не задан: `pcap(путь)` ждёт имя файла".into(),
+            ));
+        }
         let data = std::fs::read(&self.path).map_err(|why| {
             Cause(format!(
                 "запись не прочитана ({}): {why}",
