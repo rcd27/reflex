@@ -57,7 +57,6 @@ spin = { version = "0.9", optional = true } # SpinMutex общего control'а 
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
-rand = "0.9"
 tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "macros", "test-util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
