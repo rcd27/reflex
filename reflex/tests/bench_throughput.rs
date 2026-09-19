@@ -10,9 +10,11 @@
 //! реагировать на шум машины. Гоняется в отладочной сборке тоже — там медленнее, потому порог
 //! низкий.
 
-#[test]
-fn the_throughput_of_a_chain() {
-    use reflex::*;
+use reflex::*;
+
+/// Корпус и прогон общие у обоих замеров НАРОЧНО: у замера цены двери закреплено всё, кроме самой
+/// двери, — иначе сравнивались бы два разных прогона, а не цена одного отличия.
+fn corpus(name: &str) -> (std::path::PathBuf, usize) {
     use reflex_core::builder::TcpBuilder;
     use reflex_core::types::{Flow, Protocol, TcpFlags};
     use std::net::SocketAddr;
@@ -68,25 +70,39 @@ fn the_throughput_of_a_chain() {
         }
     }
     let total = frames.len();
-    let path = std::env::temp_dir().join(format!("reflex-bench-{}.pcap", std::process::id()));
+    let path = std::env::temp_dir().join(format!("reflex-{name}-{}.pcap", std::process::id()));
     std::fs::write(&path, recording(&frames)).unwrap();
+    (path, total)
+}
 
-    let started = std::time::Instant::now();
-    let heard: usize = pcap(&path)
+/// Прогон корпуса цепочкой из пяти приборов. `law` — просить ли восьмой закон: ЕДИНСТВЕННОЕ
+/// отличие между двумя замерами ниже.
+fn ran(path: &std::path::Path, law: Option<Tap<Certified>>) -> std::time::Duration {
+    let chain = pcap(path)
         .from(Tcp)
         .extract(Sni)
         .detect(Retransmit::unanswered())
         .detect(Silence::after(secs(5)))
         .detect(Rst::seen())
         .detect(Unreached::answers())
-        .detect(Dismissed::without_a_word())
-        .heard()
-        .expect("носитель открылся")
-        .count();
-    let spent = started.elapsed();
+        .detect(Dismissed::without_a_word());
+    let chain = match law {
+        Some(tap) => chain.certifying(tap),
+        None => chain,
+    };
+    let started = std::time::Instant::now();
+    let _heard: usize = chain.heard().expect("носитель открылся").count();
+    started.elapsed()
+}
+
+#[test]
+fn the_throughput_of_a_chain() {
+    let (path, total) = corpus("bench");
+
+    let spent = ran(&path, None);
 
     let rate = total as f64 / spent.as_secs_f64();
-    eprintln!("кадров {total}, показаний {heard}, время {spent:?} → {rate:.0} пакетов/с");
+    eprintln!("кадров {total}, время {spent:?} → {rate:.0} пакетов/с");
     std::fs::remove_file(&path).ok();
 
     // Порог — порядок величины, а не рекорд. Замер на этой машине: 678 тысяч пакетов в секунду в
@@ -96,5 +112,56 @@ fn the_throughput_of_a_chain() {
     assert!(
         rate > 20_000.0,
         "цена оборота выросла на порядок — очередь начнёт ронять пакеты: {rate:.0} пакетов/с"
+    );
+}
+
+/// ЦЕНА ВОСЬМОГО ЗАКОНА — число, а не «дёшево».
+///
+/// Дверь `certifying` стоит трёх вещей: клона буквы провода в ленту, и — на каждом закрытом окне —
+/// ДВУХ пере-подач его свежей семье машин. То есть работа приборов на окне утраивается, и цена эта
+/// не разовая: у плотного пайпа окно в 64 буквы закрывается чаще раза в секунду.
+///
+/// Закон держит ПОРЯДОК, как и соседний замер: он обязан покраснеть, если цена двери вырастет
+/// вдесятеро против нынешней, и не обязан отзываться на шум машины. Контроль закреплён — корпус,
+/// цепочка и прогон общие, отличается только дверь (иначе сравнивались бы два разных прогона).
+///
+/// Замер на этой машине (отладка): без двери ~61 тыс. пакетов/с, с дверью ~37 тыс. — цена ×1,7 на
+/// тридцати двух закрытых окнах.
+///
+/// Предсказание было ×3, и расхождение с замером объяснено, а не списано на шум: пере-подача гоняет
+/// ТОЛЬКО приборы — буквы в ленте уже разобраны, — тогда как прогон несёт сверх того разбор провода,
+/// носителя и слой. Утраивается, стало быть, не весь оборот, а его приборная часть.
+///
+/// Этим же замером найден дефект окна: прежде сверка стояла за приходом УЗЛА сетки, и на корпусе,
+/// уместившемся в десятую долю секунды, свидетельство пришло ОДНО из двух тысяч букв — лента росла
+/// до конца источника. Закон (`certifying.rs`) заведён отдельно; цена от починки не изменилась.
+#[test]
+fn the_price_of_the_eighth_law() {
+    let (path, total) = corpus("bench-law");
+    let (tx, testimony) = std::sync::mpsc::sync_channel::<Certified>(4096);
+
+    let quiet = ran(&path, None);
+    let judged = ran(&path, Some(Tap::new(tx)));
+    std::fs::remove_file(&path).ok();
+
+    let verdicts: Vec<Certified> = testimony.try_iter().collect();
+    // ОРАКУЛ ОБЯЗАН БЫТЬ ЗРЯЧИМ (Правило 10.8): замер цены двери, которая не сработала ни разу,
+    // мерил бы стоимость выключенного признака.
+    assert!(
+        !verdicts.is_empty(),
+        "дверь обязана была сработать, иначе замеряется не она"
+    );
+
+    let times = total as f64 / quiet.as_secs_f64() / (total as f64 / judged.as_secs_f64());
+    eprintln!(
+        "без закона {:.0} пак/с, с законом {:.0} пак/с → цена ×{times:.1}, окон {}",
+        total as f64 / quiet.as_secs_f64(),
+        total as f64 / judged.as_secs_f64(),
+        verdicts.len()
+    );
+
+    assert!(
+        times < 30.0,
+        "цена восьмого закона выросла на порядок против троекратной: ×{times:.1}"
     );
 }
