@@ -2568,6 +2568,64 @@ pub struct Chorus<S = Distress> {
     next: usize,
 }
 
+/// ЧЕМ КОНЧИЛСЯ ХОД, КОТОРЫЙ ПОПРОСИЛИ НА СРОК ([`Chorus::within`]).
+///
+/// Три клетки, и средняя обитаема (§7): молчание провода и конец источников — РАЗНЫЕ вести, и
+/// слить их значило бы объявить тишину концом работы либо конец — затянувшейся тишиной.
+#[derive(Debug)]
+pub enum Turned<S = Distress> {
+    /// Показание пришло — то же, что отдаёт итератор.
+    Said(Note<S>),
+    /// Окно кончилось, показаний не было. Провод молчал, машины живы.
+    Quiet,
+    /// Источники кончились: работы больше не будет никогда.
+    Ended,
+}
+
+impl<S: Word + Clone + PartialEq + 'static> Chorus<S> {
+    /// ХОД БЕЗ ПОКАЗАНИЯ — вернуть управление не позже, чем через `window`, даже если провод молчал.
+    ///
+    /// Итератор ([`Iterator::next`]) держит потребителя до первого показания, и это верно для того,
+    /// чей предмет — наблюдения: нет пакетов, нет и работы. Но на том же круге живёт вторая машина
+    /// потребителя, которой время нужно САМО ПО СЕБЕ — досмотреть срок, снять отметку, прочесть
+    /// ответ, пришедший не проводом. Без этой двери её темп равен темпу трафика, и в тишине она
+    /// стоит, выглядя при этом работающей. Замер потребителя (19.09.2026): отчёт внеполосной пробы
+    /// пролежал непрочитанным, пока в провод не дали пакет рукой.
+    ///
+    /// Тик своим машинам потребитель подаёт сам — время есть буква входа (§8), и таймера внутри
+    /// наших машин не заводится. Дверь даёт ровно ИСТОЧНИК хода: срок уже умеет носитель (§9.1),
+    /// наружу он до сих пор не выходил.
+    ///
+    /// Окно — потолок ожидания, а не сон: пришло показание раньше — вернёмся раньше.
+    pub fn within(&mut self, window: Duration) -> Turned<S> {
+        if let Some(note) = self.said.pop_front() {
+            return Turned::Said(note);
+        }
+        let until = Instant::now() + window;
+        while Instant::now() < until {
+            if self.live.is_empty() {
+                return Turned::Ended;
+            }
+            // Круг тот же, что у итератора, и ожидание так же живёт в НОСИТЕЛЕ: потолок — меньшее
+            // из срока цепочки и остатка нашего окна, иначе цепочка выжгла бы окно целиком.
+            let at = self.next % self.live.len();
+            self.next = at + 1;
+            let cap = until.min(Instant::now() + SLICE);
+            if !self.live[at].turn(&mut self.said, cap) {
+                self.live.remove(at);
+                self.next = at;
+            }
+            if let Some(note) = self.said.pop_front() {
+                return Turned::Said(note);
+            }
+        }
+        match self.live.is_empty() {
+            true => Turned::Ended,
+            false => Turned::Quiet,
+        }
+    }
+}
+
 impl<S> Iterator for Chorus<S> {
     type Item = Note<S>;
 
@@ -2690,6 +2748,43 @@ pub struct Heard<C: Bordered, T: Transport, S = Distress> {
     /// Один оборот рождает НЕСКОЛЬКО показаний (буквы узла адресованы каждой живой машине), а
     /// итератор отдаёт по одному: очередь и есть эта разница.
     said: VecDeque<Note<S>>,
+}
+
+impl<C, T, S> Heard<C, T, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    /// ХОД БЕЗ ПОКАЗАНИЯ — то же, что [`Chorus::within`], и по той же причине: у потребителя на
+    /// этом же цикле живёт машина, которой время нужно само по себе. Дверь одна на одиночную
+    /// цепочку и на набор нарочно — иначе один предмет получил бы два поведения, и добавление
+    /// второй цепочки меняло бы темп жизни первой.
+    pub fn within(&mut self, window: Duration) -> Turned<S> {
+        if let Some(note) = self.said.pop_front() {
+            return Turned::Said(note);
+        }
+        let until = Instant::now() + window;
+        while Instant::now() < until {
+            let alive = self.turning.pump_until(
+                &mut Collecting {
+                    said: &mut self.said,
+                    rule: self.rule.as_mut(),
+                },
+                Some(until),
+            );
+            if let Some(note) = self.said.pop_front() {
+                return Turned::Said(note);
+            }
+            if !alive {
+                return Turned::Ended;
+            }
+        }
+        Turned::Quiet
+    }
 }
 
 impl<C, T, S> Iterator for Heard<C, T, S>

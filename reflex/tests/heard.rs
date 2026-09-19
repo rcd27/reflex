@@ -259,3 +259,22 @@ fn a_folded_chain_yields_its_readings_as_values() {
         "слово о цели обязано прозвучать в том же обороте, замыканием"
     );
 }
+
+/// ПРЕДМЕТ: ход без показания есть и у ОДИНОЧНОЙ цепочки — та же дверь, что у набора.
+///
+/// Заводить её только набору значило бы дать одному предмету два поведения: потребитель, начавший
+/// с одной цепочки, получил бы ход, добавив вторую, и не понял бы, отчего.
+#[test]
+fn a_single_chain_gives_a_turn_even_when_the_wire_is_silent() {
+    let mut heard = engine(Paper::new().silent_for(secs(30)).then_stop())
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Crier::always())
+        .heard()
+        .expect("носитель открылся");
+
+    assert!(
+        matches!(heard.within(Duration::from_millis(50)), Turned::Quiet),
+        "провод молчал — цепочка обязана вернуть ход"
+    );
+}
