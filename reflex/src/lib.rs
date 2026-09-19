@@ -2055,6 +2055,58 @@ where
     }
 }
 
+impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
+    /// ПРЕДЪЯВЛЯТЬ §10 — та же дверь, что у [`Detecting::certifying`], и повторена она здесь по той
+    /// же причине, по какой повторён `.detect`: место двери в выражении смысла не несёт. Лента
+    /// пишется всем буквам цепочки, а не тем, что пришли после свёртки, и дверь, доступная лишь до
+    /// `.about`, была бы ловушкой ПОРЯДКА — выражение собралось бы, а закона у пайпа с копределом
+    /// не было бы, и молча. Там, где порядок смысл несёт (прибор чужого алфавита, второй писатель
+    /// марки, свёртка без реакции), его держит тип, а не умолчание (§11).
+    pub fn certifying(self, tap: reflex_core::Tap<Certified>) -> Speaking<C, T, H, S> {
+        Speaking {
+            detecting: self.detecting.certifying(tap),
+        }
+    }
+
+    /// ГОВОРИТЬ ИМЯ РАЗГОВОРА — [`Detecting::naming`] у свёрнутой цепочки; довод тот же, что выше.
+    pub fn naming(self, tap: reflex_core::Tap<Named>) -> Speaking<C, T, H, S> {
+        Speaking {
+            detecting: self.detecting.naming(tap),
+        }
+    }
+
+    /// ГОВОРИТЬ ОБ УХОДЕ РАЗГОВОРА — [`Detecting::parting`] у свёрнутой цепочки.
+    pub fn parting(self, tap: reflex_core::Tap<Parted>) -> Speaking<C, T, H, S> {
+        Speaking {
+            detecting: self.detecting.parting(tap),
+        }
+    }
+
+    /// РВАТЬ МЁРТВЫЙ РАЗГОВОР — [`Detecting::severing`] у свёрнутой цепочки. Способность носителя
+    /// требуется здесь же, в точке объявления правила (§9.1), и ни от свёртки, ни от места в
+    /// выражении не зависит.
+    pub fn severing<P>(self, when: P) -> Speaking<C, T, H, S>
+    where
+        P: FnMut(&S) -> bool + Send + 'static,
+        C::Carrier: CanHold + CanSever + CanInject,
+        <C::Carrier as reflex_core::backend::Sink>::Error: std::fmt::Debug,
+    {
+        Speaking {
+            detecting: self.detecting.severing(when),
+        }
+    }
+
+    /// ВНЕПОЛОСНОЕ РЕШЕНИЕ — [`Detecting::telling`] у свёрнутой цепочки. Дверь нужна ей не реже, а
+    /// чаще прочих: решение принимают о ЦЕЛИ, то есть о той самой области, ради которой и стоит
+    /// копредел.
+    #[cfg(feature = "telling")]
+    pub fn telling(self, telling: crate::telling::Telling) -> Speaking<C, T, H, S> {
+        Speaking {
+            detecting: self.detecting.telling(telling),
+        }
+    }
+}
+
 impl<C: Bordered, T: Transport, S> Speaking<C, T, MarkSilent, S> {
     /// Ещё прибор поверх — как в [`Detecting::detect`]: копредел не закрывает набор приборов.
     pub fn detect<P>(self, detector: P) -> Speaking<C, T, P::Home, S>

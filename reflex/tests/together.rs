@@ -11,7 +11,7 @@
 
 mod paper;
 
-use paper::{request, syn, Paper};
+use paper::{dns_query, request, syn, Paper};
 use reflex::*;
 
 /// Прибор, говорящий на каждом пакете. Свой, а не из оснастки: у записи край иного рода, и прибор
@@ -360,5 +360,52 @@ fn a_folded_chain_joins_the_set_and_its_target_word_is_spoken() {
     assert!(
         !spoken.lock().expect("журнал не отравлен").is_empty(),
         "слово о ЦЕЛИ обязано прозвучать и у цепочки, стоящей в наборе"
+    );
+}
+
+/// ПРЕДМЕТ: свёрнутая цепочка принимает ТЕ ЖЕ двери, что всякая, и они работают.
+///
+/// Двери `naming`/`parting`/`severing`/`telling`/`certifying` стояли только у цепочки ДО свёртки, и
+/// это была ловушка порядка: выражение со свёрткой собиралось, а дверь у него молча пропадала. Ни
+/// одна из них смысла от места не меняет — лента, имена, уход и внеполосное решение живут у всей
+/// цепочки, а не у букв, пришедших после `.about`. Там, где порядок смысл НЕСЁТ, его держит тип
+/// (§11): прибор чужого алфавита не встаёт в пайп, свёртка без реакции не собирается.
+///
+/// Заказано тем же замером, что и вход свёрнутой цепочки в набор: у потребителя решение о цели
+/// едет дверью `telling`, а пайпу, которому копредел нужен по существу, она была недоступна.
+///
+/// Разговор здесь DNS не ради разнообразия: имя цели у него есть (`naming` иначе молчал бы по
+/// свойству СЦЕНАРИЯ, а не двери — наступлено на TCP, где `request` несёт заголовок без SNI).
+#[test]
+fn a_folded_chain_takes_the_same_doors() {
+    let (tx, named) = std::sync::mpsc::sync_channel(16);
+    let (bye, parted) = std::sync::mpsc::sync_channel(16);
+
+    let heard: Vec<Note<_>> = engine(
+        Paper::new()
+            .then_packet(dns_query(40301, "canary.example"))
+            .silent_for(secs(120))
+            .then_stop(),
+    )
+    .from(Udp)
+    .extract(Sni)
+    .detect(Resolve::names())
+    .about(|words| words.first().map(|word| (*word).clone()))
+    .on_target(|_target, _voiced| {})
+    .naming(reflex_core::Tap::new(tx))
+    .parting(reflex_core::Tap::new(bye))
+    .severing(|_word| false)
+    .heard()
+    .expect("носитель открылся")
+    .collect();
+
+    let _ = heard;
+    assert!(
+        !named.try_iter().collect::<Vec<Named>>().is_empty(),
+        "имя разговора обязано прозвучать и у свёрнутой цепочки"
+    );
+    assert!(
+        !parted.try_iter().collect::<Vec<Parted>>().is_empty(),
+        "уход разговора обязан прозвучать и у свёрнутой цепочки"
     );
 }

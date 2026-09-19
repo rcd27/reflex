@@ -348,3 +348,47 @@ fn one_name_cannot_be_known_two_ways() {
 
     assert!(matches!(refused, Err(Unknowable::Twice(name)) if name == "yandex.ru"));
 }
+
+/// ПРЕДМЕТ: внеполосное решение доезжает и у цепочки СО СВЁРТКОЙ.
+///
+/// Дверь `telling` стояла только до `.about`, и пайпу с копределом была недоступна — при том, что
+/// решают именно о ЦЕЛИ, то есть о той области, ради которой копредел и заведён. Закон проверяет не
+/// собираемость (она обманчива), а ДОЕЗД: вердикт следующего пакета обязан нести решение.
+#[test]
+fn a_decision_reaches_the_verdict_of_a_folded_chain_too() {
+    let telling = Telling::over(leg());
+    let posting = telling.clone();
+
+    let paper = Paper::new()
+        .then_packet(request(40001))
+        .then_packet(request(40001))
+        .then_stop();
+    let applied = paper.applied();
+
+    engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(own(Always))
+        .about(|words| words.first().map(|word| (*word).clone()))
+        .on_target(|_target, _voiced| {})
+        .telling(telling)
+        .on(move |target: &str, _distress: Distress| {
+            assert!(
+                posting.tell(target, 0b1010),
+                "решение обязано влезть в область"
+            );
+        })
+        .run();
+
+    let written = marks(&taken(applied));
+    assert_eq!(
+        written.len(),
+        1,
+        "запомненный вердикт ровно один — тот, что после решения"
+    );
+    assert_eq!(
+        Marked::read(&leg(), written[0]),
+        0b1010,
+        "решение обязано доезжать до вердикта и у свёрнутой цепочки"
+    );
+}

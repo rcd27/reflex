@@ -262,3 +262,36 @@ fn a_chain_that_acts_testifies_too() {
         "у действия лента обязана писаться тем же циклом, что у наблюдения; пришло {said:?}"
     );
 }
+
+/// ПРЕДМЕТ: закон просят у СВЁРНУТОЙ цепочки тем же словом и в любом месте выражения.
+///
+/// Двери цепочки повторены у `Speaking` (`.detect` уже был) не ради удобства: порядок в выражении
+/// несёт смысл (§11), и место, где стоит `.certifying`, смысла НЕ несёт — лента пишется всем
+/// буквам цепочки, а не тем, что пришли после слова. Дверь, доступная лишь до `.about`, была бы
+/// ловушкой порядка: собралось бы, но у пайпа с копределом закона бы не было, и молча.
+#[test]
+fn a_folded_chain_is_asked_for_the_law_in_its_own_place() {
+    let (tx, heard) = sync_channel(64);
+
+    engine(
+        Paper::new()
+            .then_packet(syn(40001))
+            .then_packet(request(40001))
+            .silent_for(secs(3))
+            .then_stop(),
+    )
+    .from(Tcp)
+    .extract(Sni)
+    .detect(own(Counter))
+    .about(|words| words.first().map(|word| (*word).clone()))
+    .on_target(|_target, _voiced| {})
+    .certifying(reflex_core::Tap::new(tx))
+    .on(|_target: &str, _distress: Distress| {})
+    .run();
+
+    let said: Vec<Certified> = heard.try_iter().collect();
+    assert!(
+        said.iter().any(|it| it.verdict == Replayed::Reproduced),
+        "свёрнутая цепочка обязана свидетельствовать так же, как всякая другая; пришло {said:?}"
+    );
+}
