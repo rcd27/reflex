@@ -7,7 +7,7 @@
 use reflex_core::debounce::Debounce;
 use reflex_core::detector::DetectorEvent;
 use reflex_core::mealy::Mealy;
-use reflex_core::word::{Base, Word};
+use reflex_core::word::{Base, CanDefer, Word};
 use std::time::{Duration, Instant};
 
 /// ОБЛАСТЬ ЗАКОННОГО СТЕНДА.
@@ -18,6 +18,10 @@ struct Bench;
 impl Base for Bench {
     type Fibre = ();
 }
+/// СТЕНД ОБЪЯВЛЯЕТ И ОТКЛАДЫВАЕМОСТЬ, а не получает её даром: оператор ожидания требует
+/// `CanDefer` (§5), и область, за которой смотрят сроком, обязана терпеть ожидание. Пакетная его
+/// не терпит — там слово держит ядро.
+impl CanDefer for Bench {}
 
 /// СОБЫТИЕ СТЕНДА — с именем, а не голым числом: адрес объявляет значение, а число молчит.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -29,7 +29,35 @@ impl<T> Debounce<T> {
 }
 
 /// Задержка адреса не меняет: наружу то же событие, тому же адресату, только позже.
-impl<T: crate::word::Word> Mealy for Debounce<T> {
+///
+/// ОТКЛАДЫВАТЬ МОЖНО НЕ ВЕЗДЕ (§5): баунд `T::Of: CanDefer` держит то же, что объявляет
+/// [`crate::word::may_wait`]. Пакет держит ядро, и оператор, придержавший слово ПАКЕТУ до конца
+/// окна тишины, обещал бы ядру ждать — ждать оно не станет. Сторож — `compile_fail`-доктест ниже.
+///
+/// ```
+/// use reflex_core::debounce::Debounce;
+/// use reflex_core::mealy::Mealy;
+/// use reflex_core::word::{Conversation, Word};
+/// struct Said;
+/// impl Word for Said { type Of = Conversation; }
+/// fn takes<M: Mealy>(_: M) {}
+/// takes(Debounce::<Said>::over(std::time::Duration::from_secs(1)));
+/// ```
+///
+/// ```compile_fail
+/// use reflex_core::debounce::Debounce;
+/// use reflex_core::mealy::Mealy;
+/// use reflex_core::word::{Packet, Word};
+/// struct Verdict;
+/// impl Word for Verdict { type Of = Packet; }
+/// fn takes<M: Mealy>(_: M) {}
+/// // Ядро держит пакет: откладывать слово к нему невыразимо.
+/// takes(Debounce::<Verdict>::over(std::time::Duration::from_secs(1)));
+/// ```
+impl<T: crate::word::Word> Mealy for Debounce<T>
+where
+    T::Of: crate::word::CanDefer,
+{
     type In = DetectorEvent<T>;
     type Out = SmallVec<[T; 2]>;
     /// Показаний не заводит: говорит, что увидел, не говорит, чем мерил.

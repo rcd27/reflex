@@ -165,7 +165,23 @@ impl<T> Timeout<T> {
     }
 }
 
-impl<T: crate::word::Word> Mealy for Timeout<T> {
+/// ОТКЛАДЫВАТЬ МОЖНО НЕ ВЕЗДЕ (§5): баунд `T::Of: CanDefer` — тот же закон, что объявляет
+/// [`crate::word::may_wait`]. Срок, названный ПАКЕТУ, был бы обещанием подержать его до узла сетки;
+/// держит пакет ядро, и оно не ждёт.
+///
+/// ```compile_fail
+/// use reflex_core::mealy::Mealy;
+/// use reflex_core::timeout::Timeout;
+/// use reflex_core::word::{Packet, Word};
+/// struct Verdict;
+/// impl Word for Verdict { type Of = Packet; }
+/// fn takes<M: Mealy>(_: M) {}
+/// takes(Timeout::<Verdict>::new(std::time::Duration::from_secs(1), std::time::Duration::from_secs(9)));
+/// ```
+impl<T: crate::word::Word> Mealy for Timeout<T>
+where
+    T::Of: crate::word::CanDefer,
+{
     type In = DetectorEvent<T>;
     type Out = SmallVec<[Deadline<T>; 2]>;
     /// Показаний не заводит: говорит, что увидел, не говорит, чем мерил.
