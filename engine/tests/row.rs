@@ -136,7 +136,7 @@ fn a_name_outranks_the_address_at_any_width_and_any_address() {
     // Два разных имени на ОДНОМ адресе — разные строки. Иначе подсказка адрес→имя подставила бы
     // имя последнего на всю группу.
     assert_ne!(
-        keyed(Naming::Spoken("rutracker.org"), CDN, net_of),
+        keyed(Naming::Spoken("blocked.example"), CDN, net_of),
         keyed(Naming::Spoken("x.com"), CDN, net_of)
     );
 }

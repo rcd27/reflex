@@ -4011,11 +4011,11 @@ mod tests {
 
         let named = Ident {
             dst: Addr(0x0A00_0001),
-            naming: Naming::Spoken("rutracker.org".into()),
+            naming: Naming::Spoken("blocked.example".into()),
             hello: Vec::new(),
             hello_at: None,
         };
-        assert_eq!(label(&named.key()), "rutracker.org");
+        assert_eq!(label(&named.key()), "blocked.example");
     }
 
     /// Безымянная цель ключуется `Unnamed`, а не `Named` с адресом-строкой. Тег — не украшение:
@@ -4260,7 +4260,7 @@ mod tests {
     #[test]
     fn the_word_about_a_target_carries_the_age_of_the_freshest_observation() {
         let t0 = Instant::now();
-        let key = TargetKey::Named("rutracker.org".into());
+        let key = TargetKey::Named("blocked.example".into());
         let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
         layer.saw(key.clone(), flow(1), Distress::NoBytes, t0);
         layer.saw(
@@ -4278,7 +4278,7 @@ mod tests {
             t0 + Duration::from_secs(30),
         );
         assert_eq!(said.len(), 1, "одна цель — одно слово");
-        assert_eq!(said[0].0, "rutracker.org");
+        assert_eq!(said[0].0, "blocked.example");
         assert_eq!(
             said[0].1,
             Voiced {
@@ -4295,7 +4295,7 @@ mod tests {
     #[test]
     fn a_target_whose_conversations_went_quiet_says_nothing() {
         let t0 = Instant::now();
-        let key = TargetKey::Named("rutracker.org".into());
+        let key = TargetKey::Named("blocked.example".into());
         let mut layer: Layer<Conversation, Target, Distress> = Layer::new();
         layer.saw(key, flow(1), Distress::NoBytes, t0);
 
@@ -4371,7 +4371,7 @@ mod tests {
 
     /// Окно ленты из двух разговоров одной цели и узла сетки между ними.
     fn window(start: Instant) -> Tape<Word, Whose, ()> {
-        let target = TargetKey::Named("rutracker.org".into());
+        let target = TargetKey::Named("blocked.example".into());
         let mut tape: Tape<Word, Whose, ()> = Tape::new();
         for (n, offset) in [(1u32, 0u64), (2, 10)] {
             tape.record([TapeLetter::Event {
@@ -4455,7 +4455,7 @@ mod tests {
         );
         assert!(
             said.iter()
-                .any(|said| matches!(said, Said::OfTarget(name, _) if name == "rutracker.org")),
+                .any(|said| matches!(said, Said::OfTarget(name, _) if name == "blocked.example")),
             "слово о цели в сказанном: {said:?}"
         );
         assert_eq!(

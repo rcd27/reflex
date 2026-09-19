@@ -294,7 +294,7 @@ fn an_answer_carries_the_key_that_says_whose_it_is() {
     let start = Instant::now();
     let seam = Interleave::started(start, STEP);
 
-    let (_seam, letters) = seam.answered::<u8, &str, u32>("rutracker.org", 42, at(start, 120));
+    let (_seam, letters) = seam.answered::<u8, &str, u32>("blocked.example", 42, at(start, 120));
 
     let letter = letters
         .iter()
@@ -304,13 +304,13 @@ fn an_answer_carries_the_key_that_says_whose_it_is() {
     let TapeLetter::Answer(answer) = letter else {
         unreachable!("только что нашли отклик")
     };
-    assert_eq!(answer.key, "rutracker.org");
+    assert_eq!(answer.key, "blocked.example");
     assert_eq!(answer.input, 42);
 
     // Адрес спрашивают У БУКВЫ ЛЕНТЫ, а не у отклика: обе породы отвечают на один вопрос «твоё ли
     // это», и тем переигровка маршрутизирует их одинаково, не различая пород.
     assert!(
-        letter.answers(&"rutracker.org"),
+        letter.answers(&"blocked.example"),
         "буква обязана узнавать свой ключ"
     );
     assert!(!letter.answers(&"example.com"), "и не узнавать чужой");

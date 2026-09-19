@@ -93,7 +93,7 @@ pub struct Known {
 pub struct Suffixes(Vec<String>);
 
 impl Known {
-    /// Имя и все его поддомены: `gosuslugi.ru` покрывает `lk.gosuslugi.ru`, но не `notgosuslugi.ru`.
+    /// Имя и все его поддомены: `service.example` покрывает `lk.service.example`, но не `notservice.example`.
     pub fn suffixes<N: Into<String>>(names: impl IntoIterator<Item = N>) -> Suffixes {
         Suffixes(names.into_iter().map(Into::into).collect())
     }

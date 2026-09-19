@@ -68,7 +68,7 @@ fn a_target_key_carries_either_a_name_or_an_address() {
     use reflex_core::types::Addr;
     use reflex_core::word::{Base, Target, TargetKey};
 
-    let named: <Target as Base>::Fibre = TargetKey::Named("rutracker.org".into());
+    let named: <Target as Base>::Fibre = TargetKey::Named("blocked.example".into());
     let unnamed: <Target as Base>::Fibre = TargetKey::Unnamed(Addr(0x0A00_0001));
     assert_ne!(named, unnamed, "имя и адрес — разные ключи одной области");
 

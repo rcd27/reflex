@@ -178,7 +178,7 @@ fn a_decision_region_over_the_carrier_inject_mark_is_refused() {
 /// цепочке, чей оборот случился раньше, и второй не доставалось НИКОГДА.
 ///
 /// Наблюдалось это не как потеря, а как «лечение через раз»: марка решения доезжала до `SYN` в
-/// 8 случаях из 111 (счётчики ядра, `rutracker.org`), потому что QUIC-нить крутится по тику и без
+/// 8 случаях из 111 (счётчики ядра, `blocked.example`), потому что QUIC-нить крутится по тику и без
 /// трафика — и вычерпывала письма у TCP-цепочки, которой они и были нужны.
 #[test]
 fn a_decision_reaches_every_chain_not_only_the_first_asker() {
@@ -256,7 +256,7 @@ const CONTOUR: u32 = 0b1100;
 
 fn priors() -> Telling {
     Telling::over(leg())
-        .knowing(Known::suffixes(["gosuslugi.ru", "yandex.ru"]).marked(STRAIGHT))
+        .knowing(Known::suffixes(["service.example", "yandex.ru"]).marked(STRAIGHT))
         .and_then(|telling| {
             telling.knowing(Known::suffixes(["chatgpt.com", "music.yandex.ru"]).marked(CONTOUR))
         })
@@ -288,17 +288,17 @@ fn read(written: Vec<u32>) -> Vec<u32> {
 #[test]
 fn a_known_name_is_led_from_its_very_first_packet() {
     assert_eq!(asked(priors(), "ab.chatgpt.com"), vec![CONTOUR]);
-    assert_eq!(asked(priors(), "www.gosuslugi.ru"), vec![STRAIGHT]);
+    assert_eq!(asked(priors(), "www.service.example"), vec![STRAIGHT]);
 }
 
 #[test]
 fn a_suffix_covers_its_subdomains_and_not_its_lookalikes() {
     let priors = priors();
 
-    assert_eq!(priors.known("gosuslugi.ru"), Some(STRAIGHT));
-    assert_eq!(priors.known("lk.gosuslugi.ru"), Some(STRAIGHT));
-    assert_eq!(priors.known("notgosuslugi.ru"), None);
-    assert_eq!(priors.known("gosuslugi.ru.example.com"), None);
+    assert_eq!(priors.known("service.example"), Some(STRAIGHT));
+    assert_eq!(priors.known("lk.service.example"), Some(STRAIGHT));
+    assert_eq!(priors.known("notservice.example"), None);
+    assert_eq!(priors.known("service.example.example.com"), None);
 }
 
 #[test]
@@ -313,8 +313,8 @@ fn the_longest_suffix_decides() {
 fn what_is_known_does_not_yield_to_what_is_told() {
     let priors = priors();
 
-    assert!(!priors.tell("www.gosuslugi.ru", CONTOUR));
-    assert_eq!(asked(priors, "www.gosuslugi.ru"), vec![STRAIGHT]);
+    assert!(!priors.tell("www.service.example", CONTOUR));
+    assert_eq!(asked(priors, "www.service.example"), vec![STRAIGHT]);
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn an_address_answered_for_a_known_name_is_known_too() {
 
     assert!(priors.tell("93.184.216.34", CONTOUR));
     assert_eq!(
-        priors.bind("93.184.216.34", "www.gosuslugi.ru"),
+        priors.bind("93.184.216.34", "www.service.example"),
         Some(STRAIGHT)
     );
     assert!(!priors.tell("93.184.216.34", CONTOUR));
@@ -347,7 +347,7 @@ fn an_address_shared_by_two_known_names_follows_the_first_declared() {
     let priors = priors();
 
     assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(CONTOUR));
-    assert_eq!(priors.bind("104.18.32.47", "gosuslugi.ru"), Some(STRAIGHT));
+    assert_eq!(priors.bind("104.18.32.47", "service.example"), Some(STRAIGHT));
     assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(STRAIGHT));
     assert_eq!(priors.known("104.18.32.47"), Some(STRAIGHT));
 }

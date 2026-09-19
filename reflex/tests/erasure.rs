@@ -17,7 +17,7 @@ use reflex::*;
 /// Сочинить обмен: вопрос клиента и ответ резолвера.
 fn exchange(answer: Vec<u8>) -> Paper {
     Paper::new()
-        .then_packet(dns_query(40001, "rutracker.org"))
+        .then_packet(dns_query(40001, "blocked.example"))
         .then_packet(answer)
         .then_stop()
 }
@@ -40,9 +40,9 @@ fn heard_on(answer: Vec<u8>) -> Vec<Resolved> {
 #[test]
 fn an_erased_name_reaches_the_reaction() {
     assert_eq!(
-        heard_on(dns_denial(40001, "rutracker.org", Denial::Forged)),
+        heard_on(dns_denial(40001, "blocked.example", Denial::Forged)),
         vec![Resolved::Erased {
-            name: "rutracker.org".to_string(),
+            name: "blocked.example".to_string(),
             how: Erasure::Denied,
         }],
         "цепочка обязана назвать стирание имени, а не промолчать"
@@ -55,7 +55,7 @@ fn an_erased_name_reaches_the_reaction() {
 #[test]
 fn an_ordinary_no_such_name_stays_silence() {
     assert!(
-        heard_on(dns_denial(40001, "rutracker.org", Denial::Recursor)).is_empty(),
+        heard_on(dns_denial(40001, "blocked.example", Denial::Recursor)).is_empty(),
         "рекурсор, не нашедший имени, беды не составляет"
     );
 }
@@ -71,7 +71,7 @@ fn an_ordinary_no_such_name_stays_silence() {
 #[test]
 fn a_zone_owner_asked_directly_stays_silence() {
     assert!(
-        heard_on(dns_denial(40001, "rutracker.org", Denial::ZoneOwner)).is_empty(),
+        heard_on(dns_denial(40001, "blocked.example", Denial::ZoneOwner)).is_empty(),
         "исполнивший долг хозяина зоны не подделка, сколько бы он ни ставил `AA`"
     );
 }
@@ -88,7 +88,7 @@ fn a_zone_owner_asked_directly_stays_silence() {
 #[test]
 fn a_truncated_answer_from_the_zone_owner_stays_silence() {
     assert!(
-        heard_on(dns_denial(40001, "rutracker.org", Denial::Truncated)).is_empty(),
+        heard_on(dns_denial(40001, "blocked.example", Denial::Truncated)).is_empty(),
         "секцию срезали по дороге; читать её пустоту как невыполненный долг нельзя"
     );
 }
@@ -98,9 +98,9 @@ fn a_truncated_answer_from_the_zone_owner_stays_silence() {
 #[test]
 fn an_honestly_resolved_name_is_named_by_its_own_word() {
     assert_eq!(
-        heard_on(dns_answer(40001, "rutracker.org", [195, 82, 146, 214])),
+        heard_on(dns_answer(40001, "blocked.example", [195, 82, 146, 214])),
         vec![Resolved::Honest {
-            name: "rutracker.org".to_string(),
+            name: "blocked.example".to_string(),
             addrs: vec![[195, 82, 146, 214]],
         }],
         "честный ответ обязан доехать с адресами — по ним потребитель и лечит цель"

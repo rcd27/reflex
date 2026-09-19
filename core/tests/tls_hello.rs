@@ -29,10 +29,10 @@ fn client_hello_different_domains_differ() {
 #[test]
 fn rewrite_sni_replaces_name_and_stays_parsable() {
     let ch = build_client_hello("www.google.com");
-    let out = reflex_core::tls::rewrite_sni(&ch, "rutracker.org").expect("переписалось");
+    let out = reflex_core::tls::rewrite_sni(&ch, "blocked.example").expect("переписалось");
     assert_eq!(
         reflex_core::tls::extract_sni(&out).as_deref(),
-        Some("rutracker.org")
+        Some("blocked.example")
     );
 }
 

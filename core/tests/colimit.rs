@@ -8,7 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 fn target() -> TargetKey<Box<str>> {
-    TargetKey::Named("rutracker.org".into())
+    TargetKey::Named("blocked.example".into())
 }
 
 fn flow(n: u32) -> Flow {

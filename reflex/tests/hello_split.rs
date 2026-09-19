@@ -52,7 +52,7 @@ fn named(paper: Paper) -> Vec<String> {
 /// ровно как у живого браузера.
 #[test]
 fn the_name_is_lifted_from_a_hello_spread_over_several_segments() {
-    let hello = reflex_core::tls::build_client_hello("meduza.io");
+    let hello = reflex_core::tls::build_client_hello("x.example");
     let (first, rest) = hello.split_at(40);
     let (second, third) = rest.split_at(rest.len() / 2);
 
@@ -70,7 +70,7 @@ fn the_name_is_lifted_from_a_hello_spread_over_several_segments() {
     );
 
     assert!(
-        said.iter().any(|name| name == "meduza.io"),
+        said.iter().any(|name| name == "x.example"),
         "имя обязано подняться из склеенного приветствия; названо: {said:?}"
     );
 }
@@ -98,7 +98,7 @@ fn a_short_hello_in_a_single_segment_works_as_before() {
 /// назвало бы ДРУГУЮ цель, а это хуже незнания: в обход уехал бы непричастный.
 #[test]
 fn a_hole_in_the_hello_does_not_give_birth_to_a_foreign_name() {
-    let hello = reflex_core::tls::build_client_hello("meduza.io");
+    let hello = reflex_core::tls::build_client_hello("x.example");
     let (first, rest) = hello.split_at(40);
     let (_lost, tail) = rest.split_at(rest.len() / 2);
 
@@ -112,7 +112,7 @@ fn a_hole_in_the_hello_does_not_give_birth_to_a_foreign_name() {
     );
 
     assert!(
-        !said.iter().any(|name| name == "meduza.io"),
+        !said.iter().any(|name| name == "x.example"),
         "через дыру имя не собирается — и выдумывать его нельзя; названо: {said:?}"
     );
 }
@@ -145,6 +145,9 @@ fn the_name_is_lifted_from_a_live_recording_with_a_long_hello() {
         .run();
 
     let heard = heard.into_inner().expect("журнал не отравлен");
+    // ИМЯ ЗДЕСЬ — НЕ ФИКСТУРА, А СОДЕРЖИМОЕ ЗАПИСИ: оно лежит в байтах снятого разговора, и
+    // подменить его значило бы проверять, что движок выдумывает ожидаемое. Соседние тесты строят
+    // приветствие сами и потому зовут цель условным именем (RFC 2606).
     assert!(
         heard.iter().any(|name| name == "meduza.io"),
         "имя обязано подняться из приветствия живого клиента, как его читает и tshark; \
@@ -225,6 +228,7 @@ fn a_hello_cut_the_way_a_live_path_cuts_it() {
     );
 
     assert!(
+        // Та же запись — то же настоящее имя, см. соседний тест выше.
         said.iter().any(|name| name == "meduza.io"),
         "разрез 1380 + {} обязан давать имя; названо: {said:?}",
         tail.len()

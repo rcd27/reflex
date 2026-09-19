@@ -12,7 +12,7 @@
 
 use reflex_core::dns::DnsMessage;
 
-/// Отказ на имя `rutracker.org` с заданными флагами и числом записей в секции AUTHORITY. Секции
+/// Отказ на имя `blocked.example` с заданными флагами и числом записей в секции AUTHORITY. Секции
 /// ответов у отказа нет вовсе — тем он и коварен: смотреть не на что, кроме заголовка.
 ///
 /// Сами записи AUTHORITY в тело не кладутся: предмет здесь — СЧЁТЧИК заголовка, а он от тела не
@@ -25,7 +25,7 @@ fn denial(flags: u16, authority: u16) -> Vec<u8> {
     packet.extend_from_slice(&[0x00, 0x00]); // ANCOUNT=0
     packet.extend_from_slice(&authority.to_be_bytes()); // NSCOUNT
     packet.extend_from_slice(&[0x00, 0x00]); // ARCOUNT=0
-    for label in "rutracker.org".split('.') {
+    for label in "blocked.example".split('.') {
         packet.push(label.len() as u8);
         packet.extend_from_slice(label.as_bytes());
     }

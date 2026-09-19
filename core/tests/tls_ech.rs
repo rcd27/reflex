@@ -71,9 +71,9 @@ fn ext_of(kind: u16, body: &[u8]) -> Vec<u8> {
 /// ОБЫЧНЫЙ hello ECH НЕ НЕСЁТ — и это должно быть отдельным ответом, а не «ложью по умолчанию».
 #[test]
 fn a_plain_hello_carries_no_ech() {
-    let plain = hello_with(&sni_ext("rutracker.org"));
+    let plain = hello_with(&sni_ext("blocked.example"));
     assert_eq!(ech(&plain), Ech::Absent);
-    assert_eq!(extract_sni(&plain).as_deref(), Some("rutracker.org"));
+    assert_eq!(extract_sni(&plain).as_deref(), Some("blocked.example"));
 }
 
 /// ТРИ ЧЕРНОВИКА ECH РАСПОЗНАЮТСЯ ВСЕ. Расширение меняло номер по ходу стандартизации

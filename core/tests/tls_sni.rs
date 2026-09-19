@@ -96,7 +96,7 @@ fn on_a_short_input_no_name_is_ever_born() {
 /// нечем, а `span` показывает на байты, которых никто не может тронуть.
 #[test]
 fn the_span_of_the_name_points_at_its_own_bytes() {
-    for domain in ["rutracker.org", "a.b", "очень-длинное-имя-цели.example.com"]
+    for domain in ["blocked.example", "a.b", "очень-длинное-имя-цели.example.com"]
     {
         let bytes = hello(domain);
         let found = sni(&bytes).expect("имя найдено");
@@ -117,7 +117,7 @@ fn the_span_of_the_name_points_at_its_own_bytes() {
 /// совпадение. Тогда ключ области `Target` (§4) стал бы выдумываемым снаружи.
 #[test]
 fn a_decoy_in_the_session_id_does_not_lead_the_parse_astray() {
-    let real = "rutracker.org";
+    let real = "blocked.example";
     let decoy = "example.com";
 
     // ClientHello, где `session_id` набит именем-приманкой целиком.
@@ -168,7 +168,7 @@ fn a_decoy_in_the_session_id_does_not_lead_the_parse_astray() {
 /// различают ВЕТКИ разбора: у каждой свой исход, и слить их нельзя.
 #[test]
 fn a_record_is_parsed_into_its_own_content_type() {
-    let handshake = hello("rutracker.org");
+    let handshake = hello("blocked.example");
     let parsed = TlsRecord::parse(&handshake).expect("запись разобрана");
     assert_eq!(parsed.content_type, TlsContentType::Handshake);
     assert_eq!(
@@ -205,7 +205,7 @@ fn a_record_is_parsed_into_its_own_content_type() {
 /// СКОЛЬКО ЕЩЁ ЖДАТЬ — вопрос о ГРАНИЦЕ записи, и ответ на него значение, а не догадка.
 #[test]
 fn the_need_of_a_record_names_what_is_missing() {
-    let full = hello("rutracker.org");
+    let full = hello("blocked.example");
     assert!(matches!(record_need(&full), RecordNeed::Complete { .. }));
 
     let head = &full[..4];
