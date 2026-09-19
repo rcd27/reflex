@@ -155,10 +155,14 @@ pub fn collide(claims: &[Claim]) -> Option<String> {
                 ) => {
                     if a.overlaps(b) {
                         return Some(format!(
-                            "«{x}» (0x{:08X}) и «{y}» (0x{:08X}) делят биты: два писателя одних \
-                             битов затрут друг друга молча",
-                            a.mask(),
-                            b.mask()
+                            concat!(
+                                "«{x}» (0x{a:08X}) и «{y}» (0x{b:08X}) делят биты: ",
+                                "два писателя одних битов затрут друг друга молча"
+                            ),
+                            x = x,
+                            y = y,
+                            a = a.mask(),
+                            b = b.mask()
                         ));
                     }
                 }
@@ -166,10 +170,15 @@ pub fn collide(claims: &[Claim]) -> Option<String> {
                 | (Claim::Word { value, what: y }, Claim::Region { region, what: x }) => {
                     if region.mask() & value != 0 {
                         return Some(format!(
-                            "«{y}» (слово 0x{:08X}) задевает «{x}» (0x{:08X}): запись в область \
-                             подняла бы это слово сама, и ядро приняло бы чужой пакет за помеченный",
-                            value,
-                            region.mask()
+                            concat!(
+                                "«{y}» (слово 0x{v:08X}) задевает «{x}» (0x{m:08X}): ",
+                                "запись в область подняла бы это слово сама, и ядро ",
+                                "приняло бы чужой пакет за помеченный"
+                            ),
+                            x = x,
+                            y = y,
+                            v = value,
+                            m = region.mask()
                         ));
                     }
                 }
