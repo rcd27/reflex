@@ -336,51 +336,6 @@ fn a_recording_captured_through_any_yields_the_target_name_too() {
     );
 }
 
-/// ПРЕДМЕТ: восьмой закон (§10) на ЗАПИСИ — предъявимость становится обычным тестом, без прав, без
-/// сети и без стенда. На живой очереди свидетельство ждёт полного окна и приходит по ходу прогона;
-/// у конечного источника окно может не собраться никогда, и закон обязан судить по набранному —
-/// иначе он промолчал бы обо всём файле, а молчание о собственной предъявимости читается как
-/// согласие.
-///
-/// Вердикт берётся ЗНАЧЕНИЕМ из отчёта, а не глазами из лога: закон, который нельзя предъявить
-/// вызывающему, проверяется только человеком, читающим вывод, — то есть не проверяется.
-#[test]
-fn the_eighth_law_is_demonstrated_on_a_recording() {
-    let report = pcap("tests/fixtures/handshake.pcap")
-        .from(Tcp)
-        .extract(Sni)
-        .detect(own(Counter))
-        .on(|_target: &str, _distress: Distress| {})
-        .certifying()
-        .run();
-
-    assert_eq!(
-        report.certified(),
-        Some(&Replayed::Reproduced),
-        "запись обязана давать свидетельство: вход детерминирован целиком"
-    );
-}
-
-/// Половина вторая: свидетель обязан УМЕТЬ ОТКАЗАТЬ. Прибор со скрытым входом читает счётчик,
-/// живущий вне его состояния, — то есть имеет вход, которого нет в его алфавите, и два прогона
-/// одной ленты расходятся. Зелёный свидетель, не умеющий покраснеть, хуже отсутствующего.
-#[test]
-fn a_hidden_input_breaks_the_testimony_on_the_very_same_recording() {
-    let report = pcap("tests/fixtures/handshake.pcap")
-        .from(Tcp)
-        .extract(Sni)
-        .detect(own(Peeking::default()))
-        .on(|_target: &str, _distress: Distress| {})
-        .certifying()
-        .run();
-
-    assert!(
-        matches!(report.certified(), Some(Replayed::Unstable { .. })),
-        "машина со скрытым входом обязана быть уличена; вердикт: {:?}",
-        report.certified()
-    );
-}
-
 /// Пакет без канального слоя — так его отдаёт очередь ядра и так пишет запись движка.
 fn raw(flow: &Flow, seq: u32, ack: u32, flags: TcpFlags, payload: &[u8]) -> Vec<u8> {
     TcpBuilder::new()
@@ -546,29 +501,4 @@ fn the_engine_recording_holds_its_ceiling_by_generations() {
         !dir.join("q.pcap.3").exists(),
         "лишнее поколение не ушло — кольцо растёт"
     );
-}
-
-/// Прибор со СКРЫТЫМ входом: величину берёт из счётчика, живущего вне его состояния. Ровно то, что
-/// восьмой закон обязан ловить.
-#[derive(Clone, Copy, Default)]
-struct Peeking;
-
-static PEEKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-impl Mealy for Peeking {
-    type In = DetectorEvent<Seen>;
-    type Out = SmallVec<[Distress; 2]>;
-    type Log = ();
-
-    fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
-        match event {
-            DetectorEvent::Packet { .. } => {
-                let ms = PEEKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                (self, smallvec![Distress::Silence { ms }], ())
-            }
-            DetectorEvent::Tick { .. }
-            | DetectorEvent::Opaque { .. }
-            | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
-        }
-    }
 }

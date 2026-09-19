@@ -79,10 +79,14 @@ pub use reflex_core::capability::{
     CanRewrite, CanSever,
 };
 use reflex_core::certify::replays::replays;
-/// Вердикт восьмого закона (§10) — публичен, а не внутреннее имя: он стоит в подписи
-/// [`Report::certified`], и без него исход прогона нельзя ни назвать, ни разобрать, не притащив
-/// `reflex-core` второй зависимостью. Дверь у фасада одна — значит и типы её подписи проходят
-/// через неё.
+/// Вердикт восьмого закона (§10) — публичен, а не внутреннее имя: он стоит в [`Certified`], то есть
+/// в том, что уезжает краном наружу, и без него свидетельство нельзя ни назвать, ни разобрать, не
+/// притащив `reflex-core` второй зависимостью. Дверь у фасада одна — значит и типы её подписи
+/// проходят через неё.
+///
+/// Клеток ЧЕТЫРЕ, и `NoTape` с `Silent` различны по предмету: первое — «судить не о чем, ленты
+/// нет» (беда стенда), второе — «лента есть, сказать было нечего» (беда свидетельства). Канон §10.5
+/// называл три; расхождение снято 19.09.2026 замером.
 pub use reflex_core::certify::replays::Replayed;
 use reflex_core::colimit::Layer;
 use reflex_core::command::InjectablePacket;
@@ -1515,6 +1519,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             severing: None,
             naming: None,
             parting: None,
+            certifying: None,
             transport: PhantomData,
         }
     }
@@ -1611,6 +1616,9 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     naming: Option<reflex_core::Tap<Named>>,
     /// Куда говорить об уходе разговора, если просили ([`Detecting::parting`]).
     parting: Option<reflex_core::Tap<Parted>>,
+    /// Куда говорить свидетельство §10, если просили ([`Detecting::certifying`]). `None` — закона не
+    /// просят, и лента не пишется вовсе: даром она стоила бы клона слова провода на каждый пакет.
+    certifying: Option<reflex_core::Tap<Certified>>,
     transport: PhantomData<fn() -> T>,
 }
 
@@ -1632,6 +1640,26 @@ pub struct Named {
 pub struct Parted {
     pub flow: Flow,
     pub why: Departure,
+    pub at: Instant,
+}
+
+/// СВИДЕТЕЛЬСТВО ВОСЬМОГО ЗАКОНА (§10) — о ЦЕПОЧКЕ, а не о разговоре.
+///
+/// Отдельным словом, а не полем в [`Note`], потому что предмет другой: `Note` говорит, что сказала
+/// машина о разговоре, а это — что сказала о СЕБЕ цепочка. Разные области (§4), разные адресаты.
+///
+/// Автор (`chain`) обязателен и не есть подпись к утверждению: в наборе цепочек ([`together`])
+/// «кто свидетельствует» — часть самого утверждения, без неё свидетельство трёх пайпов из четырёх
+/// читается как работа всех (§4.1: всё, что участвует в шаге, несёт автора).
+///
+/// Момент — от ПОСЛЕДНЕЙ БУКВЫ ОКНА, а не от часов цикла (§8). На записи часы цикла к ленте
+/// отношения не имеют вовсе: судить надо в той же эпохе, в какой наблюдали.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Certified {
+    /// Имя носителя цепочки — «очередь 251», путь записи. Тем же именем цепочка зовётся в
+    /// [`Report`].
+    pub chain: Box<str>,
+    pub verdict: Replayed,
     pub at: Instant,
 }
 
@@ -1665,6 +1693,37 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
         }
     }
 
+    /// ПРЕДЪЯВЛЯТЬ ВОСЬМОЙ ЗАКОН (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
+    /// пере-подаёт свежей семье машин дважды — сверяя не ленту, а сказанное. Вердикт уезжает
+    /// краном, по разу на закрытое окно.
+    ///
+    /// Дверь стоит ЗДЕСЬ, на цепочке, а не у терминала, и это оплачено двумя замерами.
+    ///
+    /// **Первый: у набора её не было вовсе.** [`Together::chain`] берёт [`Detecting`] и сразу зовёт
+    /// [`Detecting::heard`]; до терминала с реакцией набор не доходит, и закон на нём было не
+    /// предъявить ничем — при том, что ленты у цепочек раздельны с самого начала (лента живёт на
+    /// обороте, а оборот заводится на цепочку). Отказ держался одной зашитой строкой, а не законом.
+    ///
+    /// **Второй, тяжелее: на живом носителе вердикт не доходил НИКОГДА.** Прежде он выходил
+    /// единственным путём — полем [`Report`], а `Report` рождается только по `exhausted`, которого
+    /// у очереди ядра не бывает по построению. То есть на боевом пути §10 предъявлялся строкой в
+    /// логе — ровно тем, что сам же и запрещает: закон, который можно лишь прочитать глазами,
+    /// проверяется только человеком, читающим вывод, то есть не проверяется. Замер: все
+    /// употребления этой двери в дереве были над записью, ни одного над очередью.
+    ///
+    /// Оттого и по ОКНУ, а не в конце: конца у очереди нет. Окно — шестьдесят четыре буквы, и набивают
+    /// его в том числе узлы сетки, так что тихая цепочка говорит `Silent` («сказать было нечего»), а
+    /// не молчит вовсе. Молчание о собственной предъявимости хуже отказа.
+    ///
+    /// Канал не ждёт, как и у [`Detecting::naming`]: полный канал теряет свидетельство, а не
+    /// задерживает пакет. Не просят закона — лента не пишется, и цена его ровно ноль.
+    pub fn certifying(self, tap: reflex_core::Tap<Certified>) -> Detecting<C, T, H, S> {
+        Detecting {
+            certifying: Some(tap),
+            ..self
+        }
+    }
+
     /// Тело установки, общее обеим дверям: дом меняется ТИПОМ, работа одна.
     fn add<P, H2: MarkHome>(mut self, detector: P) -> Detecting<C, T, H2, S>
     where
@@ -1686,6 +1745,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             severing: self.severing,
             naming: self.naming,
             parting: self.parting,
+            certifying: self.certifying,
             transport: PhantomData,
         }
     }
@@ -1824,7 +1884,6 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
         Running {
             detecting: self,
             react: ByName(react),
-            certify: false,
         }
     }
 
@@ -1841,7 +1900,6 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
         Running {
             detecting: self,
             react: Addressed(react),
-            certify: false,
         }
     }
 
@@ -2182,8 +2240,6 @@ where
 pub struct Running<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = Distress> {
     detecting: Detecting<C, T, H, S>,
     react: F,
-    /// Предъявлять ли восьмой закон на живой ленте — [`Running::certifying`].
-    certify: bool,
 }
 
 impl<C, T, F, H: MarkHome, S: Word + Clone + PartialEq + 'static> Running<C, T, F, H, S>
@@ -2201,23 +2257,8 @@ where
     /// файле; отсюда в него едет голос приватной `Watch`, мира не касающийся (обе не ссылки — имена
     /// не экспортированы намеренно, цикл не часть публичного контракта).
     pub fn run(self) -> Report {
-        let Running {
-            detecting,
-            react,
-            certify,
-        } = self;
-        drive::<C, T, _, H, S>(detecting, certify, &mut Watch(react))
-    }
-
-    /// Предъявлять восьмой закон (§10) на СВОЕЙ ленте: движок пишет окно наблюдений и, набрав его,
-    /// пере-подаёт свежей семье машин дважды — сверяя не ленту, а сказанное.
-    ///
-    /// Дверь отдельная и по умолчанию закрытая: запись стоит клона слова провода на каждый пакет, и
-    /// платить её тем, кто закона не просит, незачем. Кто просит — получает свидетельство на СВОЁМ
-    /// трафике, а не на выдуманном стенде: это и отличает предъявимость от обещания.
-    pub fn certifying(mut self) -> Running<C, T, F, H, S> {
-        self.certify = true;
-        self
+        let Running { detecting, react } = self;
+        drive::<C, T, _, H, S>(detecting, &mut Watch(react))
     }
 }
 
@@ -2530,8 +2571,11 @@ impl<S> Iterator for Chorus<S> {
 ///   уехавшего к потребителю, носителя уже нет.
 /// * СЛОВО О ЦЕЛИ. Копредел по слою живёт за `.about(…).on_target(…)`, и сюда не доходит: у
 ///   `Heard` нет свёртки. Открыть — отдельный разговор, не попутная правка.
-/// * ПРЕДЪЯВЛЯТЬ §10 (`certifying`). Лента пишется у наблюдателя с реакцией; здесь дверь к ней не
-///   открыта.
+///
+/// Предъявлять §10 эта дверь УМЕЕТ: закон просят у цепочки ([`Detecting::certifying`]), и
+/// свидетельство уезжает краном, а не полем несуществующего отчёта. Прежде дверь стояла у
+/// терминала с реакцией, и показания-значение закона не знали вовсе — вместе с набором цепочек,
+/// который через них и собирается.
 pub struct Heard<C: Bordered, T: Transport, S = Distress> {
     turning: Turning<C, T, S>,
     /// Правило обрыва, если его объявляли ([`Detecting::severing`]). `None` — показания остаются
@@ -2592,7 +2636,7 @@ where
     pub fn heard(mut self) -> Result<Heard<C, T, S>, Report> {
         let rule = self.severing.take();
         Ok(Heard {
-            turning: Turning::begun(self, false)?,
+            turning: Turning::begun(self)?,
             rule,
             said: VecDeque::new(),
         })
@@ -2625,16 +2669,19 @@ where
     /// table.tick(now)`), дыры не знал вовсе.
     ///
     /// Чего здесь НЕ БЫВАЕТ, и почему — по факту, а не по обещанию:
-    /// * ЛЕНТА §10 не пишется никогда: [`Running::certifying`] живёт только у наблюдателя. Цикл
-    ///   её умеет, дверь к ней у действия не открыта;
     /// * СЛОВО О ЦЕЛИ не рождается никогда: `.act` недостижим из [`Speaking`], то есть цепочка со
     ///   свёрткой до этого терминала не доходит.
     ///
-    /// Обе двери закрыты решением о ПРОДУКТЕ, а не свойством цикла, и открыть их — отдельный
-    /// разговор, не попутная правка.
+    /// Дверь закрыта решением о ПРОДУКТЕ, а не свойством цикла, и открыть её — отдельный разговор,
+    /// не попутная правка.
+    ///
+    /// ЛЕНТА §10 здесь была вторым таким пределом и перестала им быть: закон просят у цепочки
+    /// ([`Detecting::certifying`]), а цикл у обоих терминалов один и тот же. Предел держался местом
+    /// двери, а не устройством действия, — и это ровно та болезнь, от которой буквы гоняет ОДНА
+    /// приватная функция на оба терминала: две копии одного расходятся молча.
     pub fn run(self) -> Report {
         let Acting { detecting, react } = self;
-        drive::<C, T, _, H, S>(detecting, false, &mut Do(react))
+        drive::<C, T, _, H, S>(detecting, &mut Do(react))
     }
 }
 
@@ -2823,11 +2870,7 @@ const MIN_IDLE: Duration = Duration::from_secs(10);
 ///
 /// Повтора вердикта здесь нет НАРОЧНО: сколько раз, с какой паузой и что при исчерпании — решение,
 /// которое принимают с замером частоты отказов, а замера нет.
-fn drive<C, T, V, H: MarkHome, S>(
-    chain: Detecting<C, T, H, S>,
-    certify: bool,
-    voice: &mut V,
-) -> Report
+fn drive<C, T, V, H: MarkHome, S>(chain: Detecting<C, T, H, S>, voice: &mut V) -> Report
 where
     C: Bordered,
     C::Carrier: CanHold + CanRemember,
@@ -2841,13 +2884,13 @@ where
     V: Voice<C::Carrier, S>,
     S: Word + Clone + PartialEq + 'static,
 {
-    let mut turning = match Turning::begun(chain, certify) {
+    let mut turning = match Turning::begun(chain) {
         Ok(turning) => turning,
         Err(report) => return report,
     };
     while turning.pump(voice) {}
     let forgotten = turning.alive.forgotten;
-    Report::finished(turning.name, turning.certified, forgotten)
+    Report::finished(turning.name, forgotten)
 }
 
 /// ПРОГОН, ОСТАНОВЛЕННЫЙ МЕЖДУ ОБОРОТАМИ.
@@ -2870,9 +2913,6 @@ struct Turning<C: Bordered, T: Transport, S> {
     seeds: Vec<Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>>,
     /// Имя носителя — для [`Report`]. Живёт здесь, потому что открывший носителя рецепт съеден.
     name: String,
-    /// Чем кончилось свидетельство §10, если его просили. Живёт на обороте, а не в `Alive`: это
-    /// исход ПРОГОНА, и уходит он в [`Report`], когда источник кончился.
-    certified: Option<Replayed>,
     /// Внеполосная дверь и ДОМ РЕШЕНИЙ ПО КЛЮЧУ. Дом здесь, а не в `Alive`: решение не наблюдение
     /// и приборам не достаётся — оно живёт до вердикта и читается им.
     #[cfg(feature = "telling")]
@@ -2894,7 +2934,7 @@ where
 {
     /// ОТКРЫТЬ НОСИТЕЛЯ И ПОСЕЯТЬ СЕМЬЮ. Отказ открытия — значение (§7), не паника: `Err` несёт
     /// готовый [`Report`], потому что несостоявшийся запуск есть знание, а не отсутствие его.
-    fn begun<H: MarkHome>(chain: Detecting<C, T, H, S>, certify: bool) -> Result<Self, Report> {
+    fn begun<H: MarkHome>(chain: Detecting<C, T, H, S>) -> Result<Self, Report> {
         let Detecting {
             carrier: recipe,
             park,
@@ -2904,6 +2944,7 @@ where
             telling,
             naming,
             parting,
+            certifying,
             ..
         } = chain;
         let name = recipe.name();
@@ -2953,7 +2994,8 @@ where
             targets: HashMap::new(),
             tape: Tape::new(),
             forgotten: 0,
-            certify,
+            certifying,
+            chain: name.as_str().into(),
             about,
             naming,
             parting,
@@ -2974,7 +3016,6 @@ where
             seam,
             seeds,
             name,
-            certified: None,
             #[cfg(feature = "telling")]
             // ПОДПИСКА, А НЕ САМА РУЧКА: ящик заводится здесь, при постройке цепочки, и потому
             // решение достаётся КАЖДОЙ цепочке потребителя, а не той, чей оборот случился раньше.
@@ -3007,10 +3048,7 @@ where
         if self.carrier.exhausted() {
             // Источник кончился — судим по набранному окну, даже неполному. Иначе на КОНЕЧНОМ
             // носителе закон молчал бы обо всём прогоне, и молчание читалось бы как согласие.
-            self.certified = self
-                .alive
-                .certified(&self.seeds, true)
-                .or(self.certified.take());
+            self.alive.certified(&self.seeds, true);
             return false;
         }
         // ВНЕПОЛОСНОЕ ЗНАНИЕ ЗАБИРАЕТСЯ ПЕРЕД РАБОТОЙ, а не после: решение, положенное автором до
@@ -3189,7 +3227,12 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Ненулевое значение — не беда сети, а весть о НАС: движку тесно, и часть целей он перестал
     /// наблюдать, ничего о них не сказав. Уезжает в [`Report::forgotten`].
     forgotten: usize,
-    certify: bool,
+    /// Куда уезжает свидетельство §10, если закон просят ([`Detecting::certifying`]). `None` —
+    /// не просят, и лента не пишется: `recorded` смотрит сюда же.
+    certifying: Option<reflex_core::Tap<Certified>>,
+    /// АВТОР СВИДЕТЕЛЬСТВА — имя носителя цепочки. Копия того же имени, что уезжает в [`Report`]:
+    /// у набора свидетельство без автора не утверждение, а половина его (§4.1).
+    chain: Box<str>,
     /// Свёртка слов разговоров в слово о ЦЕЛИ и реакция на него. Живёт ЗДЕСЬ, а не в цикле, потому
     /// что зовётся на закрытии узла — среди букв, а не после них.
     about: Option<(Fold<S>, TargetVoice<S>)>,
@@ -3373,7 +3416,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
     /// записи разошлись бы, и первым разошедшимся оказалась бы дыра, которую и записывать-то стали
     /// только сегодня.
     fn recorded(&mut self, to: To<Whose>, letter: &DetectorEvent<Wide<T::Wire, C::Edge>>) {
-        if self.certify {
+        if self.certifying.is_some() {
             self.tape.record([TapeLetter::Event {
                 to,
                 event: letter.clone(),
@@ -3421,14 +3464,23 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
     /// шестидесяти четырёх букв, промолчал бы обо всём файле — ни вердикта, ни «свидетельства
     /// нет». Молчание о собственной предъявимости хуже отказа: отказ назван клеткой (`NoTape`,
     /// `Silent`), а молчание неотличимо от «всё в порядке».
-    fn certified(
-        &mut self,
-        seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>],
-        closing: bool,
-    ) -> Option<Replayed> {
-        if !self.certify || (self.tape.len() < TAPE_WINDOW && !closing) {
-            return None;
+    fn certified(&mut self, seeds: &[Box<dyn Probe<Wide<T::Wire, C::Edge>, S>>], closing: bool) {
+        let Some(tap) = self.certifying.as_ref() else {
+            return;
+        };
+        if self.tape.len() < TAPE_WINDOW && !closing {
+            return;
         }
+        // МОМЕНТ — ОТ ПОСЛЕДНЕЙ БУКВЫ ОКНА, а не от часов цикла (§8). На записи часы цикла к ленте
+        // отношения не имеют вовсе: её эпоха своя, и свидетельство, помеченное нашим «сейчас»,
+        // говорило бы о времени, которого в ленте нет. Пустая лента момента не несёт — тогда и
+        // судить не о чем, и `NoTape` уезжает с часами цикла, потому что это весть О НАС.
+        let at = self
+            .tape
+            .letters()
+            .last()
+            .map(|letter| letter.at())
+            .unwrap_or_else(Instant::now);
         let fold = self.about.as_ref().map(|(fold, _say)| fold);
         let idle = self.idle;
         let verdict = replays(&self.tape, |mode, letters| {
@@ -3449,9 +3501,16 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                 self.tape.len()
             ),
         }
+        // СВИДЕТЕЛЬСТВО УЕЗЖАЕТ ЗНАЧЕНИЕМ, а строка выше остаётся человеку. Канал не ждёт:
+        // потерянное свидетельство хуже задержанного пакета не бывает — закон предъявляют, чтобы
+        // судить о движке, а не чтобы движок стоял.
+        let _lost_when_full = tap.offer(Certified {
+            chain: self.chain.clone(),
+            verdict,
+            at,
+        });
         // Окно закрыто: следующее пишется с чистого места, иначе лента росла бы вечно.
         self.tape = Tape::new();
-        Some(verdict)
     }
 }
 
@@ -3466,10 +3525,6 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
 pub struct Report {
     name: String,
     why: Option<String>,
-    /// Чем кончилось свидетельство §10 — `None`, если его не просили ([`Running::certifying`]).
-    /// ЗНАЧЕНИЕМ, а не строкой в логе: закон, который нельзя предъявить вызывающему, проверяется
-    /// только глазами человека, читающего вывод, — то есть не проверяется.
-    certified: Option<Replayed>,
     /// Сколько разговоров снято живыми по потолку памяти — см. [`Report::forgotten`].
     forgotten: usize,
 }
@@ -3479,18 +3534,16 @@ impl Report {
         Report {
             name,
             why: Some(why),
-            certified: None,
             forgotten: 0,
         }
     }
 
     /// Носитель сказал, что работы больше не будет никогда, и цикл вышел. Отдельно от «не
     /// открылся» (§7: «не смотрели» ≠ «смотрели и кончилось»).
-    fn finished(name: String, certified: Option<Replayed>, forgotten: usize) -> Report {
+    fn finished(name: String, forgotten: usize) -> Report {
         Report {
             name,
             why: None,
-            certified,
             forgotten,
         }
     }
@@ -3499,17 +3552,11 @@ impl Report {
     /// ([`CONVERSATIONS`]). Не беда сети, а весть о нас: часть целей осталась без присмотра, и
     /// приборы о них ничего не сказали — ни хорошего, ни плохого.
     ///
-    /// Значением, а не строкой в логе, по той же причине, что и [`Report::certified`]: факт,
-    /// который нельзя предъявить вызывающему, проверяется только глазами человека, читающего
+    /// Значением, а не строкой в логе, по той же причине, что и свидетельство §10 ([`Certified`]):
+    /// факт, который нельзя предъявить вызывающему, проверяется только глазами человека, читающего
     /// вывод, — то есть не проверяется.
     pub fn forgotten(&self) -> usize {
         self.forgotten
-    }
-
-    /// Чем кончилось свидетельство восьмого закона (§10). `None` — не просили: клетка «не
-    /// смотрели» отдельно от всякого вердикта (§7).
-    pub fn certified(&self) -> Option<&Replayed> {
-        self.certified.as_ref()
     }
 
     /// Почему запуск не состоялся; `None` — состоялся. Значение, а не печать: тот же закон, по
