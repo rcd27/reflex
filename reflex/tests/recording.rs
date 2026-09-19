@@ -502,3 +502,47 @@ fn the_engine_recording_holds_its_ceiling_by_generations() {
         "лишнее поколение не ушло — кольцо растёт"
     );
 }
+
+/// ПРЕДМЕТ: порт цели, объявленный записи ([`Record::toward`]), решает, чьё тело не пишется.
+///
+/// Дверь была публичной и НЕ УПОТРЕБЛЁННОЙ ни разу — ни здесь, ни в примерах. Докблок обещал, что
+/// «по нему запись отличает ответ цели, у которого тело не пишется», и обещание держалось честным
+/// словом: непотреблённая дверь не проверена ничем, а выглядит готовой.
+///
+/// Закон идёт ЧЕРЕЗ дверь, а не через разбор под ней: проверь я `record::kept` напрямую — сама
+/// `toward` осталась бы непредъявленной, то есть ровно в том положении, из-за которого закон и
+/// понадобился.
+#[test]
+fn the_declared_target_port_decides_whose_body_is_not_written() {
+    let back = Flow {
+        src: talk().dst,
+        dst: talk().src,
+        protocol: Protocol::Tcp,
+    };
+    let body = [7u8; 400];
+    let reply = raw(&back, 1, 1, TcpFlags::PSH | TcpFlags::ACK, &body);
+
+    // Две записи на одном входе; отличие ровно одно — какой порт объявлен целью.
+    let written = |port: u16, name: &str| -> usize {
+        let path = std::env::temp_dir().join(format!("reflex-{name}-{}.pcap", std::process::id()));
+        let recorder = Recorder::start(Record::at(&path).toward(port));
+        recorder.note(&reply);
+        let lost = recorder.finish();
+        assert!(matches!(lost, Ok(0)), "кадр потерян: {lost:?}");
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        std::fs::remove_file(&path).ok();
+        bytes.len()
+    };
+
+    let as_target = written(443, "toward-target");
+    let as_stranger = written(1, "toward-stranger");
+
+    assert!(
+        as_target < as_stranger,
+        "ответ цели обязан лечь в запись без тела: {as_target} байт против {as_stranger}"
+    );
+    assert!(
+        as_stranger >= as_target + body.len(),
+        "кадр с чужого порта пишется целиком, вместе с телом: {as_stranger} против {as_target}"
+    );
+}
