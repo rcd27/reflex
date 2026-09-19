@@ -8,7 +8,7 @@
 set -u
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy 2>/dev/null
 
-TARGET=${TARGET:-rutracker.org}   # тихий дроп по SNI на нашем вантаже
+TARGET=${TARGET:-rutracker.org}   # тихий дроп по SNI на нашей линии замера
 CONTROL=${CONTROL:-vk.com}        # чистая цель — контроль на ложное срабатывание
 CT_LOG=/tmp/ct.log
 LOCAL_LOG=/tmp/local.log

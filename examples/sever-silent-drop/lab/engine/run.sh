@@ -12,7 +12,7 @@
 # минута. Разница между контролем и замером и есть наше действие.
 set -u
 
-TARGET=${TARGET:-rutracker.org}   # тихий дроп по SNI на вантаже
+TARGET=${TARGET:-rutracker.org}   # тихий дроп по SNI на линии замера
 QUEUE=200
 MARK=0x40000000                   # reflex::INJECT_MARK — значение метки своих инъекций
 MARK_MASK=0xc0000000              # core::mark::injecting() — область, в которой она живёт
