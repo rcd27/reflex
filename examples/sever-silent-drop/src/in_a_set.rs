@@ -30,11 +30,11 @@
 //! В первой редакции правила потребителя эта клетка оказалась не просто обитаемой, а ЕДИНСТВЕННО
 //! населённой: предмет обрыва не наступал вовсе, и молчание двери было неотличимо от работы.
 //!
-//! КТО ИМЕННО ГОВОРИТ БЕЗ КРАЯ — замерено здесь, а не взято на веру. Парковые приборы этой цепочки
-//! слов без края за прогон НЕ ДАЛИ: краевая половина `Silence` шагает только на букве `Packet`
-//! (`EdgeSilence` читает ct-вид, а он едет с пакетом), и её слова всегда с краем. Без края
-//! приходит слово ПРОВОДНОЙ машины, сказанное на узле, — это показывает тест ниже, где такая
-//! машина написана явно (`own(…)`, как в `bring-your-own-detector`).
+//! КРИТЕРИЙ — БУКВА, а не род прибора: цикл снимает край С БУКВЫ (`Packet` → `Some`,
+//! `Tick`/`Opaque`/`Torn` → `None`). Оттого краевая половина `Silence` (шагает только на пакете)
+//! и проводной `Retransmit` (улика — совпавший `seq`, то есть тоже пакет) дают слова С КРАЕМ, а без
+//! края приходит слово, сказанное НА УЗЛЕ, чьей бы машина ни была. Пара тестов ниже предъявляет это
+//! на ОДНОЙ по устройству машине: сказала на узле — края нет, сказала на пакете — есть.
 //!
 //! Отсюда правило письма: `None` разбирается ОТДЕЛЬНОЙ ВЕТВЬЮ и считается отдельным счётом — не
 //! «ложью по умолчанию».
@@ -204,6 +204,76 @@ mod tests {
             with_edge.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "эта машина говорит только на узлах — слов с краем у неё быть не может"
+        );
+    }
+
+    /// ПАРА К ПРЕДЫДУЩЕМУ: та же ПРОВОДНАЯ машина, сказавшая на ПАКЕТЕ, приходит С КРАЕМ.
+    ///
+    /// Без этой половины предыдущий закон читался бы «у проводных машин края не бывает» — и это
+    /// была бы вторая ложь на том же месте, где уже жила одна. Критерий не в роде прибора и не в
+    /// его доме, а в БУКВЕ: цикл снимает край с буквы (`Packet` → `Some`, `Tick`/`Opaque`/`Torn` →
+    /// `None`), и проводной `Retransmit`, чья улика — совпавший `seq`, говорит именно на пакете.
+    #[test]
+    fn the_same_kind_of_machine_speaking_on_a_packet_arrives_with_an_edge() {
+        /// Машина, говорящая РОВНО на пакете. Дом тот же, что у соседки выше, — разная только буква.
+        #[derive(Clone, Copy, Default)]
+        struct OnThePacket;
+
+        impl Mealy for OnThePacket {
+            type In = DetectorEvent<Seen>;
+            type Out = SmallVec<[Distress; 2]>;
+            type Log = ();
+
+            fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+                match event {
+                    DetectorEvent::Packet { .. } => (self, smallvec![Distress::Rst], ()),
+                    DetectorEvent::Tick { .. }
+                    | DetectorEvent::Opaque { .. }
+                    | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
+                }
+            }
+        }
+
+        let with_edge: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let counted = with_edge.clone();
+        let without: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let counted_without = without.clone();
+
+        let _heard: Vec<Note> = together()
+            .chain(
+                engine(
+                    Paper::new()
+                        .then_packet(syn(40104))
+                        .then_packet(request(40104))
+                        .silent_for(secs(6))
+                        .then_stop(),
+                )
+                .from(Tcp)
+                .extract(Sni)
+                .detect(own(OnThePacket))
+                .severing_addressed(move |whom: Whom<'_>, _word: &Distress| match whom.edge {
+                    Some(_) => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        false
+                    }
+                    None => {
+                        counted_without.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        false
+                    }
+                }),
+            )
+            .heard()
+            .collect();
+
+        assert!(
+            with_edge.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "слово, сказанное на пакете, обязано прийти С краем — иначе предикат по марке не \
+             работал бы вовсе, ни на одном приборе"
+        );
+        assert_eq!(
+            without.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "эта машина на узлах молчит — слов без края у неё быть не может"
         );
     }
 }
