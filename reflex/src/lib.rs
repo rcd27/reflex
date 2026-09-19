@@ -3185,7 +3185,6 @@ where
             None => until,
         };
         let mut effects: SmallVec<[Effect; 2]> = SmallVec::new();
-        let mut crossed: Option<Instant> = None;
 
         let outcome = carrier.serve(until, |held, edge| {
             let at = held.at();
@@ -3226,8 +3225,7 @@ where
             });
             #[cfg(not(feature = "telling"))]
             let decided: Option<reflex_core::mark::Marked> = None;
-            let (memo, node) = alive.walk(letters, whose, seen, voice, &mut effects);
-            crossed = node;
+            let memo = alive.walk(letters, whose, seen, voice, &mut effects);
             // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
             // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
             // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
@@ -3273,8 +3271,7 @@ where
         };
         if let Some((moved, letters)) = sown {
             *seam = Some(moved);
-            let (_memo, node) = alive.walk(letters, None, &[], voice, &mut effects);
-            crossed = node;
+            alive.walk(letters, None, &[], voice, &mut effects);
         }
 
         voice.does(carrier, effects);
@@ -3358,8 +3355,13 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
     /// Краевые приборы получают только ПАКЕТ: их предмет — состояние разговора в марке, а марка
     /// приезжает с пакетом; и слово, сказанное ими на узле, некому было бы адресовать.
     ///
-    /// Наружу — памятка (её кладёт домой носитель тем же словом, что и вердикт) и момент
-    /// ПОСЛЕДНЕГО закрытого узла, если он тут был: по нему цикл судит, пора ли говорить о цели.
+    /// Наружу — памятка: её кладёт домой носитель тем же словом, что и вердикт.
+    ///
+    /// Момент последнего закрытого узла отсюда НЕ отдаётся, и это не упущение. Он отдавался, пока
+    /// по нему судили, пора ли предъявлять §10; с тех пор как закон судит по счёту букв, читателя
+    /// у него не осталось — а слово о ЦЕЛИ говорится здесь же, среди букв, и цикла не спрашивает.
+    /// Докблок обещал обратное («по нему цикл судит, пора ли говорить о цели») и обещал неверно:
+    /// цикл судил им о сверке, а не о слове.
     fn walk<V: Voice<C::Carrier, S>>(
         &mut self,
         letters: Vec<DetectorEvent<Wide<T::Wire, C::Edge>>>,
@@ -3367,9 +3369,8 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
         seen: &[u8],
         voice: &mut V,
         effects: &mut SmallVec<[Effect; 2]>,
-    ) -> (Option<Memo>, Option<Instant>) {
+    ) -> Option<Memo> {
         let mut memo: Option<Memo> = None;
-        let mut crossed: Option<Instant> = None;
         for letter in letters {
             let at = letter.at();
             // УЛИКА ЕДЕТ ВМЕСТЕ С АДРЕСОМ. Байты — только у буквы, у которой есть чей: узел сетки и
@@ -3492,11 +3493,10 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             // бы от того, как носитель сбил работу в пачки, — то есть от входа вне алфавита машины,
             // ровно того, что ловит §10. Зеркало переигровки (`replay`) зовёт свёртку так же.
             if matches!(letter, DetectorEvent::Tick { .. }) {
-                crossed = Some(at);
                 self.spoke_of_targets(at);
             }
         }
-        (memo, crossed)
+        memo
     }
 
     /// Свести слова разговоров в слово о ЦЕЛИ и сказать его. Нет свёртки — нет и слова: копредел
