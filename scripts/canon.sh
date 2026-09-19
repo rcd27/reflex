@@ -41,6 +41,7 @@ BUILT=(
     "Interleave" "DetectorEvent" "FlowTable"          # §2, §7: алфавит и шов
     "replays" "Replayed" "Tape" "TapeLetter"          # §10: предъявимость
     "IntoCarrier" "Distress" "Note" "Heard"           # §11: публичный синтаксис
+    "Terminal" "EdgeView" "Layer"                     # §9.1, §12.1: носитель и слой копредела
 )
 # ИЩЕМ ОБЪЯВЛЕНИЕ, А НЕ УПОМИНАНИЕ. Первая редакция грепала слово целиком — и не краснела на
 # мутанте `pub trait Mealy` → `pub trait Mealy2`: слово `Mealy` осталось в докблоках и в `impl … for`,
@@ -51,6 +52,42 @@ for name in "${BUILT[@]}"; do
         core/src engine/src instrument/src linux/src reflex/src 2>/dev/null | wc -l)
     if [ "$hits" -eq 0 ]; then
         echo "  НЕ ПОСТРОЕНО: $name — канон называет его построенным, объявления в дереве нет"
+        echo x >> /tmp/canon-bad.$$
+    fi
+done
+
+echo "── имена, названные кодом (всё, что стоит в обратных кавычках) ──"
+# ТРЕТИЙ БЛОК, И ОН СИЛЬНЕЕ ВТОРОГО ПО ОХВАТУ, СЛАБЕЕ ПО УТВЕРЖДЕНИЮ.
+#
+# Второй блок (`BUILT`) спрашивает «объявлено ли», но только у имён, внесённых РУКОЙ. 20.09.2026
+# инвентаризация нашла, чего стоит такая полнота: §9.1 цитировал `trait Backend { type Holds: Region;
+# type Verdict: … }` — ни одного из четырёх имён в дереве, и сторож молчал, потому что в `BUILT` их
+# никто не вписал. Рядом лежал `Colimit` из §12.1 (тип зовётся `Layer`). Мертво было не имя из
+# списка, а ПОДПИСЬ ЦЕЛИКОМ — то есть то, чего список по построению не видит.
+#
+# Здесь список не нужен: берутся ВСЕ имена канона и проверяется слабое — что такое слово в дереве
+# вообще встречается. Мёртвую подпись это ловит (её имена не встречаются нигде), а цену платит
+# белым списком математики: `Set`, `In`, `Out` — обозначения §0, кода за ними нет и быть не должно.
+#
+# ЧЕГО НЕ ЛОВИТ И ЭТОТ БЛОК. Подпись он ловит лишь тогда, когда МЁРТВО ХОТЯ БЫ ОДНО ЕЁ ИМЯ. Мутант
+# `trait Backend { type Holds: Region; }` покраснел на `Holds` и смолчал бы на `Backend`: слово живо
+# в дереве (`NfqueueBackend`), хотя трейта с таким именем нет. Утверждение здесь слабое по
+# построению — «слово встречается», — и сильнее его без разбора rustdoc не сделать.
+#
+# ТОЛЬКО КАНОН, НЕ ДЕЛЬТЫ. Соседние документы — письма о решениях, и в них законно живут имена
+# отвергнутых форм («`Reply { Answered, Silent }` не понадобился»), гипотетических клеток («скажем,
+# `Unwitnessed`») и снесённого крейта. Требовать от письма совпадения с деревом значило бы требовать,
+# чтобы история постройки совпадала с постройкой.
+MATH="Set|In|Out|S|X|Y|K|R|W|B|T|E|F|H|U|id_A|id_X|Packet|Conversation|Target|Flow|Named|Unnamed|Addr|Reproduced|Unstable|NoTape|Silent|Nothing|Blind|Torn|Idle|Answered|Full|Partial|Held|Broken|Invalid|One|Each|Nobody|Awaited|Spoken|Advanced|NotReady|Failed|Quantity|State|Event|Verdict|Series|Sink|Source|Serves|Tick|Opaque"
+CANON="$DOCS/2026-09-08-reflex-one-machine-vision.md"
+# Токены с `/` и `.` — адреса (их держит первый блок), голый хекс — ссылка на коммит.
+grep -ohP '`[^`]+`' "$CANON" | tr -d '`' | tr ' ' '\n' \
+  | grep -vP '[/.]' | grep -vP '^[0-9a-f]{7,}$' \
+  | grep -oP '^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*' \
+  | grep -vP "^($MATH)$" | sort -u | while read -r name; do
+    base="${name##*::}"
+    if ! grep -rqF --include='*.rs' "$base" core engine instrument reflex linux os runtime linux-common windivert examples 2>/dev/null; then
+        echo "  МЁРТВО: $name — канон называет это кодом, в дереве слова нет"
         echo x >> /tmp/canon-bad.$$
     fi
 done
