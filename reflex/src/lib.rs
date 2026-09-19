@@ -2021,6 +2021,40 @@ pub struct Speaking<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Dis
     detecting: Detecting<C, T, H, S>,
 }
 
+/// СВЁРНУТАЯ ЦЕПОЧКА ЕСТЬ ЦЕПОЧКА. Свёртка и реакция на цель лежат полем самой цепочки, а
+/// `Speaking` лишь помнит, что пара `.about`/`.on_target` замкнута (§11: выражение, а не
+/// строитель). Оттого всё, что берёт цепочку, берёт и свёрнутую — набор ([`Together::chain`]) и
+/// показания значением ([`Speaking::heard`]) — и вторую дверь заводить не пришлось.
+impl<C: Bordered, T: Transport, H: MarkHome, S> From<Speaking<C, T, H, S>>
+    for Detecting<C, T, H, S>
+{
+    fn from(spoken: Speaking<C, T, H, S>) -> Detecting<C, T, H, S> {
+        spoken.detecting
+    }
+}
+
+impl<C, T, H: MarkHome, S> Speaking<C, T, H, S>
+where
+    C: Bordered,
+    C::Carrier: CanHold + CanRemember,
+    C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
+    <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
+    T: Transport,
+    S: Word + Clone + PartialEq + 'static,
+{
+    /// ПОКАЗАНИЯ ЗНАЧЕНИЕМ и у свёрнутой цепочки — та же дверь, что у [`Detecting::heard`], и то же
+    /// тело: `Speaking` отличается от цепочки только тем, что пара `.about`/`.on_target` у неё
+    /// замкнута.
+    ///
+    /// ПРЕДЕЛ, названный вслух: слово о ЦЕЛИ приходит замыканием `on_target`, а не в потоке. Поток
+    /// несёт слово РАЗГОВОРА; положить туда слово другого слоя значило бы либо спустить его вниз
+    /// (§5 — не функция), либо завести вторую породу показания. Ни то ни другое попутной правкой не
+    /// делается, и потому здесь честный предел, а не недоделка.
+    pub fn heard(self) -> Result<Heard<C, T, S>, Report> {
+        self.detecting.heard()
+    }
+}
+
 impl<C: Bordered, T: Transport, S> Speaking<C, T, MarkSilent, S> {
     /// Ещё прибор поверх — как в [`Detecting::detect`]: копредел не закрывает набор приборов.
     pub fn detect<P>(self, detector: P) -> Speaking<C, T, P::Home, S>
@@ -2422,7 +2456,15 @@ pub fn together<S>() -> Together<S> {
 impl<S: Word + Clone + PartialEq + 'static> Together<S> {
     /// Добавить цепочку. Носитель открывается ЗДЕСЬ: отказ обязан стать значением сразу, а не на
     /// первом обороте, — иначе он приехал бы посреди чужих показаний.
-    pub fn chain<C, T, H>(mut self, chain: Detecting<C, T, H, S>) -> Together<S>
+    ///
+    /// Цепочка СО СВЁРТКОЙ ([`Speaking`]) входит сюда же, а не отдельной дверью: свёртка живёт
+    /// полем самой цепочки, и `Speaking` есть состояние ВЫРАЖЕНИЯ (§11), а не другой предмет.
+    /// Слово о цели при этом не едет в поток показаний — там слово РАЗГОВОРА, и спуск между слоями
+    /// не определён (§5); оно уходит замыканием `on_target` из того же оборота и той же нити.
+    /// Заказано замером потребителя (19.09.2026): пайпу, которому копредел нужен по существу
+    /// (блэкхол есть свойство адреса, а не разговора), иначе пришлось бы выйти из набора и забрать
+    /// свою нить — то есть вернуть ровно то, от чего набор и заведён.
+    pub fn chain<C, T, H, D>(mut self, chain: D) -> Together<S>
     where
         C: Bordered + 'static,
         C::Carrier: CanHold + CanRemember,
@@ -2430,8 +2472,9 @@ impl<S: Word + Clone + PartialEq + 'static> Together<S> {
         <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
         T: Transport + 'static,
         H: MarkHome,
+        D: Into<Detecting<C, T, H, S>>,
     {
-        match chain.heard() {
+        match chain.into().heard() {
             Ok(heard) => self.live.push(Box::new(heard)),
             Err(report) => self.refused.push(report),
         }

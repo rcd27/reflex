@@ -302,3 +302,63 @@ fn a_silent_chain_does_not_hold_back_a_talking_one() {
         "три показания не должны стоить трёх сроков молчащей соседки: вышло {spent:?}"
     );
 }
+
+/// ПРЕДМЕТ: цепочка СО СВЁРТКОЙ встаёт в набор, и слово о цели у неё звучит.
+///
+/// Заказано замером потребителя (19.09.2026): у SYN-пайпа копредел требуется ПО СУЩЕСТВУ — блэкхол
+/// есть свойство адреса, а не разговора, и один утонувший `SYN` бывает от обычной потери. Пока
+/// свёрнутая цепочка в набор не вставала, выбор был из двух, и оба с ценой: своя нить на этот пайп
+/// либо порог, переписанный у потребителя заново (`Layer` гасит кратность и забывает по простою —
+/// наивный счётчик считал бы повторы ОДНОГО разговора, то есть объявлял бы блэкхолом обычную
+/// потерю).
+///
+/// Структурного запрета здесь нет, и это главное в законе. Слово о цели не едет в поток показаний
+/// (там слово РАЗГОВОРА, и спуск между слоями не определён — §5), оно уходит замыканием `on_target`
+/// из того же оборота, в той же нити. Набор ему не мешает ничем.
+#[test]
+fn a_folded_chain_joins_the_set_and_its_target_word_is_spoken() {
+    let spoken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let said = std::sync::Arc::clone(&spoken);
+
+    let heard: Vec<Note> = together()
+        .chain(
+            engine(
+                Paper::new()
+                    .then_packet(syn(40101))
+                    .then_packet(request(40101))
+                    .silent_for(secs(3))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always())
+            .about(|words| words.first().map(|word| (*word).clone()))
+            .on_target(move |target, _voiced| {
+                said.lock()
+                    .expect("журнал не отравлен")
+                    .push(target.to_string())
+            }),
+        )
+        .chain(
+            engine(
+                Paper::new()
+                    .then_packet(syn(40102))
+                    .then_packet(request(40102))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always()),
+        )
+        .heard()
+        .collect();
+
+    assert!(
+        !heard.is_empty(),
+        "показания разговоров обязаны идти потоком у обеих цепочек"
+    );
+    assert!(
+        !spoken.lock().expect("журнал не отравлен").is_empty(),
+        "слово о ЦЕЛИ обязано прозвучать и у цепочки, стоящей в наборе"
+    );
+}
