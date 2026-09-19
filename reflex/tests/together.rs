@@ -11,7 +11,7 @@
 
 mod paper;
 
-use paper::{dns_query, request, syn, Paper};
+use paper::{dns_query, request, syn, taken, Paper};
 use reflex::*;
 
 /// Прибор, говорящий на каждом пакете. Свой, а не из оснастки: у записи край иного рода, и прибор
@@ -478,5 +478,58 @@ fn the_same_turn_carries_a_reading_and_then_the_end() {
     assert!(
         ended,
         "кончившийся набор обязан сказать о конце, а не молчать"
+    );
+}
+
+/// ПРЕДМЕТ: цепочка в НАБОРЕ рвёт по признаку, который говорит ядро, — и только его.
+///
+/// Набор держит действующую цепочку с тех пор, как заведено правило обрыва: действие в нём
+/// объявляется ПРАВИЛОМ, а не терминалом, потому что цикл у набора общий и носителя в руках у
+/// потребителя нет. Предикат правила при этом видел одно слово — а решать надо по марке разговора,
+/// которую ядро приносит с каждой буквой.
+///
+/// Заказано замером потребителя (19.09.2026): рвать следует только разговор, идущий под маркой
+/// лечения; беда на разговоре, идущем другим путём, есть беда того пути.
+#[test]
+fn a_chain_in_a_set_severs_by_the_mark_the_kernel_shows() {
+    let severed = |mark: u32| -> usize {
+        let paper = Paper::new()
+            .edging(Some(paper::PaperEdge {
+                mark,
+                ..paper::PaperEdge::default()
+            }))
+            .then_packet(request(40401))
+            .then_stop();
+        let injected = paper.injected();
+
+        let heard: Vec<Note> = together()
+            .chain(
+                engine(paper)
+                    .from(Tcp)
+                    .extract(Sni)
+                    .detect(paper::Crier::always())
+                    .severing_addressed(|whom: Whom<'_>, _word: &Distress| {
+                        whom.edge.map(|edge| edge.mark) == Some(0x0300)
+                    }),
+            )
+            .heard()
+            .collect();
+
+        assert!(
+            !heard.is_empty(),
+            "показания обязаны идти и при правиле обрыва"
+        );
+        taken(injected).len()
+    };
+
+    assert_eq!(
+        severed(0x0300),
+        1,
+        "разговор под маркой лечения обязан быть оборван"
+    );
+    assert_eq!(
+        severed(0x0400),
+        0,
+        "разговор под чужой маркой рвать нечем и незачем"
     );
 }

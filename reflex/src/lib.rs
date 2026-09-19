@@ -1586,8 +1586,10 @@ impl<W, S> Park<W, S> {
 /// нечем. Оттого решение о РОДЕ слова объявляется заранее, а решение о цели — по-прежнему у
 /// потребителя, через его собственный цикл.
 struct Severing<K, S> {
-    /// На какое слово рвать — решение потребителя о РОДЕ улики.
-    when: Box<dyn FnMut(&S) -> bool + Send>,
+    /// На какое слово рвать — решение потребителя о РОДЕ улики. Довод `Whom` несёт и признак
+    /// ЯДРА (марка разговора, счётчики края на момент буквы): рвать по имени цели мало там, где
+    /// один и тот же разговор идёт то под лечением, то мимо него.
+    when: Box<dyn FnMut(Whom<'_>, &S) -> bool + Send>,
     /// Чем сказать стороне, что разговора не будет. Указатель, а не бонд на цикле: способность
     /// доказана В ТОЧКЕ ОБЪЯВЛЕНИЯ правила (§9.1), и цикл, ничего о ней не знающий, лишь зовёт
     /// сохранённое. Так дверь показаний не требует умения рвать от ВСЯКОГО носителя — запись
@@ -1770,6 +1772,42 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     pub fn severing<P>(mut self, when: P) -> Detecting<C, T, H, S>
     where
         P: FnMut(&S) -> bool + Send + 'static,
+        C::Carrier: CanHold + CanSever + CanInject,
+        <C::Carrier as reflex_core::backend::Sink>::Error: std::fmt::Debug,
+    {
+        self.severing = Some(Severing {
+            // Обёртка, а не вторая дверь: предмет один — «на что рвать», — и потребитель, которому
+            // довольно слова, адреса не видит (тот же довод, что у `ByName` в реакции).
+            when: Box::new({
+                let mut when = when;
+                move |_whom, word| when(word)
+            }),
+            notice: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Sender),
+            fire: |carrier, packet| {
+                if let Err(why) = carrier.emit(<C::Carrier as CanInject>::inject(packet)) {
+                    report!("обрыв не ушёл: {why:?}");
+                }
+            },
+        });
+        self
+    }
+
+    /// РВАТЬ, ВЗЯВ АДРЕС ЦЕЛИКОМ — вторая форма [`Detecting::severing`], пара к
+    /// [`Detecting::act_addressed`] у терминала действия.
+    ///
+    /// Нужна там, где решение рвать принимается по признаку ЯДРА, а не по роду улики: [`Whom::edge`]
+    /// несёт марку разговора, и один и тот же разговор бывает то под лечением, то мимо него. Беда
+    /// на разговоре, идущем другим путём, есть беда того пути — рвать там нечего.
+    ///
+    /// ЭТО И ЕСТЬ ДЕЙСТВИЕ В НАБОРЕ. `.act` уводит цепочку в терминал, занимающий поток, и до
+    /// набора она не доходит; правило же объявляется заранее и живёт в пути показаний-значением,
+    /// то есть работает и в [`Together`]. Предел назван вслух: из трёх глаголов [`Act`] правилом
+    /// выражается один — обрыв; кому нужны прочие, тому терминал и свой поток.
+    ///
+    /// Способность носителя доказана ЗДЕСЬ, в точке объявления (§9.1), как и у первой формы.
+    pub fn severing_addressed<P>(mut self, when: P) -> Detecting<C, T, H, S>
+    where
+        P: FnMut(Whom<'_>, &S) -> bool + Send + 'static,
         C::Carrier: CanHold + CanSever + CanInject,
         <C::Carrier as reflex_core::backend::Sink>::Error: std::fmt::Debug,
     {
@@ -2108,6 +2146,19 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
         }
     }
 
+    /// РВАТЬ, ВЗЯВ АДРЕС ЦЕЛИКОМ, — [`Detecting::severing_addressed`] у свёрнутой цепочки. Двери
+    /// цепочки повторены здесь все: место двери в выражении смысла не несёт.
+    pub fn severing_addressed<P>(self, when: P) -> Speaking<C, T, H, S>
+    where
+        P: FnMut(Whom<'_>, &S) -> bool + Send + 'static,
+        C::Carrier: CanHold + CanSever + CanInject,
+        <C::Carrier as reflex_core::backend::Sink>::Error: std::fmt::Debug,
+    {
+        Speaking {
+            detecting: self.detecting.severing_addressed(when),
+        }
+    }
+
     /// РВАТЬ МЁРТВЫЙ РАЗГОВОР — [`Detecting::severing`] у свёрнутой цепочки. Способность носителя
     /// требуется здесь же, в точке объявления правила (§9.1), и ни от свёртки, ни от места в
     /// выражении не зависит.
@@ -2443,7 +2494,7 @@ impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
         // только по улике с пакетом» держится конструкцией, а не проверкой.
         let effects = match self.rule.as_mut() {
             None => SmallVec::new(),
-            Some(rule) => match (rule.when)(&word) {
+            Some(rule) => match (rule.when)(whom, &word) {
                 false => SmallVec::new(),
                 true => (rule.notice)(seen)
                     .into_iter()
