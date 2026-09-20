@@ -186,6 +186,18 @@ pub struct SilenceInstrument {
     /// Достоверно ли известно, ждёт ли человек. В отличие от счёта байтов — восстановимо: любое
     /// следующее наблюдение заново устанавливает эту ось, и прибор снова видит.
     awaiting_certain: bool,
+    /// ИСТОРИЮ РАЗГОВОРА СКАЖЕТ ДРУГОЙ — и потому слово о ней (`NoBytes`) этот прибор не говорит.
+    ///
+    /// Ось входит в РЕШЕНИЕ, а не фильтрует выход, и разница эта оплачена замером. Пока слово
+    /// отнимали за прибором, автомат успевал потратить свой единственный выстрел (`Watch::Fired`)
+    /// на высказывание, которого никто не услышал, — и дальше молчал ВЕСЬ разговор. Замер
+    /// (бумажный провод, порог 1,5 с): цель молчит две секунды, затем отвечает, затем встаёт
+    /// снова на шесть секунд при ждущем клиенте — сказано НОЛЬ слов; без первой паузы та же
+    /// вторая беда названа (`Silence { ms: 1680 }`). Сторож:
+    /// `a_confiscated_word_does_not_spend_the_doors_one_shot`.
+    ///
+    /// Кто этот другой — прибор не знает и знать не должен: он знает лишь, что слово не его.
+    history_elsewhere: bool,
 }
 
 /// Что делает наблюдение за разговором. Вариант типа, не два флага (четвёртая комбинация
@@ -211,6 +223,16 @@ impl SilenceInstrument {
             bytes: 0,
             watch: Watch::Open,
             awaiting: false,
+            history_elsewhere: false,
+        }
+    }
+
+    /// Объявить, что об истории разговора («не отвечала вовсе») говорит ДРУГОЙ свидетель. Ставит
+    /// тот, кто эту пару и составил, — прибор соседа себе не выбирает.
+    pub fn history_spoken_elsewhere(self, elsewhere: bool) -> Self {
+        Self {
+            history_elsewhere: elsewhere,
+            ..self
         }
     }
 }
@@ -310,19 +332,30 @@ impl reflex_core::mealy::Mealy for SilenceInstrument {
                 {
                     // `NoBytes` говорит об истории, `Silence` — об окне. После прячущей буквы окно
                     // ещё наблюдаемо (часы заведены от неё), история — уже нет.
-                    let distress = match (self.bytes, self.bytes_certain) {
-                        (0, true) => Distress::NoBytes,
-                        (_seen, _certain) => Distress::Silence {
+                    //
+                    // СЛОВО ОБ ИСТОРИИ — НАШЕ, ЛИШЬ ПОКА ЕГО НЕКОМУ БОЛЬШЕ ЗАСВИДЕТЕЛЬСТВОВАТЬ.
+                    // Отданное соседу, оно не рождается ВОВСЕ: не рождается — значит и выстрела
+                    // (`Watch::Fired`) не тратит, и окно ещё скажется `Silence`-ем, когда цель
+                    // заговорит и встанет снова (см. `history_elsewhere`).
+                    let ours = match (self.bytes, self.bytes_certain) {
+                        (0, true) => match self.history_elsewhere {
+                            true => None,
+                            false => Some(Distress::NoBytes),
+                        },
+                        (_seen, _certain) => Some(Distress::Silence {
                             ms: at.duration_since(last).as_millis() as u32,
-                        },
+                        }),
                     };
-                    (
-                        Self {
-                            watch: Watch::Fired,
-                            ..self
-                        },
-                        smallvec::smallvec![distress],
-                    )
+                    match ours {
+                        None => (self, smallvec::SmallVec::new()),
+                        Some(distress) => (
+                            Self {
+                                watch: Watch::Fired,
+                                ..self
+                            },
+                            smallvec::smallvec![distress],
+                        ),
+                    }
                 }
                 // Часы заводит первый тик, не первое событие: у потока с дропом `SYN` общих букв нет
                 // вовсе, и наблюдением часы остались бы `None` навсегда.

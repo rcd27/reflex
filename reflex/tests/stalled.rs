@@ -180,3 +180,69 @@ fn a_target_that_acknowledges_without_a_single_byte_is_named() {
         "цель за десять секунд не отдала ни байта данных — беда обязана быть названа один раз: {said:?}"
     );
 }
+
+/// ОТНЯТОЕ СЛОВО НЕ ТРАТИТ ЕДИНСТВЕННЫЙ ВЫСТРЕЛ ДВЕРИ.
+///
+/// Проводная половина говорит однажды (`Watch::Fired` глушит её навсегда) — и это правильно: одна
+/// беда, одно слово. Но пока слово об истории отнимали ФИЛЬТРОМ ЗА ПРИБОРОМ, выстрел тратился на
+/// высказывание, которого никто не слышал: всякий разговор, где цель молчала дольше порога ДО
+/// первого своего байта, глох целиком. Медленная цель (первый байт позже порога) делала дверь
+/// немой на весь сеанс — а это самый обычный разговор, не редкая клетка.
+///
+/// Замер на сочинённом проводе при пороге 1,5 с: цель молчит две секунды, отвечает, клиент
+/// спрашивает снова, цель встаёт на шесть секунд. До починки сказано НОЛЬ слов; после — беда
+/// названа, и названа ровно та же, что называется без первой паузы. Пара клеток обязательна:
+/// одиночный прогон был бы зелен и на автомате, который просто не глохнет никогда.
+#[test]
+fn a_confiscated_word_does_not_spend_the_doors_one_shot() {
+    use paper::{handshake, log, reply, segment, syn, taken, Paper, PaperEdge};
+
+    fn ask(len: usize) -> Vec<u8> {
+        let mut bytes = vec![0x16, 0x03, 0x01, 0x05, 0x40];
+        bytes.resize(len, 0x41);
+        bytes
+    }
+
+    const PORT: u16 = 40001;
+
+    let said = |first_gap: u64| -> Vec<Distress> {
+        let heard = log::<Distress>();
+        engine(
+            Paper::new()
+                // Цель ЖИВА и отдала данные — краю сказать нечего, и всё услышанное здесь
+                // принадлежит проводной половине.
+                .edging(Some(PaperEdge {
+                    up_packets: 3,
+                    up_bytes: 3 * 56 + 1_400,
+                    down_packets: 4,
+                    down_bytes: 4 * 52 + 1_348,
+                    age: Duration::from_secs(9),
+                    mark: 0,
+                }))
+                .then_packet(syn(PORT))
+                .then_packet_after(Duration::from_millis(10), handshake(PORT))
+                .then_packet_after(Duration::from_millis(10), segment(PORT, 107, &ask(1_348)))
+                .then_packet_after(Duration::from_millis(first_gap), reply(PORT, 1_400))
+                .then_packet_after(Duration::from_millis(100), segment(PORT, 1_455, &ask(100)))
+                .silent_for(Duration::from_secs(6))
+                .then_stop(),
+        )
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Silence::after(Duration::from_millis(1_500)))
+        .on(move |_target: &str, distress| heard.lock().expect("журнал цел").push(distress))
+        .run();
+        taken(heard)
+    };
+
+    let after_a_confiscated_word = said(2_000);
+    let without_one = said(200);
+    assert!(
+        matches!(after_a_confiscated_word.as_slice(), [Distress::Silence { ms }] if *ms >= 1_500),
+        "первая пауза слова не родила — значит и выстрела не потратила: {after_a_confiscated_word:?}"
+    );
+    assert_eq!(
+        after_a_confiscated_word, without_one,
+        "молчавшая сперва цель обязана быть слышна так же, как заговорившая сразу"
+    );
+}
