@@ -143,11 +143,25 @@ pub fn can_witness_history<E: EdgeView>(edge: &E) -> bool {
         && edge.age().is_some()
 }
 
-pub(crate) fn gave_something<E: EdgeView>(edge: &E) -> Option<bool> {
+/// СКОЛЬКО ЦЕЛЬ ОТДАЛА СВЕРХ ЗАГОЛОВКОВ — величина, на которой стоит весь закон молчания.
+///
+/// Публична, и это не удобство: тот же вопрос задаёт ПОТРЕБИТЕЛЬ, когда решает, понесла ли страта
+/// (nevod3, `Treating::carrying`). Задай он его своей арифметикой — писатель и читатель держали бы
+/// два разных закона об одних битах, и разошлись бы молча. Замер, стоящий за этой строкой: потребитель
+/// суммировал ОБА направления (`up + down`), то есть засчитывал за лечение собственные байты клиента —
+/// `ClientHello` с повторами весит 7614 байт и течёт при ПОЛНОЙ блокировке.
+///
+/// `None` значит «ядро не считало» — третье значение рядом с нулём и числом (§7).
+pub fn gave<E: EdgeView>(edge: &E) -> Option<u64> {
     match (edge.up_bytes(), edge.up_packets()) {
-        (Some(bytes), Some(packets)) => Some(bytes > packets.saturating_mul(HDR) + FLOOR),
+        (Some(bytes), Some(packets)) => Some(bytes.saturating_sub(packets.saturating_mul(HDR))),
         _uncounted => None,
     }
+}
+
+/// Отдала ли цель что-то сверх заголовков — `gave` с порогом `FLOOR`.
+pub(crate) fn gave_something<E: EdgeView>(edge: &E) -> Option<bool> {
+    gave(edge).map(|beyond| beyond > FLOOR)
 }
 
 impl<V: EdgeView> EdgeSilence<V> {
