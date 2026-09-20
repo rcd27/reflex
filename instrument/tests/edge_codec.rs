@@ -91,3 +91,117 @@ fn a_zero_tag_is_refused() {
 fn a_discontiguous_mask_is_refused() {
     assert!(Layout::new(0xFF00_FF00, 0b101).is_none());
 }
+
+/// ЗАПИСАННОЕ ЧИТАЕТСЯ ОБРАТНО ПРИ ЛЮБОМ СОСЕДЕ — перебором, а не одним примером.
+///
+/// Прежняя приёмка этого места («три клетки не пересекаются») была ВАКУУМНОЙ: `read` возвращает
+/// одно значение `Recall`, и «ровно одна клетка из трёх» держится компилятором, а не кодом —
+/// покраснеть она не могла ни на одном мутанте. Проверяется то, что сломать можно: наша запись
+/// переживает любые чужие биты, и обратно читается ровно она.
+///
+/// Перебор полный по ФОРМЕ содержимого: все четыре фазы × все 256 оттисков × соседи, среди которых
+/// те, что встречаются в поле (`0xCC` — карантин невода 3, `0xAA` — «всегда прямо», старшие биты —
+/// марка впрыска `reflex`).
+#[test]
+fn a_written_memo_reads_back_whatever_the_neighbour_wrote() {
+    let layout = layout();
+    let phases = [
+        Phase::Quiet,
+        Phase::Suspected,
+        Phase::Confirmed,
+        Phase::Released,
+    ];
+    let beside: [u32; 6] = [
+        0x0000_0000,
+        0x0000_0001,
+        0x0000_00CC,
+        0x0000_00AA,
+        0xC000_0000,
+        0xF000_00FF,
+    ];
+
+    let broken: Vec<(u32, Phase, u8)> = beside
+        .iter()
+        .flat_map(|neighbour| {
+            phases.iter().flat_map(move |phase| {
+                (0..=255u8).map(move |imprint| (*neighbour, *phase, imprint))
+            })
+        })
+        .filter(|(neighbour, phase, imprint)| {
+            let word = Memo::new(layout, *phase, *imprint).apply_to(*neighbour);
+            let kept = word & !layout.mask() == neighbour & !layout.mask();
+            let read = match layout.read(word) {
+                Recall::Ours(memo) => memo.phase == *phase && memo.imprint == *imprint,
+                Recall::Foreign { .. } | Recall::Untouched => false,
+            };
+            !(kept && read)
+        })
+        .take(4)
+        .collect();
+
+    assert!(
+        broken.is_empty(),
+        "запись не пережила соседа или прочлась иначе: {broken:02x?}"
+    );
+}
+
+/// ИЗМЕНЕНИЕ ПРОЧТЕНИЯ ЛОКАЛИЗОВАНО, И ВОТ ЕГО ГРАНИЦА.
+///
+/// Прежде клеток было две, и «чужой писатель» определялся как «слово целиком непусто». Новое
+/// прочтение обязано совпадать со старым ВЕЗДЕ, кроме слов, у которых под нашей маской пусто, а
+/// вне её что-то есть, — там старое говорило «чужой писатель», новое говорит «нетронуто». Ровно
+/// на этом множестве жила марка карантина `0xCC`, дававшая 41 ложную беду из 43 (стенд 20.09.2026).
+///
+/// Приёмка сторожит границу с ОБЕИХ сторон: и что разница есть там, где обещана, и что её нет
+/// нигде больше. Без второй половины правка могла бы ослабить прибор молча.
+#[test]
+fn the_change_touches_only_words_empty_under_our_mask() {
+    let layout = layout();
+    let shift = layout.mask().trailing_zeros();
+    let outside: [u32; 6] = [
+        0x0000_0000,
+        0x0000_0001,
+        0x0000_00CC,
+        0x0000_00AA,
+        0xC000_0000,
+        0xF000_00FF,
+    ];
+
+    // Старое прочтение, выраженное формулой: «наш тег — наше, иначе чужой писатель, если слово
+    // непусто».
+    let was_foreign = |word: u32| {
+        let tag = ((word & layout.mask()) >> shift) & 0b1111;
+        tag != 0b101 && word != 0
+    };
+    let is_foreign = |word: u32| matches!(layout.read(word), Recall::Foreign { .. });
+
+    let differing: Vec<u32> = outside
+        .iter()
+        .flat_map(|beside| {
+            (0..=0x7FFFu32)
+                .map(move |under| ((under << shift) & layout.mask()) | (beside & !layout.mask()))
+        })
+        .filter(|word| was_foreign(*word) != is_foreign(*word))
+        .collect();
+
+    let outside_only: Vec<u32> = differing
+        .iter()
+        .copied()
+        .filter(|word| word & layout.mask() == 0 && *word != 0)
+        .collect();
+
+    assert_eq!(
+        differing.len(),
+        outside_only.len(),
+        "прочтение изменилось там, где не обещано: {:02x?}",
+        differing
+            .iter()
+            .filter(|word| !outside_only.contains(word))
+            .take(4)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !differing.is_empty(),
+        "разницы нет вовсе — значит приёмка вакуумна и ничего не сторожит"
+    );
+}
