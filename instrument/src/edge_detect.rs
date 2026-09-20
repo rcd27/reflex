@@ -159,10 +159,12 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
         // Чужой писатель (тег не наш, слово непустое) — находка, а не тишина. Его биты НЕ трогаем
         // (памятка `None`): у соседа своя маска, затирать её нам нечем.
         let phase = match self.layout.read(edge.mark()) {
-            Recall::Foreign { theirs } if theirs != 0 => {
+            Recall::Foreign { theirs } => {
                 return (self, (None, smallvec![Distress::Diverged { theirs }]), ());
             }
-            Recall::Foreign { .. } => Phase::Quiet, // theirs == 0 — нетронутый поток
+            // Под нашими битами пусто — нетронутый поток. Что лежит ВНЕ маски, прибора не
+            // касается: там сосед, и раньше он объявлялся чужим писателем (см. `Recall`).
+            Recall::Untouched => Phase::Quiet,
             Recall::Ours(memo) => memo.phase,
         };
 

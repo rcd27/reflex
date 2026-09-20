@@ -30,6 +30,7 @@ fn what_was_written_is_read_back() {
             assert_eq!(memo.imprint, 200);
         }
         Recall::Foreign { theirs } => panic!("своё прочлось чужим: {theirs:#x}"),
+        Recall::Untouched => panic!("своё прочлось нетронутым: {word:#x}"),
     }
 }
 
@@ -41,10 +42,34 @@ fn another_writer_is_recognised_without_memory() {
     assert!(matches!(layout().read(alien), Recall::Foreign { .. }));
 }
 
-/// Пустое слово — не «наша тишина», а чужое: нулевой тег нашим не бывает.
+/// Пустое слово — не «наша тишина» и не чужой писатель, а НЕТРОНУТАЯ марка: под нашими битами
+/// никто не писал. Клетка отдельная, потому что прежде она делила `Foreign` с настоящим
+/// расхождением, и различал их потребитель по `theirs != 0`.
 #[test]
-fn empty_word_is_foreign() {
-    assert!(matches!(layout().read(0), Recall::Foreign { theirs: 0 }));
+fn empty_word_is_untouched() {
+    assert!(matches!(layout().read(0), Recall::Untouched));
+}
+
+/// СОСЕД ВНЕ НАШЕЙ МАСКИ — НЕ ЧУЖОЙ ПИСАТЕЛЬ. Читатель обязан говорить то же, что писатель:
+/// `foreign_bits_survive_the_write` выше объявляет его биты законными, и объявить их же находкой
+/// на чтении значило бы держать два закона об одном. Цена ошибки замерена неводом 3 на живой
+/// цензуре 20.09.2026 — марка маршрутизации `0xCC` давала `Diverged` на каждом пакете укрытой
+/// цели.
+#[test]
+fn a_neighbour_outside_our_mask_is_untouched_not_foreign() {
+    assert!(matches!(layout().read(0x0000_00CC), Recall::Untouched));
+    assert!(matches!(layout().read(0xF000_0000), Recall::Untouched));
+}
+
+/// А ВОТ ПО НАШИМ БИТАМ ЧУЖОЙ ТЕГ — НАХОДКА, и слово отдаётся целиком: клетка уже различена
+/// типом, а человеку нужна вся марка, чтобы узнать соседа.
+#[test]
+fn a_foreign_tag_under_our_mask_is_reported_with_the_whole_word() {
+    let alien = 0x0055_0000 | 0x0000_00CC;
+    assert!(matches!(
+        layout().read(alien),
+        Recall::Foreign { theirs } if theirs == alien
+    ));
 }
 
 /// Маска у́же полей — отказ (`None`), а не тихое обрезание старшего бита оттиска. 14 бит < 15 нужных.
