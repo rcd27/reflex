@@ -1211,40 +1211,86 @@ where
 /// пороге 300 мс и сдвиге разговора относительно сетки в 0/50/100/150 мс дал 400/350/300/450 мс
 /// соответственно. Потому порог ставится с запасом на целый шаг сетки, а «ровно `after`» в замере
 /// у потребителя — совпадение фазы, не правило.
-#[derive(Clone, Copy)]
-struct Stalling {
+struct Stalling<E> {
     machine: reflex_instrument::detect::SilenceInstrument,
     /// Разговор датаграммный — свидетеля у отсутствия нет, и слово остаётся у провода. `None` —
-    /// провода ещё не видели, и слово отдаётся краю: до первого наблюдения неизвестно, чьё оно.
+    /// провода ещё не видели.
     datagram: Option<bool>,
+    /// СПОСОБЕН ЛИ КРАЙ СКАЗАТЬ СЛОВО ОБ ИСТОРИИ, если ему его отдать. Снимается с КАЖДОГО пакета
+    /// (`can_witness_history` — та же дверь, которой судит сам край) и помнится: буква тика края не
+    /// несёт, а решать прибору как раз на тике.
+    ///
+    /// `None` — края не видели ещё ни разу, и это НЕ «свидетель есть». Отдать слово по незнанию
+    /// значило бы принять догадку о носителе за наблюдение (§7): носитель бывает и без края вовсе
+    /// (запись, местный трафик), и с краем, у которого ядро не ведёт нужных величин.
+    witness: Option<bool>,
+    edge: PhantomData<fn() -> E>,
 }
 
-impl Mealy for Stalling {
-    /// ШИРОКОЕ слово провода, а не общее: половине нужна ВЕТКА транспорта, а она живёт только здесь.
+// `Copy`/`Clone` без бонда на `E`: носитель живёт в фантоме, значение от него не зависит — вывод
+// `derive` потребовал бы `E: Copy` и запретил бы края, которые копией не бывают.
+impl<E> Clone for Stalling<E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<E> Copy for Stalling<E> {}
+
+impl<E: EdgeView + Clone + 'static> Mealy for Stalling<E> {
+    /// ШИРОКОЕ слово целиком — и провод, и край. Ветка транспорта живёт только здесь, а край нужен
+    /// не для суждения (судит им другая половина), а для ОДНОГО вопроса: есть ли кому отдать слово.
     /// Сужение к алфавиту прибора делает тот же чеканщик, что и лифт (`narrow`), — второй копии
     /// правила «пакет чужой буквы шаг пропускает» не заводим.
-    type In = DetectorEvent<Reading>;
+    type In = DetectorEvent<Wide<Reading, E>>;
     type Out = SmallVec<[Distress; 2]>;
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
-        let datagram = match &event {
-            DetectorEvent::Packet { input, .. } => Some(matches!(input, Reading::Udp(_))),
+        let (datagram, witness) = match &event {
+            DetectorEvent::Packet { input, .. } => (
+                Some(matches!(input.0, Reading::Udp(_))),
+                // Пакет без края знания не отменяет: `None` здесь — «на этом кадре не видели»,
+                // а не «края нет». Первый `SYN` ядро в таблицу ещё не завело.
+                input
+                    .1
+                    .as_ref()
+                    .map(reflex_instrument::edge_detect::can_witness_history)
+                    .or(self.witness),
+            ),
             DetectorEvent::Tick { .. }
             | DetectorEvent::Opaque { .. }
-            | DetectorEvent::Torn { .. } => self.datagram,
+            | DetectorEvent::Torn { .. } => (self.datagram, self.witness),
         };
-        let Some(event) = narrow::<Reading, Seen>(&event) else {
-            return (Stalling { datagram, ..self }, SmallVec::new(), ());
+        let Some(event) = narrow::<Wide<Reading, E>, Seen>(&event) else {
+            return (
+                Stalling {
+                    datagram,
+                    witness,
+                    ..self
+                },
+                SmallVec::new(),
+                (),
+            );
         };
         // ОБЪЯВЛЕНИЕ ДО ШАГА, А НЕ ФИЛЬТР ПОСЛЕ НЕГО. Прибор узнаёт, что слово об истории скажет
         // край, ПРЕЖДЕ чем решит говорить, — иначе он тратил бы на неуслышанное высказывание свой
         // единственный выстрел и глох на весь разговор (докблок `history_elsewhere`).
+        // СЛОВО ОТДАЁТСЯ ТОМУ, КТО СПОСОБЕН ЕГО СКАЗАТЬ, — два условия, не одно: разговор не
+        // датаграммный (у датаграмм свидетеля нет по классу) И край, способный судить, уже виден.
         let (machine, said, _noted) = self
             .machine
-            .history_spoken_elsewhere(datagram != Some(true))
+            .history_spoken_elsewhere(datagram != Some(true) && witness == Some(true))
             .step(event);
-        (Stalling { machine, datagram }, said, ())
+        (
+            Stalling {
+                machine,
+                datagram,
+                witness,
+                edge: PhantomData,
+            },
+            said,
+            (),
+        )
     }
 }
 
@@ -1253,9 +1299,11 @@ impl<E: EdgeView + Clone + 'static> IntoProbe<Wide<Reading, E>> for Silence {
     type Home = MarkWriter;
     fn place(self, layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
         Placed::Both(
-            lift::<Wide<Reading, E>, Reading, _, Distress, Distress>(Stalling {
+            lift::<Wide<Reading, E>, Wide<Reading, E>, _, Distress, Distress>(Stalling::<E> {
                 machine: reflex_instrument::detect::SilenceInstrument::after(self.after),
                 datagram: None,
+                witness: None,
+                edge: PhantomData,
             }),
             Box::new(AtEdge {
                 machine: EdgeSilence::<E>::new(self.after, layout),

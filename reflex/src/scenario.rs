@@ -103,7 +103,11 @@ pub struct PaperEdge {
     pub up_bytes: u64,
     pub down_packets: u64,
     pub down_bytes: u64,
-    pub age: Duration,
+    /// Возраст разговора — `None` У КРАЯ БЕЗ ЧАСОВ. Не педантизм: на боевом железе потребителя
+    /// (OpenWrt без `CONFIG_NF_CONNTRACK_TIMESTAMP`) метки времени в conntrack нет вовсе, счётчики
+    /// приходят, а возраста не существует. Пока величина стояла здесь `Duration`, эта клетка была
+    /// на бумаге невыразима — и закон, который на ней ломался, проверить было нечем.
+    pub age: Option<Duration>,
     pub mark: u32,
 }
 
@@ -116,7 +120,7 @@ impl Default for PaperEdge {
             up_bytes: 0,
             down_packets: 2,
             down_bytes: 2 * 60 + 400,
-            age: Duration::from_secs(30),
+            age: Some(Duration::from_secs(30)),
             mark: 0,
         }
     }
@@ -139,7 +143,7 @@ impl EdgeView for PaperEdge {
         Some(Duration::ZERO)
     }
     fn age(&self) -> Option<Duration> {
-        Some(self.age)
+        self.age
     }
     fn mark(&self) -> u32 {
         self.mark

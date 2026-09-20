@@ -89,7 +89,7 @@ fn when_the_target_is_wholly_silent_only_the_edge_speaks_the_word() {
                 up_bytes: 60,
                 down_packets: 2,
                 down_bytes: 1_500,
-                age: Duration::from_secs(7),
+                age: Some(Duration::from_secs(7)),
                 mark: 0,
             }))
             // ДВА наблюдения: первое берёт разговор под подозрение (фаза ложится в марку),
@@ -153,7 +153,7 @@ fn a_target_that_acknowledges_without_a_single_byte_is_named() {
             up_bytes: 3 * 56,
             down_packets: 9,
             down_bytes: 9 * 52 + 1_348 * 6 + 225,
-            age: Duration::from_secs(7),
+            age: Some(Duration::from_secs(7)),
             mark: 0,
         }))
         .then_packet(syn(PORT))
@@ -216,7 +216,7 @@ fn a_confiscated_word_does_not_spend_the_doors_one_shot() {
                     up_bytes: 3 * 56 + 1_400,
                     down_packets: 4,
                     down_bytes: 4 * 52 + 1_348,
-                    age: Duration::from_secs(9),
+                    age: Some(Duration::from_secs(9)),
                     mark: 0,
                 }))
                 .then_packet(syn(PORT))
@@ -244,5 +244,95 @@ fn a_confiscated_word_does_not_spend_the_doors_one_shot() {
     assert_eq!(
         after_a_confiscated_word, without_one,
         "молчавшая сперва цель обязана быть слышна так же, как заговорившая сразу"
+    );
+}
+
+/// СВИДЕТЕЛЬ БЕЗ ЧАСОВ СЛОВА НЕ БЕРЁТ.
+///
+/// Замер потребителя с боевой коробки (NanoPi R2S, OpenWrt 6.12.71, 20.09.2026): счётчики
+/// conntrack приходят — `conntrack -L` по висящему разговору даёт у цели `packets=1 bytes=60`,
+/// то есть один `SYN+ACK` и ничего сверх заголовков, — а метки времени в ядре нет вовсе
+/// (`nf_conntrack_timestamp` не существует как ключ, ядро собрано без неё). Порог краевой
+/// половины держит ВОЗРАСТ потока, возраста нет — фаза не уходит из подозрения никогда.
+///
+/// Слово, отданное такому свидетелю, не говорит никто — та же беда, что чинилась утром, но
+/// этажом выше: прежде край отвечал не о том, теперь не может ответить вовсе. Отсюда и закон:
+/// отдавать слово не «потому что это TCP», а потому что виден край, СПОСОБНЫЙ его сказать.
+#[test]
+fn a_witness_without_a_clock_does_not_take_the_word() {
+    use paper::{handshake, log, segment, syn, taken, Paper, PaperEdge};
+
+    const PORT: u16 = 40001;
+
+    let said = |age: Option<Duration>| -> Vec<Distress> {
+        let heard = log::<Distress>();
+        let mut dump = Paper::new()
+            .edging(Some(PaperEdge {
+                up_packets: 1,
+                up_bytes: 60,
+                down_packets: 8,
+                down_bytes: 8 * 52 + 1_348 * 6,
+                age,
+                mark: 0,
+            }))
+            .then_packet(syn(PORT))
+            .then_packet_after(Duration::from_millis(10), handshake(PORT))
+            .then_packet_after(Duration::from_millis(10), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]));
+        for rto in [290u64, 580, 1_150, 2_300] {
+            dump = dump.then_packet_after(Duration::from_millis(rto), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]));
+        }
+        engine(dump.then_stop_after(Duration::from_millis(500)))
+            .from(Tcp)
+            .extract(Sni)
+            .detect(Silence::after(Duration::from_millis(1_600)))
+            .on(move |_target: &str, distress| heard.lock().expect("журнал цел").push(distress))
+            .run();
+        taken(heard)
+    };
+
+    let clockless = said(None);
+    assert!(
+        matches!(clockless.as_slice(), [Distress::NoBytes]),
+        "у края нет часов — слово остаётся у того, чьи часы свои: {clockless:?}"
+    );
+    // ПАРА ОБЯЗАТЕЛЬНА: с часами слово говорит КРАЙ, и говорит его ОДИН раз. Без этой половины
+    // проверка была бы зелена и на приборе, который просто говорит всегда и дважды.
+    let clocked = said(Some(Duration::from_secs(7)));
+    assert_eq!(
+        clocked.len(),
+        1,
+        "одна беда — одно слово, кто бы его ни сказал: {clocked:?}"
+    );
+}
+
+/// НОСИТЕЛЬ БЕЗ КРАЯ ВОВСЕ — та же клетка, другой её край: отдавать слово некому, и провод его
+/// сохраняет. Прежде условие звучало «это TCP — значит свидетель есть», то есть принимало догадку
+/// о носителе за наблюдение (§7); запись и местный трафик под эту догадку не подходили никогда.
+#[test]
+fn without_an_edge_the_wire_keeps_the_word() {
+    use paper::{handshake, log, segment, syn, taken, Paper};
+
+    const PORT: u16 = 40001;
+
+    let heard = log::<Distress>();
+    engine(
+        Paper::new()
+            .edging(None)
+            .then_packet(syn(PORT))
+            .then_packet_after(Duration::from_millis(10), handshake(PORT))
+            .then_packet_after(Duration::from_millis(10), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]))
+            .then_packet_after(Duration::from_millis(2_300), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]))
+            .then_stop_after(Duration::from_millis(500)),
+    )
+    .from(Tcp)
+    .extract(Sni)
+    .detect(Silence::after(Duration::from_millis(1_600)))
+    .on(move |_target: &str, distress| heard.lock().expect("журнал цел").push(distress))
+    .run();
+
+    let said = taken(heard);
+    assert!(
+        matches!(said.as_slice(), [Distress::NoBytes]),
+        "края нет — некому отдать слово, и оно остаётся сказанным: {said:?}"
     );
 }

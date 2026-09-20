@@ -123,6 +123,26 @@ pub(crate) fn asked_for_something<E: EdgeView>(edge: &E) -> bool {
 /// цель, подтверждающая приветствие и молчащая, неотличима от цели, ответившей делом. Ровно на
 /// этом дверь и промолчала на живом проводе (`reflex/tests/stalled.rs`,
 /// `a_target_that_acknowledges_without_a_single_byte_is_named`).
+/// СПОСОБЕН ЛИ КРАЙ ВЫНЕСТИ ПРИГОВОР ОБ ИСТОРИИ РАЗГОВОРА — наблюдаемая величина, а не догадка о
+/// носителе.
+///
+/// Объявлена ЗДЕСЬ, рядом с законом, который эти величины и читает: спроси её на другой стороне
+/// (проводная половина двери решает по ней, отдавать ли слово) — и два списка предпосылок
+/// разошлись бы молча, ровно как разошлись бы две копии всякого закона.
+///
+/// Чего не хватает чаще всего — ЧАСОВ. Порог здесь держит возраст потока, а возраст даёт ядро
+/// меткой времени conntrack (`nf_conntrack_timestamp`); на железе, собранном без неё, ключа нет
+/// вовсе. Замер потребителя (NanoPi R2S, OpenWrt 6.12.71, 20.09.2026): счётчики края приходят
+/// (`up_packets = 1`, `up_bytes = 60` — цель отдала один `SYN+ACK`), а `age()` — `None`, и фаза
+/// никогда не уходит из `Suspected`. Край есть, величины есть, часов нет — и слово, отданное
+/// такому свидетелю, не говорит никто.
+pub fn can_witness_history<E: EdgeView>(edge: &E) -> bool {
+    gave_something(edge).is_some()
+        && edge.down_bytes().is_some()
+        && edge.down_packets().is_some()
+        && edge.age().is_some()
+}
+
 pub(crate) fn gave_something<E: EdgeView>(edge: &E) -> Option<bool> {
     match (edge.up_bytes(), edge.up_packets()) {
         (Some(bytes), Some(packets)) => Some(bytes > packets.saturating_mul(HDR) + FLOOR),
@@ -199,6 +219,14 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
             Recall::Untouched => Phase::Quiet,
             Recall::Ours(memo) => memo.phase,
         };
+
+        // СУДИТЬ НЕЧЕМ — НЕ СУДИМ, И ФАЗЫ НЕ ВЫДУМЫВАЕМ. Одна дверь на все недостающие величины
+        // (`can_witness_history`), и та же, которой проводная половина решает, отдавать ли слово:
+        // пока прибор писал `Suspected` в марку на крае без часов, он обещал приговор, который не
+        // мог вынести никогда.
+        if !can_witness_history(edge) {
+            return (self, (None, SmallVec::new()), ());
+        }
 
         let up_pk = edge.up_packets();
 

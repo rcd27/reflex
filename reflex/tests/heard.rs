@@ -134,7 +134,7 @@ fn a_reading_carries_the_edge_quantities() {
         "величины обязаны быть ТЕМИ ЖЕ, что видел прибор, а не снятыми заново позже"
     );
     assert_eq!(edge.up_packets, Some(PaperEdge::default().up_packets));
-    assert_eq!(edge.age, Some(PaperEdge::default().age));
+    assert_eq!(edge.age, PaperEdge::default().age);
 }
 
 /// Вторая половина, и она про §7: слово, рождённое УЗЛОМ СЕТКИ, края не несёт — у времени края нет.
