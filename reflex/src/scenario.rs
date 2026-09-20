@@ -96,6 +96,11 @@ pub fn taken<T: Clone>(journal: Log<T>) -> Vec<T> {
 #[derive(Debug, Clone, Copy)]
 pub struct PaperEdge {
     pub up_packets: u64,
+    /// Байт ОТ ЦЕЛИ, считая заголовки, — так их и считает conntrack. Отдельной осью, а не нулём:
+    /// ею отличается цель, приславшая одни подтверждения (`up_packets × заголовок`), от цели,
+    /// отдавшей данные. Пока величина стояла здесь нулём, сочинить первую было нечем, и закон,
+    /// который её читает, проверялся бы на крае, говорящем неправду.
+    pub up_bytes: u64,
     pub down_packets: u64,
     pub down_bytes: u64,
     pub age: Duration,
@@ -108,6 +113,7 @@ impl Default for PaperEdge {
     fn default() -> PaperEdge {
         PaperEdge {
             up_packets: 0,
+            up_bytes: 0,
             down_packets: 2,
             down_bytes: 2 * 60 + 400,
             age: Duration::from_secs(30),
@@ -127,7 +133,7 @@ impl EdgeView for PaperEdge {
         Some(self.down_bytes)
     }
     fn up_bytes(&self) -> Option<u64> {
-        Some(0)
+        Some(self.up_bytes)
     }
     fn idle(&self) -> Option<Duration> {
         Some(Duration::ZERO)
@@ -709,6 +715,22 @@ fn from_target_at(dst_port: u16, flags: u8, seq: u32, payload: &[u8]) -> Vec<u8>
 /// было и сочинить.
 pub fn fin(client_port: u16) -> Vec<u8> {
     from_target(client_port, 0x11, &[])
+}
+
+/// РУКОПОЖАТИЕ ОТ ЦЕЛИ: `SYN+ACK`. Без него сочинить БЛОКИРОВКУ ПО ИМЕНИ было нечем: весь её род
+/// начинается с состоявшегося рукопожатия (блокировка по адресу — та, где его нет), и сценарий,
+/// у которого цель не отвечает на стук вовсе, проверял другой класс беды.
+pub fn handshake(client_port: u16) -> Vec<u8> {
+    from_target(client_port, 0x12, &[])
+}
+
+/// ЧИСТОЕ ПОДТВЕРЖДЕНИЕ ОТ ЦЕЛИ: `ACK` без данных — цель приняла байты клиента и НЕ сказала
+/// ничего. События из него не рождается (`talk::anywhere`: пустой сегмент — не факт провода), а
+/// КРАЙ считает его пакетом. Тем и ценен: это единственный кадр, на котором две половины двери
+/// [`reflex::Silence`](crate::Silence) видят разное, и без него цель на бумаге была либо немой,
+/// либо говорящей — третьего, живого и безмолвного, сочинить было нельзя.
+pub fn acknowledgement(client_port: u16) -> Vec<u8> {
+    from_target(client_port, 0x10, &[])
 }
 
 /// СБРОС ОТ ЦЕЛИ: `RST` в ответ на разговор — улика прибора [`reflex::Rst`](crate::Rst).
