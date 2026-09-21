@@ -96,8 +96,11 @@ fn on_a_short_input_no_name_is_ever_born() {
 /// нечем, а `span` показывает на байты, которых никто не может тронуть.
 #[test]
 fn the_span_of_the_name_points_at_its_own_bytes() {
-    for domain in ["blocked.example", "a.b", "очень-длинное-имя-цели.example.com"]
-    {
+    for domain in [
+        "blocked.example",
+        "a.b",
+        "очень-длинное-имя-цели.example.com",
+    ] {
         let bytes = hello(domain);
         let found = sni(&bytes).expect("имя найдено");
         assert_eq!(found.name, domain);

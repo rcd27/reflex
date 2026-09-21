@@ -25,8 +25,11 @@ fn main() {
     let records = counted / runs.max(1);
     println!("записей в таблице: {records}");
     println!("один дамп: {:?}", spent / runs as u32);
-    println!("на 1000 записей: {:?}", match records {
-        0 => spent / runs as u32,
-        n => (spent / runs as u32) * 1000 / n as u32,
-    });
+    println!(
+        "на 1000 записей: {:?}",
+        match records {
+            0 => spent / runs as u32,
+            n => (spent / runs as u32) * 1000 / n as u32,
+        }
+    );
 }

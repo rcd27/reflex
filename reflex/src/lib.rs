@@ -3419,7 +3419,8 @@ where
         // решения против приборов — здесь; метка увода не сверялась ни с чем. Три пары из шести
         // были закрыты, три открыты, и увидеть это можно было, только собрав заявки в одно место.
         // Отказ — ЗНАЧЕНИЕ (`Report`), как и всякий несостоявшийся запуск.
-        let mut claims: smallvec::SmallVec<[reflex_core::mark::Claim; 4]> = smallvec::SmallVec::new();
+        let mut claims: smallvec::SmallVec<[reflex_core::mark::Claim; 4]> =
+            smallvec::SmallVec::new();
         if let Some(region) = reflex_core::mark::Region::new(recipe.layout().mask()) {
             claims.push(reflex_core::mark::Claim::Region {
                 region,

@@ -301,7 +301,9 @@ fn a_severing_rule_with_a_terminal_is_refused_instead_of_being_ignored() {
         .on(|_target: &str, _distress: Distress| {})
         .run();
 
-    let why = report.why().expect("цепочка обязана отказаться, а не молчать");
+    let why = report
+        .why()
+        .expect("цепочка обязана отказаться, а не молчать");
     assert!(
         why.contains("правило обрыва") && why.contains("терминалом"),
         "причина названа не та: {why}"

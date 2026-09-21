@@ -347,7 +347,10 @@ fn an_address_shared_by_two_known_names_follows_the_first_declared() {
     let priors = priors();
 
     assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(CONTOUR));
-    assert_eq!(priors.bind("104.18.32.47", "service.example"), Some(STRAIGHT));
+    assert_eq!(
+        priors.bind("104.18.32.47", "service.example"),
+        Some(STRAIGHT)
+    );
     assert_eq!(priors.bind("104.18.32.47", "chatgpt.com"), Some(STRAIGHT));
     assert_eq!(priors.known("104.18.32.47"), Some(STRAIGHT));
 }

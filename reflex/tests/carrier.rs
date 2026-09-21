@@ -73,7 +73,10 @@ fn inject_mark_lives_in_its_region() {
         reflex_core::mark::injecting().mask() & INJECT_MARK == INJECT_MARK,
         "метка обязана помещаться в свою область целиком"
     );
-    assert_ne!(INJECT_MARK, 0, "нулевая метка неотличима от нетронутой марки");
+    assert_ne!(
+        INJECT_MARK, 0,
+        "нулевая метка неотличима от нетронутой марки"
+    );
 }
 
 /// ДВА ПИСАТЕЛЯ ОДНИХ БИТОВ — ОТКАЗ ЗНАЧЕНИЕМ, и до всяких прав.
@@ -138,7 +141,9 @@ fn a_steering_mark_that_touches_the_instrument_layout_is_refused() {
         .on(|_target, _distress| {})
         .run();
 
-    let why = refused.why().expect("задетая область обязана стать причиной");
+    let why = refused
+        .why()
+        .expect("задетая область обязана стать причиной");
     assert!(
         why.contains("«метка увода»") && why.contains("задевает"),
         "причина названа не та: {why}"
@@ -158,7 +163,9 @@ fn a_steering_mark_that_touches_the_inject_region_is_refused() {
         .on(|_target, _distress| {})
         .run();
 
-    let why = refused.why().expect("задетая область обязана стать причиной");
+    let why = refused
+        .why()
+        .expect("задетая область обязана стать причиной");
     assert!(
         why.contains("«метка увода»") && why.contains("«область метки впрыска»"),
         "причина названа не та: {why}"

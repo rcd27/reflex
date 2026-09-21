@@ -158,12 +158,18 @@ fn a_target_that_acknowledges_without_a_single_byte_is_named() {
         }))
         .then_packet(syn(PORT))
         .then_packet_after(Duration::from_millis(10), handshake(PORT))
-        .then_packet_after(Duration::from_millis(10), segment(PORT, HEAD, &hello(1_348)))
+        .then_packet_after(
+            Duration::from_millis(10),
+            segment(PORT, HEAD, &hello(1_348)),
+        )
         // ВОТ ЭТОТ КАДР И БЫЛ РАЗНИЦЕЙ между бумагой и проводом: события провода из него не
         // рождается (пустой сегмент — не буква), а краю он приходит пакетом.
         .then_packet_after(Duration::from_millis(5), acknowledgement(PORT));
     for rto in [290u64, 580, 1_150, 2_300, 4_700] {
-        dump = dump.then_packet_after(Duration::from_millis(rto), segment(PORT, HEAD, &hello(1_348)));
+        dump = dump.then_packet_after(
+            Duration::from_millis(rto),
+            segment(PORT, HEAD, &hello(1_348)),
+        );
     }
 
     let heard = std::sync::Mutex::new(Vec::new());
@@ -277,9 +283,15 @@ fn a_witness_without_a_clock_does_not_take_the_word() {
             }))
             .then_packet(syn(PORT))
             .then_packet_after(Duration::from_millis(10), handshake(PORT))
-            .then_packet_after(Duration::from_millis(10), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]));
+            .then_packet_after(
+                Duration::from_millis(10),
+                segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]),
+            );
         for rto in [290u64, 580, 1_150, 2_300] {
-            dump = dump.then_packet_after(Duration::from_millis(rto), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]));
+            dump = dump.then_packet_after(
+                Duration::from_millis(rto),
+                segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]),
+            );
         }
         engine(dump.then_stop_after(Duration::from_millis(500)))
             .from(Tcp)
@@ -320,8 +332,14 @@ fn without_an_edge_the_wire_keeps_the_word() {
             .edging(None)
             .then_packet(syn(PORT))
             .then_packet_after(Duration::from_millis(10), handshake(PORT))
-            .then_packet_after(Duration::from_millis(10), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]))
-            .then_packet_after(Duration::from_millis(2_300), segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]))
+            .then_packet_after(
+                Duration::from_millis(10),
+                segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]),
+            )
+            .then_packet_after(
+                Duration::from_millis(2_300),
+                segment(PORT, 107, &[0x16, 0x03, 0x01, 0x05, 0x40]),
+            )
             .then_stop_after(Duration::from_millis(500)),
     )
     .from(Tcp)
