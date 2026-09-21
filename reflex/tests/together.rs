@@ -14,6 +14,24 @@ mod paper;
 use paper::{dns_query, request, syn, taken, Paper};
 use reflex::*;
 
+/// ЧЕЙ ПУТЬ НЕСЁТ РАЗГОВОР — алфавит этой приёмки. Биты `0x0300` обретают смысл только вместе с
+/// разметкой, и объявляется она здесь один раз.
+enum Path {
+    Ours,
+    Other,
+}
+
+impl Meaning for Path {
+    const REGION: Region = Region::declared(0xFFFF);
+
+    fn read(value: u32) -> Path {
+        match value {
+            0x0300 => Path::Ours,
+            0..=0x02FF | 0x0301..=u32::MAX => Path::Other,
+        }
+    }
+}
+
 /// Прибор, говорящий на каждом пакете. Свой, а не из оснастки: у записи край иного рода, и прибор
 /// оснастки, прибитый к бумажному краю, в такую цепочку не собирается.
 #[derive(Clone, Copy, Default)]
@@ -509,7 +527,9 @@ fn a_chain_in_a_set_severs_by_the_mark_the_kernel_shows() {
                     .extract(Sni)
                     .detect(paper::Crier::always())
                     .severing_addressed(|whom: Whom<'_>, _word: &Distress| {
-                        whom.edge.map(|edge| edge.mark) == Some(0x0300)
+                        // Марка читается ОБЪЯВЛЕННЫМ алфавитом, а не сравнением битов: разметка
+                        // одна на всех читателей, и второй её здесь не завести.
+                        matches!(whom.edge.map(|edge| edge.under::<Path>()), Some(Path::Ours))
                     }),
             )
             .heard()

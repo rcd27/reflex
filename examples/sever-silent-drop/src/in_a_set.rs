@@ -56,6 +56,31 @@ use reflex::*;
 /// фреймворка: кто ставит марку, тот и называет её значение.
 const OURS: u32 = 0x0001_0000;
 
+/// ПОД ЧЬЕЙ МАРКОЙ ИДЁТ РАЗГОВОР — алфавит этого примера, объявленный один раз.
+///
+/// Прежде здесь стояло `edge.mark & OURS == OURS` прямо в предикате обрыва. Так читают биты те,
+/// у кого разметки нет, — и тогда каждый читатель пишет её заново. Объявленный алфавит читается
+/// одной дверью (`Counted::under`), а второго закона о нём язык написать не даёт.
+enum Under {
+    /// Байты идут нашим путём: марка в своей области взведена.
+    Ours,
+    /// Чужой разговор либо непомеченный: о нём мы не судим.
+    Foreign,
+}
+
+impl Meaning for Under {
+    const REGION: Region = Region::declared(OURS);
+
+    /// Область в один бит: взведён — наш. Разбор ТОТАЛЬНЫЙ и без wildcard — новое значение области
+    /// не проскочит молча.
+    fn read(value: u32) -> Under {
+        match value {
+            0 => Under::Foreign,
+            1..=u32::MAX => Under::Ours,
+        }
+    }
+}
+
 fn main() {
     let together = together()
         .chain(
@@ -73,7 +98,10 @@ fn main() {
                 .detect(Silence::after(secs(5)))
                 // ПО ПРИЗНАКУ ЯДРА, и клетка незнания разобрана отдельно — см. шапку.
                 .severing_addressed(|whom: Whom<'_>, word: &Distress| match whom.edge {
-                    Some(edge) => edge.mark & OURS == OURS && matches!(word, Distress::NoBytes),
+                    Some(edge) => match edge.under::<Under>() {
+                        Under::Ours => matches!(word, Distress::NoBytes),
+                        Under::Foreign => false,
+                    },
                     // КРАЯ НЕТ — значит слово пришло узлом сетки, и о марке мы НЕ СПРАШИВАЛИ.
                     // Вернуть `false` молча значило бы объявить разговор чужим; здесь это
                     // отдельный исход, и он говорит вслух.

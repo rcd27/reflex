@@ -107,7 +107,9 @@ use reflex_core::interleave::Interleave;
 /// положено у фасада, а не второй зависимостью на фундамент (закон замкнутости двери).
 ///
 /// [`Region`] рядом по той же причине: заявку-область без него не построить.
-pub use reflex_core::mark::{Claim, Region};
+/// `Meaning` — на двери по закону замыкания: его требует назвать `Counted::under`, а всё, чего
+/// дверь просит, дверь обязана и давать (`reflex/scripts/facade-closure.sh`).
+pub use reflex_core::mark::{Bits, Claim, Meaning, Region};
 pub use reflex_core::mealy::Mealy;
 use reflex_core::serves::Served;
 /// ПОРТ НАБЛЮДЕНИЯ — реэкспорт, потому что стоит доводом [`Detecting::naming`], стадии самой

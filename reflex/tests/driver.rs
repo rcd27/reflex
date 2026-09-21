@@ -18,6 +18,29 @@ use paper::{
 };
 use reflex::*;
 
+/// ЧЕЙ ПУТЬ НЕСЁТ РАЗГОВОР — алфавит этой приёмки, объявленный один раз.
+///
+/// Марка `0x0300` сама по себе не значит ничего: биты обретают смысл только вместе с разметкой.
+/// Объявив её здесь, приёмка читает край той же дверью, что и продукт.
+enum Path {
+    /// Разговор идёт путём, о котором приёмка и говорит.
+    Ours,
+    /// Любой другой путь, включая непомеченный.
+    Other,
+}
+
+impl Meaning for Path {
+    const REGION: Region = Region::declared(0xFFFF);
+
+    /// Тотально и без wildcard: новое значение области не проскочит молча.
+    fn read(value: u32) -> Path {
+        match value {
+            0x0300 => Path::Ours,
+            0..=0x02FF | 0x0301..=u32::MAX => Path::Other,
+        }
+    }
+}
+
 /// Сколько узлов сетки укладывается в секунду тишины. ВЫЧИСЛЯЕТСЯ из [`TICK`] фасада, а не пишется
 /// числом: своё число было бы вторым описанием одной величины и разошлось бы с первым молча.
 const NODES_IN_A_SECOND: usize = (1000 / TICK.as_millis()) as usize;
@@ -746,10 +769,12 @@ fn an_acting_reaction_can_decide_by_the_mark_the_kernel_shows() {
             .extract(Sni)
             .detect(Crier::always())
             .act_addressed(|whom: Whom<'_>, _distress: Distress| {
-                // Признак берётся У ЯДРА там же, где принимается решение.
-                match whom.edge.map(|edge| edge.mark) == Some(0x0300) {
-                    true => Act::sever(),
-                    false => Act::observe(),
+                // Признак берётся У ЯДРА там же, где принимается решение, и читается ОБЪЯВЛЕННЫМ
+                // алфавитом: сырые биты значат разное смотря по разметке, и сравнивать их числом
+                // значило бы завести здесь второй закон о марке.
+                match whom.edge.map(|edge| edge.under::<Path>()) {
+                    Some(Path::Ours) => Act::sever(),
+                    Some(Path::Other) | None => Act::observe(),
                 }
             })
             .run();
