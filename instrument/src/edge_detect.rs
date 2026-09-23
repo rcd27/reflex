@@ -183,6 +183,19 @@ pub fn answered<E: EdgeView>(edge: &E) -> Option<bool> {
     edge.up_packets().map(|packets| packets >= 1)
 }
 
+/// ЦЕЛЬ ОТВЕТИЛА ПОСЛЕ РУКОПОЖАТИЯ — отрицание `HelloDropped`: пакетов цели больше одного.
+///
+/// Первый пакет цели на разговоре — всегда `SYN+ACK`; всё сверх него — ответ на то, что клиент
+/// сказал после рукопожатия: голое подтверждение приветствия, `ServerHello` или оба. Флаги край не
+/// хранит, но здесь они и не нужны — различает СЧЁТ. Данных не требует: подтвердившая и режущая
+/// позже цель — другая болезнь, и снятие этой о ней не судит.
+///
+/// ПРЕДЕЛ: повторённый целью `SYN+ACK` (потерялось подтверждение клиента) даст два пакета без
+/// ответа на приветствие. Редко, и край этого не различит.
+pub fn acknowledged<E: EdgeView>(edge: &E) -> Option<bool> {
+    edge.up_packets().map(|packets| packets >= 2)
+}
+
 impl<V: EdgeView> EdgeSilence<V> {
     pub fn new(after: Duration, layout: Layout) -> EdgeSilence<V> {
         EdgeSilence {
@@ -434,6 +447,39 @@ mod tests {
             gave_something(&Answering {
                 packets: 3,
                 bytes: 3 * HDR + 50
+            }),
+            Some(false)
+        );
+    }
+
+    /// ПОДТВЕРЖДЕНИЕ СЧИТАЕТСЯ ПАКЕТАМИ — и это не противоречие соседу, а другой вопрос.
+    ///
+    /// Сосед судит МОЛЧАНИЕ (`NoBytes`), и там пакеты врут: подтверждения без данных — не ответ
+    /// делом. Здесь предмет — ПОДТВЕРЖДЕНИЕ приветствия (`HelloDropped`), и его величина именно
+    /// пакет сверх `SYN+ACK`: голый ACK ответом делом не является, но приветствие подтверждает.
+    #[test]
+    fn an_acknowledgement_is_a_frame_beyond_the_handshake() {
+        // Только `SYN+ACK` — картина записи `rutracker.org` и счётчиков канарейки (`packets=1`).
+        assert_eq!(
+            acknowledged(&Answering {
+                packets: 1,
+                bytes: HDR
+            }),
+            Some(false)
+        );
+        // `SYN+ACK` и голое подтверждение: данных ноль, а приветствие подтверждено.
+        assert_eq!(
+            acknowledged(&Answering {
+                packets: 2,
+                bytes: 2 * HDR
+            }),
+            Some(true)
+        );
+        // Молчание при этом остаётся молчанием: вопросы разные, и законы у них разные.
+        assert_eq!(
+            gave_something(&Answering {
+                packets: 2,
+                bytes: 2 * HDR
             }),
             Some(false)
         );
