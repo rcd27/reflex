@@ -29,6 +29,7 @@ pub mod edge_detect;
 pub mod edge_word;
 pub mod episode;
 pub mod fate;
+pub mod hello;
 pub mod leg;
 pub mod pace;
 pub mod park;

@@ -885,6 +885,22 @@ impl SynDrop {
     }
 }
 
+/// Детектор ПРИВЕТСТВИЯ, НЕ ПОДТВЕРЖДЁННОГО НИ РАЗУ: рукопожатие состоялось, первые данные клиента
+/// (у TLS — `ClientHello` с именем) ушли, а цель не ответила ничем, даже подтверждением. SNI-IV по
+/// Xue et al. (IMC '22), `TLS_BLOCK` через тайм-аут у практиков.
+///
+/// Батарея этой болезни не видела: повтор клиента — подозрение, `NoBytes` — о данных (молчащий
+/// сервер приветствие подтверждает), `Swallowed` требует живой цели. Оплачено записью линии стенда
+/// 24.09.2026 (`rutracker.org`) и контролем той же дорогой (`ya.ru`, `one.one.one.one`).
+pub struct HelloDropped;
+
+impl HelloDropped {
+    /// Приветствие ушло, подтверждения не было ни разу.
+    pub fn unacknowledged() -> HelloDropped {
+        HelloDropped
+    }
+}
+
 /// Детектор СБРОСА: путь ломают снаружи. Ось «отдала ли цель байт до сброса» отделяет перехват от
 /// законного прощания, и различает их сам прибор — двери на это не нужно.
 ///
@@ -1357,6 +1373,19 @@ impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for SynDrop {
     }
     fn window(&self) -> Duration {
         BLACKHOLE_WINDOW
+    }
+}
+
+/// Неподтверждённое приветствие живёт В ПРОВОДЕ: улика — рукопожатие и повтор сегмента клиента,
+/// то есть флаги и номера TCP. Порог даёт RTO ядра клиента, повторы держат разговор живым, и
+/// своего окна эвикта прибору не нужно.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for HelloDropped {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, SeenTcp, _, Distress, Distress>(
+            reflex_instrument::hello::HelloDroppedInstrument::new(),
+        ))
     }
 }
 

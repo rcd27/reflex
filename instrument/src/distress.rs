@@ -71,6 +71,25 @@ pub enum Distress {
     /// `after_ms` — от просьбы клиента до прощания. Замер потребителя: три сотых секунды, то есть
     /// не таймаут, а решение.
     Dismissed { after_ms: u32 },
+    /// ПРИВЕТСТВИЕ НЕ ПОДТВЕРЖДЕНО НИ РАЗУ: рукопожатие состоялось, клиент отправил первые данные
+    /// (у TLS — `ClientHello` с именем), и цель не ответила НИЧЕМ — ни данными, ни подтверждением.
+    /// Клиент повторяет их с растущим RTO и сдаётся.
+    ///
+    /// Имя — из таксономии, а не наше: SNI-IV у Xue et al., «TSPU: Russia's Decentralized
+    /// Censorship System», IMC '22 — «drops all packets from both sides, including the initial
+    /// ClientHello»; у практиков — `TLS_BLOCK` через тайм-аут (RKN Block Checker), «молчаливый
+    /// дроп». Буква называет НАБЛЮДАЕМОЕ, а не причину: что триггер — имя, прибор сам не знает, это
+    /// устанавливает контроль той же дорогой с другим именем.
+    ///
+    /// Отдельно от соседей, и различие проверяемое: `NoBytes` — нет данных (молчащий сервер
+    /// приветствие ПОДТВЕРЖДАЕТ); `Retransmit` — подозрение, один повтор даёт и обычная потеря;
+    /// `Swallowed` — цель жива и подтверждает голову, здесь не подтверждает ничего; `Blackhole` —
+    /// рукопожатия нет вовсе.
+    ///
+    /// `retries` — сколько раз клиент повторил, `after_ms` — от первой отправки до повтора, на
+    /// котором сказано. Замер (линия стенда, 24.09.2026, `rutracker.org`): повторы через 0,30 · 0,59
+    /// · 1,22 · 2,43 · 4,80 · 9,67 с; здоровые цели того же пути подтверждают за 36–37 мс.
+    HelloDropped { retries: u32, after_ms: u32 },
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
@@ -93,6 +112,7 @@ impl Distress {
             Distress::Unreached { .. } => "unreached",
             Distress::Swallowed { .. } => "swallowed",
             Distress::Dismissed { .. } => "dismissed",
+            Distress::HelloDropped { .. } => "hello_dropped",
             Distress::Poisoned => "poisoned",
             Distress::Diverged { .. } => "diverged",
         }
@@ -122,6 +142,9 @@ impl Distress {
             }
             Distress::Dismissed { after_ms } => {
                 format!("закрыла разговор через {after_ms} мс, не отдав данных")
+            }
+            Distress::HelloDropped { retries, after_ms } => {
+                format!("приветствие не подтверждено: {retries} повтора за {after_ms} мс")
             }
             Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
@@ -196,6 +219,9 @@ impl core::fmt::Display for Distress {
             Distress::Unreached { retries } => write!(f, "unreached retries={retries}"),
             Distress::Swallowed { after_ms } => write!(f, "swallowed after_ms={after_ms}"),
             Distress::Dismissed { after_ms } => write!(f, "dismissed after_ms={after_ms}"),
+            Distress::HelloDropped { retries, after_ms } => {
+                write!(f, "hello_dropped retries={retries} after_ms={after_ms}")
+            }
             Distress::Poisoned => f.write_str("poisoned"),
             Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
         }
