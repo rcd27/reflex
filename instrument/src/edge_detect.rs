@@ -161,7 +161,26 @@ pub fn gave<E: EdgeView>(edge: &E) -> Option<u64> {
 
 /// Отдала ли цель что-то сверх заголовков — `gave` с порогом `FLOOR`.
 pub(crate) fn gave_something<E: EdgeView>(edge: &E) -> Option<bool> {
+    delivered(edge)
+}
+
+/// ЦЕЛЬ ОТДАЛА ДАННЫЕ — отрицание `NoBytes`, то есть снятие его симптома.
+///
+/// Публична ради ПОТРЕБИТЕЛЯ, который судит, вылечена ли цель (nevod3, свидетель лечения по
+/// диагнозу): спроси он «отдала ли» своим порогом — прибор назвал бы молчанием то, что потребитель
+/// уже объявил лечением. Ровно так и было: потребитель засчитывал `gave > 0`, прибор судит
+/// `gave > FLOOR`, и 4 байта сверх оценки заголовков были лечением для одного и молчанием для
+/// другого (канарейка 21.09.2026, 54 рецидива из 54).
+pub fn delivered<E: EdgeView>(edge: &E) -> Option<bool> {
     gave(edge).map(|beyond| beyond > FLOOR)
+}
+
+/// ЦЕЛЬ ОТВЕТИЛА НА СТУК — отрицание `Blackhole` (`up.packets == 0`): пришёл хоть один её пакет.
+///
+/// Для беды «на стук не ответила» рукопожатие и есть лечение; для беды «молчит после приветствия»
+/// — нет, там снятие симптома — [`delivered`]. Один порог на обе беды врёт в обе стороны.
+pub fn answered<E: EdgeView>(edge: &E) -> Option<bool> {
+    edge.up_packets().map(|packets| packets >= 1)
 }
 
 impl<V: EdgeView> EdgeSilence<V> {
@@ -253,8 +272,8 @@ impl<V: EdgeView> Mealy for EdgeSilence<V> {
         let gave_nothing = gave == Some(false);
         // Рукопожатие состоялось — цель на стук ответила. Чем именно она ответила дальше, говорят
         // байты; здесь важно лишь, что разговор ОТКРЫТ (иначе беда зовётся `Blackhole`).
-        let handshaken = matches!(up_pk, Some(pk) if pk >= 1);
-        let no_synack = up_pk == Some(0);
+        let handshaken = answered(edge) == Some(true);
+        let no_synack = answered(edge) == Some(false);
         let client_spoke = asked_for_something(edge);
         let overdue = matches!(edge.age(), Some(age) if age >= self.after);
 
