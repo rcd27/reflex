@@ -75,3 +75,30 @@ fn age_is_a_snapshot_stable_across_calls() {
         "снимок реален — поток открыт ~10 с назад"
     );
 }
+
+/// Снимок записи дампа держит направления раздельно и о часах говорит «не считали», а не ноль.
+#[test]
+fn a_dump_entry_is_an_edge_without_clocks() {
+    let entry = reflex_linux::conntrack::Entry {
+        orig_counts: reflex_linux::conntrack::Counts {
+            packets: 14,
+            bytes: 7_614,
+        },
+        reply_counts: reflex_linux::conntrack::Counts {
+            packets: 1,
+            bytes: 60,
+        },
+        mark: 0x02,
+        ..Default::default()
+    };
+
+    let counted = reflex_core::edge::Counted::of(&entry);
+
+    assert_eq!(
+        (counted.down_packets, counted.down_bytes),
+        (Some(14), Some(7_614))
+    );
+    assert_eq!((counted.up_packets, counted.up_bytes), (Some(1), Some(60)));
+    assert_eq!((counted.idle, counted.age), (None, None));
+    assert_eq!(counted.mark.word(), 0x02);
+}

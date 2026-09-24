@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reflex_core::edge::EdgeView;
 
-use super::wire::{CtTcp, CtView};
+use super::wire::{CtTcp, CtView, Entry};
 
 /// Имя sysctl-таймаута по состоянию TCP. `Other` файла не имеет — пусто (базы для него не читаем).
 fn sysctl_name(state: CtTcp) -> &'static str {
@@ -138,5 +138,36 @@ impl EdgeView for CtEdge {
 
     fn mark(&self) -> u32 {
         self.view.mark
+    }
+}
+
+/// Запись дампа — край без часов: простоя и возраста в ней нет, и снимок скажет «не считали».
+impl EdgeView for Entry {
+    fn down_packets(&self) -> Option<u64> {
+        Some(self.orig_counts.packets)
+    }
+
+    fn up_packets(&self) -> Option<u64> {
+        Some(self.reply_counts.packets)
+    }
+
+    fn down_bytes(&self) -> Option<u64> {
+        Some(self.orig_counts.bytes)
+    }
+
+    fn up_bytes(&self) -> Option<u64> {
+        Some(self.reply_counts.bytes)
+    }
+
+    fn idle(&self) -> Option<Duration> {
+        None
+    }
+
+    fn age(&self) -> Option<Duration> {
+        None
+    }
+
+    fn mark(&self) -> u32 {
+        self.mark
     }
 }
