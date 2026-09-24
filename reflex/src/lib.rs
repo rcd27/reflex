@@ -2969,6 +2969,32 @@ impl<S: Word + Clone + PartialEq + 'static> Chorus<S> {
             false => Turned::Quiet,
         }
     }
+
+    /// ХОДЫ НАБОРА ПОТОКОМ: показание либо тишина окна, пока источники живы. `Ended` поток не
+    /// выдаёт — им он кончается.
+    pub fn turns(self, window: Duration) -> Turns<S> {
+        Turns {
+            chorus: self,
+            window,
+        }
+    }
+}
+
+/// Ходы набора ([`Chorus::turns`]).
+pub struct Turns<S = Distress> {
+    chorus: Chorus<S>,
+    window: Duration,
+}
+
+impl<S: Word + Clone + PartialEq + 'static> Iterator for Turns<S> {
+    type Item = Turned<S>;
+
+    fn next(&mut self) -> Option<Turned<S>> {
+        match self.chorus.within(self.window) {
+            Turned::Ended => None,
+            turned @ (Turned::Said(_) | Turned::Quiet) => Some(turned),
+        }
+    }
 }
 
 impl<S> Iterator for Chorus<S> {

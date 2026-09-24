@@ -83,38 +83,37 @@ fn main() {
         );
     }
 
-    let mut chorus = together.heard();
-    // СВОЯ МАШИНА ПОТРЕБИТЕЛЯ — та, ради которой нужен ход без показания. Здесь она простая: ведёт
-    // счёт тихих окон. У настоящей на этом месте досмотр срока внеполосной пробы, чтение отметки,
-    // разбор ответа, пришедшего не проводом.
-    let mut quiet_windows = 0u32;
-
-    loop {
-        match chorus.within(TURN) {
-            Turned::Said(note) => match note.word {
-                Distress::NoBytes => report!("{}: не ответил вовсе", note.target),
-                Distress::Silence { ms } => report!("{}: молчит {ms}мс", note.target),
-                Distress::Poisoned => report!("{}: отравление DNS", note.target),
-                other => report!("{}: {other:?}", note.target),
-            },
-            // ТИШИНА — НЕ КОНЕЦ. Провод молчал, машины живы; время наше идёт, и своя работа делается
-            // ровно здесь. Без этой клетки темп машины равнялся бы темпу трафика.
-            Turned::Quiet => {
-                quiet_windows += 1;
-                if quiet_windows % 25 == 0 {
-                    report!("провод молчит {} окон подряд", quiet_windows);
-                }
-            }
-            // КОНЕЦ — ДРУГАЯ ВЕСТЬ: источников больше нет, ждать нечего и некого.
-            Turned::Ended => {
-                report!(
-                    "источники кончились: {} тихих окон за прогон",
+    // СВОЯ МАШИНА ПОТРЕБИТЕЛЯ — та, ради которой нужен ход без показания: здесь счёт тихих окон, у
+    // настоящей — досмотр срока, чтение отметки, ответ, пришедший не проводом.
+    let quiet_windows =
+        together
+            .heard()
+            .turns(TURN)
+            .fold(0u32, |quiet_windows, turned| match turned {
+                Turned::Said(note) => {
+                    match note.word {
+                        Distress::NoBytes => report!("{}: не ответил вовсе", note.target),
+                        Distress::Silence { ms } => report!("{}: молчит {ms}мс", note.target),
+                        Distress::Poisoned => report!("{}: отравление DNS", note.target),
+                        other => report!("{}: {other:?}", note.target),
+                    }
                     quiet_windows
-                );
-                return;
-            }
-        }
-    }
+                }
+                // ТИШИНА — НЕ КОНЕЦ: провод молчал, машины живы, и своя работа делается здесь.
+                Turned::Quiet => {
+                    let quiet_windows = quiet_windows + 1;
+                    if quiet_windows % 25 == 0 {
+                        report!("провод молчит {} окон подряд", quiet_windows);
+                    }
+                    quiet_windows
+                }
+                Turned::Ended => quiet_windows,
+            });
+
+    report!(
+        "источники кончились: {} тихих окон за прогон",
+        quiet_windows
+    );
 }
 
 #[cfg(test)]

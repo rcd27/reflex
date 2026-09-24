@@ -499,6 +499,40 @@ fn the_same_turn_carries_a_reading_and_then_the_end() {
     );
 }
 
+/// Ходы потоком: показания доходят, тишина окна — тоже ход, конец источников кончает поток.
+#[test]
+fn the_turns_of_a_set_are_a_stream_that_ends_with_its_sources() {
+    let turns: Vec<Turned> = together()
+        .chain(
+            engine(
+                Paper::new()
+                    .then_packet(syn(40302))
+                    .then_packet(request(40302))
+                    .then_stop(),
+            )
+            .from(Tcp)
+            .extract(Sni)
+            .detect(paper::Crier::always()),
+        )
+        .heard()
+        .turns(Duration::from_millis(50))
+        .take(64)
+        .collect();
+
+    assert!(
+        turns.iter().any(|turned| matches!(turned, Turned::Said(_))),
+        "показания обязаны доходить потоком ходов: {turns:?}"
+    );
+    assert!(
+        turns.len() < 64,
+        "кончившиеся источники обязаны кончить поток, а не молчать тишиной"
+    );
+    assert!(
+        !turns.iter().any(|turned| matches!(turned, Turned::Ended)),
+        "конец — это конец потока, а не его элемент"
+    );
+}
+
 /// ПРЕДМЕТ: цепочка в НАБОРЕ рвёт по признаку, который говорит ядро, — и только его.
 ///
 /// Набор держит действующую цепочку с тех пор, как заведено правило обрыва: действие в нём
