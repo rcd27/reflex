@@ -205,6 +205,11 @@ where
     pub fn flow_count(&self) -> usize {
         self.machines.len()
     }
+
+    /// Живые машины — для вопроса к таблице целиком («есть ли кто в таком-то положении»).
+    pub fn machines(&self) -> impl Iterator<Item = (&K, &D)> {
+        self.machines.iter()
+    }
 }
 
 /// КРИТЕРИЙ ПРОСТОЯ — одним местом на всю таблицу. Свободной функцией, а не методом: обход семьи

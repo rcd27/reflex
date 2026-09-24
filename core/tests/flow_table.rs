@@ -134,6 +134,24 @@ fn different_flows_get_different_detectors() {
     assert_eq!(table.flow_count(), 2);
 }
 
+/// Вопрос к таблице целиком видит положение каждой машины, а не только их число.
+#[test]
+fn machines_show_each_machines_state() {
+    let mut table = new_table();
+    let rst = make_segment(11111, 443, TcpFlags::RST);
+    let syn = make_segment(22222, 443, TcpFlags::SYN);
+    table.process(normalize_flow(rst.flow()), &rst, Instant::now());
+    table.process(normalize_flow(syn.flow()), &syn, Instant::now());
+
+    let counts: Vec<u32> = table
+        .machines()
+        .map(|(_flow, counter)| counter.count)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(counts, vec![0, 1], "сбросивший и молчащий — оба на виду");
+}
+
 #[test]
 fn tick_visits_all_flows() {
     let mut table = new_table();
