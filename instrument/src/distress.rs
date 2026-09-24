@@ -22,6 +22,7 @@
 
 /// Сигнал беды — что человек почувствовал бы как поломку.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Distress {
     /// Пришёл RST. От кого — вопрос расследования.
     Rst,

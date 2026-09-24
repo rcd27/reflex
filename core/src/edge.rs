@@ -61,6 +61,7 @@ pub trait EdgeView {
 /// «ноль» (§7). Снимок берётся с любого края одним способом ([`Counted::of`]), потому два края не
 /// могут разойтись в том, ЧТО именно снято.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Counted {
     pub down_packets: Option<u64>,
     pub up_packets: Option<u64>,

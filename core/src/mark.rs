@@ -215,6 +215,7 @@ pub struct Marked {
 /// целиком отдаётся [`Bits::word`] тому, кто говорит С ЯДРОМ (правило `nft`, сокет, чужая
 /// разметка): там биты и есть предмет разговора. Граница проведена ролью, а не просьбой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bits(u32);
 
 impl Bits {
