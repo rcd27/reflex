@@ -142,7 +142,13 @@ fn anywhere(
 /// Что видно на соединении — в словаре TCP. Порядок ветвей не косметичен: просьба подождать
 /// проверяется после сброса и рукопожатия, но до нагрузки (у сегмента с нулевым окном данных обычно
 /// нет, без отдельной ветки он был бы отброшен как `ACK` — а это факт, объясняющий медленность).
-fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> Option<SeenTcp> {
+fn seen_of_tcp(
+    wire: &Wire<'_>,
+    from_client: bool,
+    repeat: bool,
+    head: bool,
+    acknowledges: bool,
+) -> Option<SeenTcp> {
     match (wire.resets, wire.opens, wire.handshakes) {
         // Автор сброса сохраняется: наш собственный сброс не есть беда цели.
         (true, _, _) => Some(SeenTcp::Rst {
@@ -165,6 +171,9 @@ fn seen_of_tcp(wire: &Wire<'_>, from_client: bool, repeat: bool, head: bool) -> 
         // вынуждает выбирать при `FIN` с данными — считаем данные (закрытие двустороннее, второй
         // `FIN` почти всегда чист).
         _ if wire.closes && wire.payload.is_empty() => Some(SeenTcp::closed(from_client)),
+        // Голый `ACK` цели, покрывший всё сказанное клиентом, — факт (SNI-II отличим только им),
+        // а не пустота: прочие голые `ACK` событий по-прежнему не рождают.
+        _ if acknowledges && wire.payload.is_empty() => Some(SeenTcp::Acknowledged),
         // Остаток назван явно, не `_`: новый флаг в разборе сломает эту строку, а не проскочит молча.
         (false, false, false) => anywhere(wire.payload, from_client, repeat, head, wire.header.seq)
             .map(SeenTcp::Anywhere),
@@ -199,6 +208,8 @@ impl Talks {
         };
         let repeat = behind_frontier(wire.header.seq, wire.payload, mine);
         let head = heads(wire.payload, from_client, talk.head_out);
+        // Цель подтвердила ровно границу клиента — всё, что он сказал, принято.
+        let acknowledges = !from_client && talk.frontier.0 == Some(wire.header.ack);
         self.talks.insert(
             wire.flow,
             Talk {
@@ -219,7 +230,7 @@ impl Talks {
                     + u32::from(from_client && !wire.payload.is_empty()),
             },
         );
-        seen_of_tcp(wire, from_client, repeat, head)
+        seen_of_tcp(wire, from_client, repeat, head, acknowledges)
     }
 
     /// Снять показание с датаграммы. Словарь ровно общий: ни стука, ни рукопожатия, ни сброса, ни
@@ -418,7 +429,8 @@ mod tests {
                 &hello,
                 true,
                 false,
-                heads(hello.payload, true, (false, false))
+                heads(hello.payload, true, (false, false)),
+                false
             ),
             Some(SeenTcp::Anywhere(Seen::Payload {
                 from_client: true,
@@ -428,7 +440,13 @@ mod tests {
 
         // Голова уже выдана — дальше идёт объём.
         assert!(matches!(
-            seen_of_tcp(&more, true, false, heads(more.payload, true, (true, false))),
+            seen_of_tcp(
+                &more,
+                true,
+                false,
+                heads(more.payload, true, (true, false)),
+                false
+            ),
             Some(SeenTcp::Anywhere(Seen::Sent { .. }))
         ));
     }
@@ -479,7 +497,8 @@ mod tests {
                 &answer,
                 false,
                 false,
-                heads(answer.payload, false, (true, false))
+                heads(answer.payload, false, (true, false)),
+                false
             ),
             Some(SeenTcp::Anywhere(Seen::Payload {
                 from_client: false,
@@ -500,7 +519,7 @@ mod tests {
     fn a_zero_window_is_a_request_to_wait() {
         let ack = windowed(1000, b"", true, 0, false);
         assert_eq!(
-            seen_of_tcp(&ack, true, false, false),
+            seen_of_tcp(&ack, true, false, false, false),
             Some(SeenTcp::AskedToWait { by_client: true })
         );
     }
@@ -510,7 +529,7 @@ mod tests {
     fn who_asks_to_wait_is_recorded() {
         let from_target = windowed(9000, b"", false, 0, false);
         assert_eq!(
-            seen_of_tcp(&from_target, false, false, false),
+            seen_of_tcp(&from_target, false, false, false, false),
             Some(SeenTcp::AskedToWait { by_client: false })
         );
     }
@@ -520,11 +539,46 @@ mod tests {
     fn a_reset_outranks_a_zero_window() {
         let reset = windowed(1000, b"", true, 0, true);
         assert_eq!(
-            seen_of_tcp(&reset, true, false, false),
+            seen_of_tcp(&reset, true, false, false, false),
             Some(SeenTcp::Rst {
                 by: ResetBy::Person
             })
         );
+    }
+
+    /// ГОЛЫЙ `ACK` ЦЕЛИ НА ВСЁ СКАЗАННОЕ КЛИЕНТОМ — ФАКТ: так узнаётся SNI-II (приветствие принято,
+    /// ответ заглушён). Подтверждение не всего сказанного — по-прежнему не событие.
+    #[test]
+    fn a_target_acknowledging_everything_the_client_said_is_a_fact() {
+        let mut talks = Talks::new();
+        let hello = [0x16_u8; 517];
+        talks.read(&tcp(1, &hello, true));
+
+        let covering = acked(518);
+        assert_eq!(talks.read(&covering), Some(SeenTcp::Acknowledged));
+
+        let partial = acked(100);
+        assert_eq!(talks.read(&partial), None, "подтверждена лишь часть");
+    }
+
+    /// Голый `ACK` цели с номером подтверждения.
+    fn acked(ack: u32) -> Wire<'static> {
+        wired(
+            Segment {
+                header: Header {
+                    ends: ends(false),
+                    seq: 1,
+                    ack,
+                    window: OPEN_WINDOW,
+                },
+                opens: false,
+                handshakes: false,
+                closes: false,
+                resets: false,
+                payload: b"",
+            },
+            false,
+        )
     }
 
     /// Пустой сегмент (чистый `ACK`) не повтор и границы не двигает.

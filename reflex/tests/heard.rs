@@ -199,6 +199,63 @@ fn readings_by_value_and_severing_live_in_one_chain() {
     );
 }
 
+/// ПОРТЫ СБРОСА — `(источник, назначение)` TCP под заголовком IPv4 и признак `RST`.
+fn resets(injected: &[Vec<u8>]) -> Vec<(u16, u16)> {
+    injected
+        .iter()
+        .filter(|packet| packet.len() >= 40 && packet[33] & 0x04 != 0)
+        .map(|packet| {
+            (
+                u16::from_be_bytes([packet[20], packet[21]]),
+                u16::from_be_bytes([packet[22], packet[23]]),
+            )
+        })
+        .collect()
+}
+
+/// СЛОВО УЗЛА СЕТКИ РВЁТ СВОЙ РАЗГОВОР — ЗАПОМНЕННЫМ ПАКЕТОМ ЭТОГО ЖЕ РАЗГОВОРА, В ОБЕ СТОРОНЫ.
+///
+/// Прежде такое слово приходило с пустой уликой, и рвать было нечем по построению. Для болезней,
+/// у которых улика и есть тишина, это значило «назвать и не помочь»: SNI-II (стенд 24.09.2026) —
+/// цель подтвердила приветствие и замолчала, клиенту повторять нечего, и он висит 20 с на
+/// разговоре, который продукт уже осудил.
+///
+/// Закон соседа (`driver.rs`, `a_word_born_on_a_node_carries_no_evidence…`) держится: сброс
+/// строится из пакета ТОГО ЖЕ разговора, и до прихода второго разговора его портов нет ни в одном
+/// сбросе — чужим словом не рвётся никто.
+#[test]
+fn a_word_born_on_a_node_severs_its_own_conversation_by_its_remembered_packet() {
+    let paper = Paper::new()
+        .then_packet(request(40001))
+        .then_packet_after(Duration::from_secs(1), request(40001))
+        .then_stop();
+    let injected = paper.injected();
+
+    let _heard: Vec<Note> = engine(paper)
+        .from(Tcp)
+        .extract(Sni)
+        .detect(Ticker::always()) // кричит ТОЛЬКО на узле
+        .severing(|word: &Distress| matches!(word, Distress::NoBytes))
+        .heard()
+        .expect("носитель открылся")
+        .collect();
+
+    let cut = resets(&paper::taken(injected));
+    assert!(
+        cut.contains(&(443, 40001)),
+        "клиенту — от имени цели: {cut:?}"
+    );
+    assert!(
+        cut.contains(&(40001, 443)),
+        "и цели — от имени клиента: чей запомненный пакет, движок не знает: {cut:?}"
+    );
+    assert!(
+        cut.iter()
+            .all(|ports| *ports == (443, 40001) || *ports == (40001, 443)),
+        "ни одного сброса вне своего разговора: {cut:?}"
+    );
+}
+
 /// Вторая половина: слово, на которое правило НЕ указывает, мира не трогает. Без неё первый тест
 /// зелен и на цепочке, которая рвёт всё подряд.
 #[test]

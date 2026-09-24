@@ -31,6 +31,7 @@ pub mod episode;
 pub mod fate;
 pub mod hello;
 pub mod leg;
+pub mod muted;
 pub mod pace;
 pub mod park;
 pub mod poison;

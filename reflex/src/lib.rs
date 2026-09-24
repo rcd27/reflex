@@ -901,6 +901,21 @@ impl HelloDropped {
     }
 }
 
+/// Детектор ПРИВЕТСТВИЯ ПРИНЯТОГО, ОТВЕТА ЗАГЛУШЁННОГО: цель подтвердила первые данные клиента и
+/// замолчала дольше, чем живой сервер отвечает после подтверждения. SNI-II по Xue et al. (IMC '22).
+///
+/// Сосед [`HelloDropped`] этот разговор не видит по построению: приветствие подтверждено, клиенту
+/// повторять нечего, он молча ждёт своего таймаута. Оплачено записью стенда 24.09.2026 (узел кэша
+/// Google у Билайна: 20 с тишины после подтверждения).
+pub struct HelloMuted;
+
+impl HelloMuted {
+    /// Приветствие подтверждено, ответа нет.
+    pub fn answerless() -> HelloMuted {
+        HelloMuted
+    }
+}
+
 /// Детектор СБРОСА: путь ломают снаружи. Ось «отдала ли цель байт до сброса» отделяет перехват от
 /// законного прощания, и различает их сам прибор — двери на это не нужно.
 ///
@@ -1389,6 +1404,19 @@ impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for HelloDropped {
     }
 }
 
+/// Заглушённый ответ живёт В ПРОВОДЕ: улики — рукопожатие и подтверждение номером, то есть флаги и
+/// номера TCP. Молчание называет тик сетки; порог (≤10 RTT) короче срока эвикта молчащего
+/// разговора, и своего окна прибору не нужно.
+impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for HelloMuted {
+    type Word = Distress;
+    type Home = MarkSilent;
+    fn place(self, _layout: Layout) -> Placed<Wide<Reading, E>, Distress> {
+        Placed::PerFlow(lift::<Wide<Reading, E>, SeenTcp, _, Distress, Distress>(
+            reflex_instrument::muted::HelloMutedInstrument::new(),
+        ))
+    }
+}
+
 /// Сброс живёт В ПРОВОДЕ: улика — флаг `RST` в заголовке, а счётчики края флагов не хранят.
 impl<E: Clone + 'static> IntoProbe<Wide<Reading, E>> for Rst {
     type Word = Distress;
@@ -1713,6 +1741,9 @@ struct Severing<K, S> {
     /// сохранённое. Так дверь показаний не требует умения рвать от ВСЯКОГО носителя — запись
     /// по-прежнему отдаёт показания и по-прежнему не собирается с этой дверью.
     notice: fn(&[u8]) -> Option<InjectablePacket>,
+    /// Извещение ПОЛУЧАТЕЛЮ пакета от имени его отправителя — для улики, запомненной заранее: чей
+    /// это пакет, движок не знает, и рвать надо обеим сторонам ([`Evidence::Remembered`]).
+    onward: fn(&[u8]) -> Option<InjectablePacket>,
     /// Чем отправить извещение. Второй указатель по той же причине: `CanInject` тоже доказан там,
     /// где правило объявлено.
     fire: fn(&mut K, InjectablePacket),
@@ -1907,6 +1938,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
                 move |_whom, word| when(word)
             }),
             notice: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Sender),
+            onward: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Receiver),
             fire: |carrier, packet| {
                 if let Err(why) = carrier.emit(<C::Carrier as CanInject>::inject(packet)) {
                     report!("обрыв не ушёл: {why:?}");
@@ -1966,6 +1998,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
         self.severing = Some(Severing {
             when: Box::new(when),
             notice: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Sender),
+            onward: |seen| <C::Carrier as CanSever>::notice(seen, Toward::Receiver),
             fire: |carrier, packet| {
                 if let Err(why) = carrier.emit(<C::Carrier as CanInject>::inject(packet)) {
                     report!("обрыв не ушёл: {why:?}");
@@ -2455,9 +2488,48 @@ impl<T: CanHold + CanAsk> Act<T> {
 /// носителя своим сокетом, как ездил до §9.4.
 trait Voice<K, S> {
     /// Слово услышано — чем цепочка обещает тронуть мир. Пусто у наблюдателя.
-    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]>;
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &Evidence<'_>) -> SmallVec<[Effect; 2]>;
     /// Исполнить обещанное носителем. У наблюдателя обещаний не бывает — тело пусто по построению.
     fn does(&mut self, carrier: &mut K, effects: SmallVec<[Effect; 2]>);
+    /// Рвёт ли этот голос: только тогда движку есть смысл помнить улику для слов узла сетки.
+    fn severs(&self) -> bool {
+        false
+    }
+}
+
+/// Сколько байт пакета движок помнит ради обрыва по слову узла сетки: заголовки IPv4/IPv6 и TCP с
+/// опциями — голый `ACK` помещается, данные не помещаются и не нужны.
+const QUIET_BYTES: usize = 128;
+
+/// ЧЕМ ПОДКРЕПЛЕНО СЛОВО ДЛЯ ОБРЫВА.
+///
+/// Прежде уликой был только пакет в руках, и слово, рождённое узлом сетки, приходило с пустыми
+/// байтами — рвать было нечем ПО ПОСТРОЕНИЮ. Для болезней, у которых улика и есть тишина, это
+/// значило «назвать и не помочь»: SNI-II (стенд 24.09.2026) — цель подтвердила приветствие и
+/// замолчала, клиенту повторять нечего, и он висит 20 с на разговоре, который продукт уже осудил.
+///
+/// Закон «рвать только по улике ЭТОГО разговора» держится и здесь: запомненный пакет — свой, по
+/// ключу разговора, а не чужой пакет оборота.
+enum Evidence<'a> {
+    /// Пакет в руках: из него извещение его отправителю (клиенту при тихом дропе).
+    Held(&'a [u8]),
+    /// Слово узла сетки: последний малый пакет ЭТОГО ЖЕ разговора. Чей он — клиента или цели —
+    /// неизвестно, и извещение уходит обеим сторонам: сброс, построенный из пакета стороны,
+    /// верен и для неё, и для её собеседника (`notice::rst_for`).
+    Remembered(SmallVec<[u8; QUIET_BYTES]>),
+    /// Улики нет: дыра, непонятое, разговор без запомненного пакета.
+    None,
+}
+
+impl Evidence<'_> {
+    /// Байты пакета в руках — единственное, из чего строит акт реакция `.act`: её договор о пакете
+    /// оборота, и запомненное ей не отдаётся.
+    fn held(&self) -> &[u8] {
+        match self {
+            Evidence::Held(seen) => seen,
+            Evidence::Remembered(..) | Evidence::None => &[],
+        }
+    }
 }
 
 /// КОМУ адресовано слово — всё, что фасад знает о его авторе.
@@ -2546,7 +2618,7 @@ impl<K: CanHold, S, F: FnMut(Whom<'_>, S) -> Act<K>> Acts<K, S> for Addressed<F>
 struct Watch<F>(F);
 
 impl<K, S, F: Reaction<S>> Voice<K, S> for Watch<F> {
-    fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &[u8]) -> SmallVec<[Effect; 2]> {
+    fn hears(&mut self, whom: Whom<'_>, word: S, _seen: &Evidence<'_>) -> SmallVec<[Effect; 2]> {
         self.0.call(whom, word);
         SmallVec::new()
     }
@@ -2564,8 +2636,8 @@ where
     K::Error: std::fmt::Debug,
     F: Acts<K, S>,
 {
-    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        let (_word, effects) = emit::<K>(self.0.call(whom, word), seen);
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &Evidence<'_>) -> SmallVec<[Effect; 2]> {
+        let (_word, effects) = emit::<K>(self.0.call(whom, word), seen.held());
         effects
     }
 
@@ -2643,19 +2715,25 @@ struct Collecting<'q, K, S> {
 }
 
 impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
-    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &[u8]) -> SmallVec<[Effect; 2]> {
-        // ОБРЫВ РЕШАЕТСЯ ЗДЕСЬ, пока байты пакета в руках: из них и лепится извещение стороне.
-        // Слово, рождённое узлом сетки, сюда приходит с ПУСТЫМИ байтами (`evidence` у буквы без
-        // адреса пуст по построению) — и `notice` на пустом не построится, то есть закон «рвать
-        // только по улике с пакетом» держится конструкцией, а не проверкой.
+    fn hears(&mut self, whom: Whom<'_>, word: S, seen: &Evidence<'_>) -> SmallVec<[Effect; 2]> {
+        // ОБРЫВ РЕШАЕТСЯ ЗДЕСЬ, пока улика в руках: из неё и лепится извещение. Пакет оборота —
+        // его отправителю; запомненный пакет ЭТОГО ЖЕ разговора (слово узла сетки) — обеим
+        // сторонам. Без улики `notice` не построится, и закон «рвать только по улике своего
+        // разговора» держится конструкцией, а не проверкой.
         let effects = match self.rule.as_mut() {
             None => SmallVec::new(),
-            Some(rule) => match (rule.when)(whom, &word) {
-                false => SmallVec::new(),
-                true => (rule.notice)(seen)
+            Some(rule) => match ((rule.when)(whom, &word), seen) {
+                (false, _seen) => SmallVec::new(),
+                (true, Evidence::Held(held)) => (rule.notice)(held)
                     .into_iter()
                     .map(Effect::Inject)
                     .collect(),
+                (true, Evidence::Remembered(remembered)) => (rule.notice)(remembered)
+                    .into_iter()
+                    .chain((rule.onward)(remembered))
+                    .map(Effect::Inject)
+                    .collect(),
+                (true, Evidence::None) => SmallVec::new(),
             },
         };
         self.said.push_back(Note {
@@ -2676,6 +2754,10 @@ impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
             let Effect::Inject(packet) = effect;
             (rule.fire)(carrier, packet);
         }
+    }
+
+    fn severs(&self) -> bool {
+        self.rule.is_some()
     }
 }
 
@@ -3494,6 +3576,7 @@ where
             at_edge: park.at_edge,
             layer: Layer::new(),
             targets: HashMap::new(),
+            quiet: HashMap::new(),
             tape: Tape::new(),
             forgotten: 0,
             certifying,
@@ -3726,6 +3809,10 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Ключ цели на разговор — для сигналов, рождённых узлом сетки (у узла пакета с личностью нет).
     /// Именно КЛЮЧ, а не ярлык: тег `Named`/`Unnamed` нужен слою, а ярлык из ключа выводится.
     targets: HashMap<Flow, TargetKey<Box<str>>>,
+    /// ПОСЛЕДНИЙ МАЛЫЙ ПАКЕТ РАЗГОВОРА — улика для обрыва по слову узла сетки ([`Evidence`]).
+    /// Пишется, только если голос рвёт; уходит вместе с машиной разговора. Не больше
+    /// [`QUIET_BYTES`] на ключ: заголовки, а не данные.
+    quiet: HashMap<Flow, SmallVec<[u8; QUIET_BYTES]>>,
     /// Окно ленты: пишется, только когда закон предъявляется — даром лента стоила бы клона слова
     /// провода на каждый пакет.
     tape: Recorded<C, T>,
@@ -3797,92 +3884,99 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                 | DetectorEvent::Opaque { .. }
                 | DetectorEvent::Torn { .. } => None,
             };
-            let (said, evidence): (Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>)>, &[u8]) =
-                match (&letter, &whose) {
-                    (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
-                        self.recorded(
-                            To::One(Whose {
+            type Heard<'e, S> = Vec<(TargetKey<Box<str>>, Flow, SmallVec<[S; 2]>, Evidence<'e>)>;
+            let said: Heard<'_, S> = match (&letter, &whose) {
+                (DetectorEvent::Packet { input, .. }, Some((flow, key))) => {
+                    self.recorded(
+                        To::One(Whose {
+                            flow: *flow,
+                            target: key.clone(),
+                        }),
+                        &letter,
+                    );
+                    let (mut signals, ()) = self.table.process(*flow, input, at);
+                    for probe in self.at_edge.iter_mut() {
+                        let (remembered, spoken) = probe.observe(&letter);
+                        // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
+                        // слово. Двух ПИСАТЕЛЕЙ марки цепочка не вмещает, и держит это ТИП:
+                        // `Detecting<_, _, MarkWriter>::detect` принимает только прибор с
+                        // `Home = MarkSilent` (`compile_fail`-доктест стоит там же). Оттого
+                        // `or` здесь не выбирает победителя, а сводит «единственный сказал» с
+                        // «никто не сказал»: второго кандидата взяться неоткуда.
+                        //
+                        // Прежняя редакция этой строки утверждала обратное («тип не запрещает,
+                        // побеждает сказавший последним») и пережила появление гейта — пересказ
+                        // соседнего кода, сверенный только с самим собой. Краевых приборов,
+                        // марки НЕ пишущих, в цепочке может быть сколько угодно: предмет гейта
+                        // — число писателей в одну раскладку, а не число читателей края.
+                        memo = remembered.or(memo);
+                        signals.extend(spoken);
+                    }
+                    let was = self.targets.insert(*flow, key.clone());
+                    match (self.naming.as_ref(), was, key) {
+                        (Some(tap), None | Some(TargetKey::Unnamed(_)), TargetKey::Named(name)) => {
+                            let _lost_when_full = tap.offer(Named {
                                 flow: *flow,
-                                target: key.clone(),
-                            }),
-                            &letter,
-                        );
-                        let (mut signals, ()) = self.table.process(*flow, input, at);
-                        for probe in self.at_edge.iter_mut() {
-                            let (remembered, spoken) = probe.observe(&letter);
-                            // Памятка одна на пакет: марка одна, записать в неё можно ровно одно
-                            // слово. Двух ПИСАТЕЛЕЙ марки цепочка не вмещает, и держит это ТИП:
-                            // `Detecting<_, _, MarkWriter>::detect` принимает только прибор с
-                            // `Home = MarkSilent` (`compile_fail`-доктест стоит там же). Оттого
-                            // `or` здесь не выбирает победителя, а сводит «единственный сказал» с
-                            // «никто не сказал»: второго кандидата взяться неоткуда.
-                            //
-                            // Прежняя редакция этой строки утверждала обратное («тип не запрещает,
-                            // побеждает сказавший последним») и пережила появление гейта — пересказ
-                            // соседнего кода, сверенный только с самим собой. Краевых приборов,
-                            // марки НЕ пишущих, в цепочке может быть сколько угодно: предмет гейта
-                            // — число писателей в одну раскладку, а не число читателей края.
-                            memo = remembered.or(memo);
-                            signals.extend(spoken);
+                                name: name.clone(),
+                                at,
+                            });
                         }
-                        let was = self.targets.insert(*flow, key.clone());
-                        match (self.naming.as_ref(), was, key) {
-                            (
-                                Some(tap),
-                                None | Some(TargetKey::Unnamed(_)),
-                                TargetKey::Named(name),
-                            ) => {
-                                let _lost_when_full = tap.offer(Named {
-                                    flow: *flow,
-                                    name: name.clone(),
-                                    at,
-                                });
-                            }
-                            (None, _, _)
-                            | (Some(_), Some(TargetKey::Named(_)), _)
-                            | (Some(_), _, TargetKey::Unnamed(_)) => (),
-                        }
-                        (vec![(key.clone(), *flow, signals)], seen)
+                        (None, _, _)
+                        | (Some(_), Some(TargetKey::Named(_)), _)
+                        | (Some(_), _, TargetKey::Unnamed(_)) => (),
                     }
-                    // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
-                    // такая пара не возникает: `whose` заполняется ровно там, где буква пакета и
-                    // рождается (`Observation::Seen`), а непонятое и чужое дают `Opaque`/`Tick`. Но
-                    // ТИП этого не обещает, и ветвь стоит здесь не ради полноты формы: раздай её
-                    // «каждой машине» по общему правилу — и байты пакета уехали бы уликой чужим
-                    // разговорам, то есть акт, рождённый чужим словом, оборвал бы непричастного (тот
-                    // самый закон, что назван абзацем выше). Лента при этом не молчит: буква была, и
-                    // `To::Nobody` говорит, что она не досталась никому (§7 — незнание обитаемо).
-                    (DetectorEvent::Packet { .. }, None) => {
-                        self.recorded(To::Nobody, &letter);
-                        (Vec::new(), &[][..])
+                    // УЛИКА НА ПОТОМ: малый пакет этого разговора — на случай, если слово о нём
+                    // родит узел сетки, где пакета в руках нет.
+                    if voice.severs() && seen.len() <= QUIET_BYTES {
+                        let _before = self.quiet.insert(*flow, SmallVec::from_slice(seen));
                     }
-                    // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
-                    // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
-                    // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
-                    //
-                    // ЗАГЛУШКИ `_` ЗДЕСЬ НЕТ НАРОЧНО. Появится в алфавите пятая буква — компилятор
-                    // приведёт автора СЮДА, к вопросу «кому она адресована», вместо того чтобы дать
-                    // ей молча уехать всем. Дыра (`Torn`) и непонятое (`Opaque`) едут каждому именно
-                    // потому, что чьё наблюдение пропало — неизвестно: ослепнуть обязаны все, кто
-                    // судит по отсутствию, а не никто.
-                    (DetectorEvent::Tick { .. }, _)
-                    | (DetectorEvent::Opaque { .. }, _)
-                    | (DetectorEvent::Torn { .. }, _) => {
-                        self.recorded(To::Each, &letter);
-                        let heard = self
-                            .table
-                            .each(letter.clone())
-                            .into_iter()
-                            .filter_map(|(flow, (signals, ()))| {
-                                self.targets
-                                    .get(&flow)
-                                    .map(|key| (key.clone(), flow, signals))
-                            })
-                            .collect();
-                        (heard, &[][..])
-                    }
-                };
-            for (key, flow, signals) in said {
+                    vec![(key.clone(), *flow, signals, Evidence::Held(seen))]
+                }
+                // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
+                // такая пара не возникает: `whose` заполняется ровно там, где буква пакета и
+                // рождается (`Observation::Seen`), а непонятое и чужое дают `Opaque`/`Tick`. Но
+                // ТИП этого не обещает, и ветвь стоит здесь не ради полноты формы: раздай её
+                // «каждой машине» по общему правилу — и байты пакета уехали бы уликой чужим
+                // разговорам, то есть акт, рождённый чужим словом, оборвал бы непричастного (тот
+                // самый закон, что назван абзацем выше). Лента при этом не молчит: буква была, и
+                // `To::Nobody` говорит, что она не досталась никому (§7 — незнание обитаемо).
+                (DetectorEvent::Packet { .. }, None) => {
+                    self.recorded(To::Nobody, &letter);
+                    Vec::new()
+                }
+                // Буква без адреса — каждой живой машине. В ленту она ложится РАЗ, а фанаут
+                // делает тот, кто её читает: перегенерируй её на переигровке — и та позвала бы
+                // часы, то есть впустила бы в машину скрытый вход, который сама и проверяет.
+                //
+                // ЗАГЛУШКИ `_` ЗДЕСЬ НЕТ НАРОЧНО. Появится в алфавите пятая буква — компилятор
+                // приведёт автора СЮДА, к вопросу «кому она адресована», вместо того чтобы дать
+                // ей молча уехать всем. Дыра (`Torn`) и непонятое (`Opaque`) едут каждому именно
+                // потому, что чьё наблюдение пропало — неизвестно: ослепнуть обязаны все, кто
+                // судит по отсутствию, а не никто.
+                (DetectorEvent::Tick { .. }, _)
+                | (DetectorEvent::Opaque { .. }, _)
+                | (DetectorEvent::Torn { .. }, _) => {
+                    self.recorded(To::Each, &letter);
+                    let ticked = matches!(letter, DetectorEvent::Tick { .. });
+                    let quiet = &self.quiet;
+                    self.table
+                        .each(letter.clone())
+                        .into_iter()
+                        .filter_map(|(flow, (signals, ()))| {
+                            // Улика — ТОЛЬКО своя и только у слова узла сетки: дыра и
+                            // непонятое не есть заявление о разговоре.
+                            let evidence = quiet
+                                .get(&flow)
+                                .filter(|_own| ticked && !signals.is_empty())
+                                .map_or(Evidence::None, |own| Evidence::Remembered(own.clone()));
+                            self.targets
+                                .get(&flow)
+                                .map(|key| (key.clone(), flow, signals, evidence))
+                        })
+                        .collect()
+                }
+            };
+            for (key, flow, signals, evidence) in said {
                 let named = label(&key);
                 for signal in signals {
                     effects.extend(voice.hears(
@@ -3893,7 +3987,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                             edge: counted,
                         },
                         signal.clone(),
-                        evidence,
+                        &evidence,
                     ));
                     // Слой копится РАДИ копредела и больше ни для чего: нет свёртки — некому его
                     // читать, и наполнять его значило бы платить за слово, которое не родится.
@@ -3969,6 +4063,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             }
             T::forget(state, flow);
             self.targets.remove(flow);
+            self.quiet.remove(flow);
         }
     }
 

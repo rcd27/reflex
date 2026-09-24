@@ -143,7 +143,10 @@ impl reflex_core::mealy::Mealy for HelloDroppedInstrument {
                 | SeenTcp::Rst {
                     by: ResetBy::TargetSide,
                 }
-                | SeenTcp::AskedToWait { by_client: false } => (
+                | SeenTcp::AskedToWait { by_client: false }
+                // Приветствие подтверждено — это не SNI-IV; молчание после подтверждения судит
+                // сосед (`muted::HelloMutedInstrument`, SNI-II).
+                | SeenTcp::Acknowledged => (
                     HelloDroppedInstrument {
                         alive: true,
                         ..self
@@ -201,9 +204,9 @@ impl crate::Instrument for HelloDroppedInstrument {
          рукопожатия сервер даст ту же картину.",
         "ПОРОГ В ТРИ ПОВТОРА — СТАВКА. Замер один (линия стенда, 24.09.2026) и на хорошей линии; \
          плохой Wi-Fi человека теряет больше, и держит ли порог там — покажет счёт на канарейке.",
-        "ГОЛОЕ ПОДТВЕРЖДЕНИЕ ЦЕЛИ ПРИБОР НЕ ВИДИТ — у него нет буквы. Свидетель подтверждения здесь — \
-         повтор клиента: он рождается ровно на неподтверждённом. Цель, подтвердившая приветствие и \
-         замолчавшая, повторов не вызывает и прибором законно не названа (это `NoBytes`).",
+        "ЦЕЛЬ, ПОДТВЕРДИВШАЯ ПРИВЕТСТВИЕ И ЗАМОЛЧАВШАЯ, ПРИБОРОМ ЗАКОННО НЕ НАЗВАНА: повторов она \
+         не вызывает, а подтверждение (`SeenTcp::Acknowledged`) снимает подозрение. Это SNI-II, и \
+         его называет сосед — `muted::HelloMutedInstrument`.",
     ];
 
     const ORACLES: &'static [&'static str] = &[

@@ -95,6 +95,8 @@ impl reflex_core::mealy::Mealy for RstInstrument {
                     | (SeenTcp::Syn, _fired, _answered)
                     | (SeenTcp::Handshaken, _fired, _answered)
                     | (SeenTcp::AskedToWait { .. }, _fired, _answered)
+                    // Подтверждение — не речь цели: байтов она не сказала, перехват ещё возможен.
+                    | (SeenTcp::Acknowledged, _fired, _answered)
                     | (SeenTcp::Anywhere(Seen::Sent { .. }), _fired, _answered)
                     | (SeenTcp::Anywhere(Seen::Resent { .. }), _fired, _answered)
                     | (SeenTcp::Anywhere(Seen::Closed { .. }), _fired, _answered) => {
@@ -565,7 +567,10 @@ impl reflex_core::mealy::Mealy for ThrottledInstrument {
                         finished: true,
                         ..self
                     },
-                    SeenTcp::Syn | SeenTcp::Handshaken | SeenTcp::Rst { .. } => self,
+                    SeenTcp::Syn
+                    | SeenTcp::Handshaken
+                    | SeenTcp::Rst { .. }
+                    | SeenTcp::Acknowledged => self,
                 };
                 (next, smallvec::SmallVec::new())
             }
@@ -1462,9 +1467,10 @@ impl reflex_core::mealy::Mealy for SynDropInstrument {
                     smallvec::SmallVec::new(),
                 ),
                 // Сброс, окно, полезная нагрузка — не про достижимость адреса.
-                SeenTcp::Rst { .. } | SeenTcp::AskedToWait { .. } | SeenTcp::Anywhere(_) => {
-                    (self, smallvec::SmallVec::new())
-                }
+                SeenTcp::Rst { .. }
+                | SeenTcp::AskedToWait { .. }
+                | SeenTcp::Acknowledged
+                | SeenTcp::Anywhere(_) => (self, smallvec::SmallVec::new()),
             },
             // Порог даёт RTO клиентского ядра, не наш тик.
             reflex_core::DetectorEvent::Tick { .. }

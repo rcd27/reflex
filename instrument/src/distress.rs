@@ -8,7 +8,8 @@
 // (https://ensa.fi/papers/tspu-imc22.pdf, doi:10.1145/3517745.3561461), рис. 2 «Different
 // blocking Behaviors» и текст при нём:
 //   SNI-I   — ответ цели усечён и подменён на RST/ACK после ClientHello (ближе всего `Rst`);
-//   SNI-II  — после триггерного ClientHello проходит ещё 5–8 пакетов, затем симметричный дроп;
+//   SNI-II  — после триггерного ClientHello проходит ещё 5–8 пакетов, затем симметричный дроп
+//             (в работе: `HelloMuted`, захват узла кэша Google у Билайна на стенде 24.09.2026);
 //   SNI-III — троттлинг ~600–700 Б/с (в 2022 заменён на SNI-I);
 //   SNI-IV  — дроп всего, включая сам ClientHello (первая берётся в работу: `HelloDropped`,
 //             #347, захват rutracker.org на линии стенда 24.09.2026);
@@ -90,6 +91,24 @@ pub enum Distress {
     /// котором сказано. Замер (линия стенда, 24.09.2026, `rutracker.org`): повторы через 0,30 · 0,59
     /// · 1,22 · 2,43 · 4,80 · 9,67 с; здоровые цели того же пути подтверждают за 36–37 мс.
     HelloDropped { retries: u32, after_ms: u32 },
+    /// ПРИВЕТСТВИЕ ПРИНЯТО, ОТВЕТ ЗАГЛУШЁН: рукопожатие состоялось, цель ПОДТВЕРДИЛА первые данные
+    /// клиента (`ClientHello` целиком), а своих не прислала — и молчит дольше, чем живой сервер
+    /// отвечает после подтверждения.
+    ///
+    /// Имя — из таксономии: SNI-II у Xue et al., IMC '22, §5.2 — «once a triggering ClientHello
+    /// is seen, an additional five to eight packets can be delivered from either side, after which
+    /// symmetric packet drops occur»; там же в списке «вне реестра» — сервисы Google.
+    ///
+    /// Отдельно от соседа [`Distress::HelloDropped`], и различие проверяемое: там цель молчит на
+    /// приветствие и клиент его повторяет; здесь приветствие подтверждено, клиенту повторять
+    /// нечего — он молча ждёт своего таймаута (20 с у `yt-dlp`), и прибор повторов такой разговор
+    /// не видит по построению. Не `NoBytes`: тот судит тишину разговора целиком, этот — только
+    /// промежуток между подтверждением приветствия и первым байтом цели.
+    ///
+    /// `rtt_ms` — рукопожатие этой цели (по нему мерился порог), `after_ms` — от подтверждения до
+    /// слова. Замер стенда 24.09.2026: у здоровых разговоров данные идут не позже 0,3 RTT после
+    /// подтверждения; у заглушённого узла кэша Google у Билайна — 20 с тишины до ухода клиента.
+    HelloMuted { rtt_ms: u32, after_ms: u32 },
     /// Отравление DNS: на запрос пришёл инжект (`NXDOMAIN`/пустой ответ) вместо адреса. Подозрение,
     /// не приговор — легитимный `NXDOMAIN` даёт то же; различает оракул/кросс-резолвер.
     Poisoned,
@@ -113,6 +132,7 @@ impl Distress {
             Distress::Swallowed { .. } => "swallowed",
             Distress::Dismissed { .. } => "dismissed",
             Distress::HelloDropped { .. } => "hello_dropped",
+            Distress::HelloMuted { .. } => "hello_muted",
             Distress::Poisoned => "poisoned",
             Distress::Diverged { .. } => "diverged",
         }
@@ -145,6 +165,9 @@ impl Distress {
             }
             Distress::HelloDropped { retries, after_ms } => {
                 format!("приветствие не подтверждено: {retries} повтора за {after_ms} мс")
+            }
+            Distress::HelloMuted { rtt_ms, after_ms } => {
+                format!("приветствие подтверждено, ответа нет {after_ms} мс при RTT {rtt_ms} мс")
             }
             Distress::Diverged { theirs } => format!("чужой писатель марки: {theirs:#010x}"),
             Distress::Rst | Distress::NoBytes | Distress::Poisoned => String::new(),
@@ -221,6 +244,9 @@ impl core::fmt::Display for Distress {
             Distress::Dismissed { after_ms } => write!(f, "dismissed after_ms={after_ms}"),
             Distress::HelloDropped { retries, after_ms } => {
                 write!(f, "hello_dropped retries={retries} after_ms={after_ms}")
+            }
+            Distress::HelloMuted { rtt_ms, after_ms } => {
+                write!(f, "hello_muted rtt_ms={rtt_ms} after_ms={after_ms}")
             }
             Distress::Poisoned => f.write_str("poisoned"),
             Distress::Diverged { theirs } => write!(f, "diverged theirs={theirs:#010x}"),
