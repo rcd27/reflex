@@ -117,7 +117,81 @@ pub enum Distress {
     Diverged { theirs: u32 },
 }
 
+/// СИЛА УТВЕРЖДЕНИЯ БУКВЫ — судить ли по ней о цели.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Assertion {
+    /// Ту же картину даёт и здоровая сеть: обычная потеря, отошедший человек, медленное плечо.
+    Suspicion,
+    /// Поведение, которого у здоровой сети не бывает: цель не открылась или не донесла.
+    Diagnosis,
+    /// Находка о мире, а не беда человека: чужой писатель наших битов.
+    Finding,
+}
+
 impl Distress {
+    /// Сила утверждения. Сторож: `the_alphabet_is_weighed_as_its_docblocks_say`.
+    pub const fn assertion(&self) -> Assertion {
+        match self {
+            Distress::Retransmit { .. } | Distress::Silence { .. } | Distress::Throttled { .. } => {
+                Assertion::Suspicion
+            }
+            Distress::Rst
+            | Distress::NoBytes
+            | Distress::Blackhole { .. }
+            | Distress::Unreached { .. }
+            | Distress::Swallowed { .. }
+            | Distress::Dismissed { .. }
+            | Distress::HelloDropped { .. }
+            | Distress::HelloMuted { .. }
+            | Distress::Poisoned => Assertion::Diagnosis,
+            Distress::Diverged { .. } => Assertion::Finding,
+        }
+    }
+
+    /// Чем снимается симптом — та же величина, которой беду мерила детекция.
+    pub const fn relief(&self) -> crate::edge_detect::Relief {
+        use crate::edge_detect::Relief;
+        match self {
+            // На стук не ответила — снятие есть ответ на стук.
+            Distress::Blackhole { .. } => Relief::Answered,
+            // Приветствие не подтверждено — снятие есть подтверждение, данных не требует.
+            Distress::HelloDropped { .. } => Relief::Acknowledged,
+            // Цель не донесла (в том числе подтвердив приветствие) — снятие есть данные.
+            Distress::NoBytes
+            | Distress::Rst
+            | Distress::Swallowed { .. }
+            | Distress::Unreached { .. }
+            | Distress::Dismissed { .. }
+            | Distress::HelloMuted { .. } => Relief::Delivered,
+            // Беда об имени, а не о разговоре; и подозрения, у которых снимать нечего.
+            Distress::Poisoned
+            | Distress::Retransmit { .. }
+            | Distress::Silence { .. }
+            | Distress::Throttled { .. }
+            | Distress::Diverged { .. } => Relief::Unknown,
+        }
+    }
+
+    /// За сколько беда проявилась на этом разговоре — если буква это несёт.
+    pub fn after(&self) -> Option<std::time::Duration> {
+        let ms = match self {
+            Distress::Retransmit { after_ms }
+            | Distress::Blackhole { after_ms }
+            | Distress::Swallowed { after_ms }
+            | Distress::Dismissed { after_ms }
+            | Distress::HelloDropped { after_ms, .. }
+            | Distress::HelloMuted { after_ms, .. } => Some(*after_ms),
+            Distress::Silence { ms } => Some(*ms),
+            Distress::Rst
+            | Distress::NoBytes
+            | Distress::Throttled { .. }
+            | Distress::Unreached { .. }
+            | Distress::Poisoned
+            | Distress::Diverged { .. } => None,
+        };
+        ms.map(|ms| std::time::Duration::from_millis(u64::from(ms)))
+    }
+
     /// Имя сигнала — публичный контракт (метка в метрику). Тотально и без `Debug` (его формат
     /// нестабилен): переименуй вариант — компилятор промолчит, а метка сменится.
     pub fn name(&self) -> &'static str {

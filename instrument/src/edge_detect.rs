@@ -196,6 +196,54 @@ pub fn acknowledged<E: EdgeView>(edge: &E) -> Option<bool> {
     edge.up_packets().map(|packets| packets >= 2)
 }
 
+/// ЧЕМ СНИМАЕТСЯ СИМПТОМ — какой из предикатов снятия отвечает беде ([`crate::Distress::relief`]).
+///
+/// Снятие спрашивается у той же величины, которой беду мерила детекция: один порог на все беды
+/// врёт в обе стороны.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relief {
+    /// Цель ответила на стук — [`answered`].
+    Answered,
+    /// Цель ответила после рукопожатия — [`acknowledged`].
+    Acknowledged,
+    /// Цель отдала данные сверх порога молчания — [`delivered`].
+    Delivered,
+    /// Чем снимается, не знаем: снятием такое не объявляется.
+    Unknown,
+}
+
+impl Relief {
+    /// Имя словом — для истории и рассказа. Не `Debug`: его формат нестабилен.
+    pub fn word(self) -> &'static str {
+        match self {
+            Relief::Answered => "answered",
+            Relief::Acknowledged => "acknowledged",
+            Relief::Delivered => "delivered",
+            Relief::Unknown => "unknown",
+        }
+    }
+
+    /// Снят ли симптом на этом крае — и сколько байт цели за этим стоит.
+    pub fn seen<E: EdgeView>(self, edge: &E) -> Option<std::num::NonZeroU64> {
+        match self {
+            // Ответ на стук — сам кадр ответа: байты с заголовками, данных у него нет.
+            Relief::Answered => answered(edge)
+                .filter(|answered| *answered)
+                .and(edge.up_bytes())
+                .and_then(std::num::NonZeroU64::new),
+            Relief::Acknowledged => acknowledged(edge)
+                .filter(|acknowledged| *acknowledged)
+                .and(edge.up_bytes())
+                .and_then(std::num::NonZeroU64::new),
+            Relief::Delivered => delivered(edge)
+                .filter(|delivered| *delivered)
+                .and_then(|_delivered| gave(edge))
+                .and_then(std::num::NonZeroU64::new),
+            Relief::Unknown => None,
+        }
+    }
+}
+
 impl<V: EdgeView> EdgeSilence<V> {
     pub fn new(after: Duration, layout: Layout) -> EdgeSilence<V> {
         EdgeSilence {
