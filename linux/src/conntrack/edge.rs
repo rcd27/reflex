@@ -139,6 +139,12 @@ impl EdgeView for CtEdge {
     fn mark(&self) -> u32 {
         self.view.mark
     }
+
+    fn labels(&self) -> Option<reflex_core::edge::Labels> {
+        self.view
+            .labels
+            .map(|labels| reflex_core::edge::Labels::of(super::wire::labels_bits(labels)))
+    }
 }
 
 /// Запись дампа — край без часов: простоя и возраста в ней нет, и снимок скажет «не считали».
@@ -169,5 +175,10 @@ impl EdgeView for Entry {
 
     fn mark(&self) -> u32 {
         self.mark
+    }
+
+    fn labels(&self) -> Option<reflex_core::edge::Labels> {
+        self.labels
+            .map(|labels| reflex_core::edge::Labels::of(super::wire::labels_bits(labels)))
     }
 }

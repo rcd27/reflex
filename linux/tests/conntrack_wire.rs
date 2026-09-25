@@ -285,3 +285,64 @@ fn a_record_without_a_tuple_is_not_built_as_zeros() {
         other => panic!("ожидался конец дампа, пришло {other:?}"),
     }
 }
+
+/// `CTA_LABELS` (22 по `nfnetlink_conntrack.h`) — битовая карта меток записи: слова `unsigned long`
+/// в порядке хозяина. Метка N — бит N карты.
+fn labels(set: &[u32]) -> Vec<u8> {
+    let word = |of: u32| -> u64 {
+        set.iter()
+            .filter(|label| **label / 64 == of)
+            .fold(0, |word, label| word | 1 << (label % 64))
+    };
+    attr(
+        22,
+        &[word(0), word(1)]
+            .iter()
+            .flat_map(|word| word.to_ne_bytes())
+            .collect::<Vec<u8>>(),
+    )
+}
+
+fn labelled_record(set: &[u32]) -> Vec<u8> {
+    message(
+        CT_NEW,
+        nfgen()
+            .into_iter()
+            .chain(tuple_orig(0x7F000001, 0x7F000001, 37894, 9443))
+            .chain(attr(8, &7u32.to_be_bytes()))
+            .chain(labels(set))
+            .collect(),
+    )
+}
+
+fn the_one(bytes: Vec<u8>) -> reflex_linux::conntrack::Entry {
+    let done: Vec<u8> = bytes.into_iter().chain(message(DONE, Vec::new())).collect();
+    match chunk_of(&done) {
+        Chunk::Done(found) if found.len() == 1 => found[0],
+        other => panic!("ждали Done с одной записью, вышло {:?}", other),
+    }
+}
+
+/// Метки записи разбираются бит в бит, включая старшее слово карты.
+#[test]
+fn the_labels_of_a_record_are_read_bit_for_bit() {
+    assert_eq!(
+        the_one(labelled_record(&[1, 100])).labels,
+        Some([1 << 1, 1 << (100 - 64)])
+    );
+}
+
+/// Записи без меток — `None`, а не ноль: край, не ведущий меток, и разговор без меток различимы.
+#[test]
+fn a_record_without_labels_does_not_claim_none_were_set() {
+    assert_eq!(the_one(one_record()).labels, None);
+    assert_eq!(the_one(labelled_record(&[])).labels, Some([0, 0]));
+}
+
+/// Снимок края несёт метки тем же законом, что марку: один способ снять на все края.
+#[test]
+fn a_snapshot_of_the_edge_carries_its_labels() {
+    let counted = reflex_core::edge::Counted::of(&the_one(labelled_record(&[1])));
+    assert_eq!(counted.labels.map(|labels| labels.has(1)), Some(true));
+    assert_eq!(counted.labels.map(|labels| labels.has(2)), Some(false));
+}

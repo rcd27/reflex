@@ -41,6 +41,37 @@ pub trait EdgeView {
     fn age(&self) -> Option<Duration>;
     /// Слово состояния, как его хранит край (наша марка под маской-параметром).
     fn mark(&self) -> u32;
+    /// Метки разговора ([`Labels`]). Умолчание — `None`: край, меток не ведущий, так и говорит, а
+    /// не выдаёт «меток нет».
+    fn labels(&self) -> Option<Labels> {
+        None
+    }
+}
+
+/// МЕТКИ РАЗГОВОРА — флаги, которые край держит о разговоре ОТДЕЛЬНО от марки. Марку по пути
+/// переписывают правила (слово целиком), метку ставит только тот, кто её ставит, и она доживает до
+/// конца разговора: так свидетельство о событии внутри разговора (впрыск, сработавшая нога) не
+/// стирается следующим пакетом. Биты сами по себе не значат ничего — номер метки объявляет её
+/// потребитель вместе с правилом, которое её ставит.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(transparent)
+)]
+pub struct Labels(u128);
+
+impl Labels {
+    pub fn of(bits: u128) -> Labels {
+        Labels(bits)
+    }
+
+    /// Стоит ли метка `label`. Номер за пределами карты — не стоит.
+    pub fn has(self, label: u8) -> bool {
+        self.0
+            .checked_shr(u32::from(label))
+            .is_some_and(|shifted| shifted & 1 == 1)
+    }
 }
 
 /// СНИМОК КРАЯ — величины, СНЯТЫЕ в момент наблюдения, отвязанные от того, кто их вёл.
@@ -78,6 +109,9 @@ pub struct Counted {
     /// зелёных приёмках. Над [`Bits`] случайное `mark & 0xFF == …` не собирается вовсе, а смысл
     /// берётся объявленным алфавитом, второго закона о котором язык написать не даёт (E0119).
     pub mark: Bits,
+    /// Метки разговора. `None` — край их не ведёт; снимки прежних лент читаются так же.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub labels: Option<Labels>,
 }
 
 impl Counted {
@@ -102,6 +136,7 @@ impl Counted {
             // ЕДИНСТВЕННЫЙ ПЕРЕХОД СЫРЬЯ В ТИП: край говорит с ядром битами, снимок едет к
             // потребителю уже маркой. Дальше по пути голого слова нет ни у кого.
             mark: Bits::of(view.mark()),
+            labels: view.labels(),
         }
     }
 }
@@ -131,5 +166,8 @@ impl EdgeView for Counted {
     /// (`instrument::edge::Layout`) читает своё поле сама, и битов ей не заменить ничем.
     fn mark(&self) -> u32 {
         self.mark.word()
+    }
+    fn labels(&self) -> Option<Labels> {
+        self.labels
     }
 }

@@ -38,6 +38,8 @@ pub struct Entry {
     /// Переписан ли адрес назначения. Решение «увести» действует на НОВЫЙ разговор (NAT решается на
     /// первом пакете), и только этот бит отличает разговор, уже уведённый, от висящего на прежнем пути.
     pub dst: CtDst,
+    /// Метки записи (`CTA_LABELS`) — как в [`CtView::labels`].
+    pub labels: Option<[u64; 2]>,
 }
 
 /// Судьба адреса назначения по мнению ЯДРА (`IPS_DST_NAT` в `CTA_STATUS`). `Unknown` — статуса в записи
@@ -129,6 +131,10 @@ pub struct CtView {
     pub tcp: Option<CtTcp>,
     pub mark: u32,
     pub dst: CtDst,
+    /// Битовая карта меток записи: младшее слово, старшее. `None` — ядро её не прислало: пустую
+    /// карту ctnetlink не шлёт вовсе. Двумя словами, а не `u128`: выравнивание `u128` раздуло бы
+    /// вид, который едет с каждым пакетом очереди.
+    pub labels: Option<[u64; 2]>,
 }
 
 const NFGEN: usize = 4;
@@ -159,6 +165,7 @@ const CTA_TIMEOUT: u16 = 7;
 const CTA_TIMESTAMP: u16 = 20;
 const CTA_TIMESTAMP_START: u16 = 1;
 const CTA_PROTOINFO: u16 = 4;
+const CTA_LABELS: u16 = 22;
 const CTA_PROTOINFO_TCP: u16 = 1;
 const CTA_PROTOINFO_TCP_STATE: u16 = 1;
 const CTA_IP_V6_SRC: u16 = 3;
@@ -353,8 +360,33 @@ pub fn view_of(body: &[u8]) -> CtView {
             id: be32_at(value, 0).unwrap_or(built.id),
             ..built
         },
+        CTA_LABELS => CtView {
+            labels: labels_of(value),
+            ..built
+        },
         _unknown_to_us => built,
     })
+}
+
+/// Карта меток: ядро кладёт массив `unsigned long` в порядке хозяина, метка N — бит N. Слово
+/// читается шириной `usize` (это и есть `unsigned long` на Linux), так разбор верен на любой
+/// разрядности и порядке байт хозяина, который и прислал карту. Оборванное слово — карты нет.
+fn labels_of(value: &[u8]) -> Option<[u64; 2]> {
+    const WORD: usize = std::mem::size_of::<usize>();
+    let bits = value
+        .chunks(WORD)
+        .take(128 / (WORD * 8))
+        .enumerate()
+        .try_fold(0u128, |bits, (nth, word)| {
+            let word = usize::from_ne_bytes(word.try_into().ok()?) as u128;
+            Some(bits | word << (nth * WORD * 8))
+        })?;
+    Some([bits as u64, (bits >> 64) as u64])
+}
+
+/// Карта меток одним числом — так её читает закон края ([`reflex_core::edge::Labels`]).
+pub fn labels_bits([low, high]: [u64; 2]) -> u128 {
+    u128::from(low) | u128::from(high) << 64
 }
 
 /// Тело одного сообщения `IPCTNL_MSG_CT_NEW` в запись. Через [`view_of`]: `Entry` — узкий срез вида
@@ -374,6 +406,7 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
             mark: view.mark,
             tcp: view.tcp,
             dst: view.dst,
+            labels: view.labels,
         })
     })
 }
