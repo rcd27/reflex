@@ -51,7 +51,7 @@ pub struct FlowTable<D, K> {
 impl<D, K, In> FlowTable<D, K>
 where
     D: Mealy<In = DetectorEvent<In>>,
-    K: Eq + Hash + Clone,
+    K: Eq + Hash + Ord + Clone,
     In: Clone,
     D: Ended,
 {
@@ -116,10 +116,12 @@ where
     /// выбрасывают, потому что утрата живого обязана быть названа.
     fn make_room(&mut self) {
         while self.machines.len() > self.capacity {
+            // Ничью равных моментов решает КЛЮЧ: порядок обхода `HashMap` у каждой таблицы свой,
+            // и переигровка вытеснила бы не того, кого бой.
             let oldest = self
                 .last_seen
                 .iter()
-                .min_by_key(|(_, seen)| **seen)
+                .min_by_key(|(key, seen)| (**seen, (*key).clone()))
                 .map(|(key, _)| key.clone());
             match oldest {
                 None => return,
@@ -210,6 +212,60 @@ where
     pub fn machines(&self) -> impl Iterator<Item = (&K, &D)> {
         self.machines.iter()
     }
+}
+
+/// ЧАСТИ ТАБЛИЦЫ — всё её состояние, упорядоченное по ключу: из них таблица собирается заново той
+/// же. Фабрики здесь нет — она настройка, а не состояние, и её даёт собирающий. Потребитель
+/// пишет части в снимок, и переигровка начинает с середины боя с того же, с чего продолжил бой.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parts<D, K> {
+    pub machines: Vec<(K, D)>,
+    pub last_seen: Vec<(K, Instant)>,
+    pub idle_timeout: Duration,
+    pub capacity: usize,
+    pub departed: Vec<(K, Departure)>,
+}
+
+impl<D: Clone, K: Eq + Hash + Ord + Clone> FlowTable<D, K> {
+    /// Снять части. Порядок — по ключу: у `HashMap` своего порядка нет, а снимок обязан быть один
+    /// и тот же, в каком бы процессе его ни сняли.
+    pub fn parts(&self) -> Parts<D, K> {
+        Parts {
+            machines: ordered(
+                self.machines
+                    .iter()
+                    .map(|(key, machine)| (key.clone(), machine.clone())),
+            ),
+            last_seen: ordered(
+                self.last_seen
+                    .iter()
+                    .map(|(key, seen)| (key.clone(), *seen)),
+            ),
+            idle_timeout: self.idle_timeout,
+            capacity: self.capacity,
+            departed: self.departed.clone(),
+        }
+    }
+
+    /// Собрать таблицу из частей и фабрики.
+    pub fn from_parts(parts: Parts<D, K>, make: impl Fn(&K) -> D + Send + 'static) -> Self {
+        Self {
+            machines: parts.machines.into_iter().collect(),
+            last_seen: parts.last_seen.into_iter().collect(),
+            idle_timeout: parts.idle_timeout,
+            capacity: parts.capacity,
+            departed: parts.departed,
+            make: Box::new(make),
+        }
+    }
+}
+
+/// Пары по возрастанию ключа.
+fn ordered<K: Ord, V>(pairs: impl Iterator<Item = (K, V)>) -> Vec<(K, V)> {
+    pairs
+        .collect::<std::collections::BTreeMap<K, V>>()
+        .into_iter()
+        .collect()
 }
 
 /// КРИТЕРИЙ ПРОСТОЯ — одним местом на всю таблицу. Свободной функцией, а не методом: обход семьи
@@ -383,5 +439,65 @@ mod tests {
         let out = ft.each(node(t0 + WINDOW + Duration::from_secs(1)));
         assert_eq!(ft.flow_count(), 1);
         assert_eq!(out.iter().map(|(_, (w, ()))| w.len()).sum::<usize>(), 1);
+    }
+
+    /// НИЧЬЯ ВЫТЕСНЕНИЯ РЕШАЕТСЯ КЛЮЧОМ, а не порядком обхода `HashMap`: у каждой таблицы своё
+    /// зерно, и два процесса с одной записью вытесняли бы разных — переигровка разошлась бы с боем.
+    #[test]
+    fn equal_last_seen_evicts_the_smallest_key() {
+        let t0 = Instant::now();
+        let evicted: Vec<Vec<(u32, Departure)>> = (0..16)
+            .map(|_fresh| {
+                let mut ft: FlowTable<TickPing, u32> = FlowTable::new(IDLE, 2, |_| TickPing);
+                [7_u32, 3, 5]
+                    .iter()
+                    .for_each(|key| drop(ft.process(*key, &seg(), t0)));
+                ft.departed()
+            })
+            .collect();
+        assert!(
+            evicted
+                .iter()
+                .all(|departed| departed == &vec![(3, Departure::Ceiling)]),
+            "при равном моменте уходит меньший ключ: {evicted:?}"
+        );
+    }
+
+    /// ЧАСТИ ТАБЛИЦЫ — всё её состояние: собранная из частей таблица отдаёт те же части и ведёт себя
+    /// так же. Фабрику части не несут — она настройка, а не состояние, и её даёт собирающий.
+    #[test]
+    fn parts_round_trip_gives_the_same_table() {
+        let t0 = Instant::now();
+        let mut ft: FlowTable<TickPing, u32> = FlowTable::new(IDLE, 2, |_| TickPing);
+        drop(ft.process(9, &seg(), t0));
+        drop(ft.process(4, &seg(), t0 + WINDOW));
+        drop(ft.process(6, &seg(), t0 + WINDOW));
+        let parts = ft.parts();
+        assert_eq!(
+            parts
+                .machines
+                .iter()
+                .map(|(key, _)| *key)
+                .collect::<Vec<u32>>(),
+            vec![4, 6],
+            "части упорядочены по ключу"
+        );
+        assert_eq!(parts.departed, vec![(9, Departure::Ceiling)]);
+        let rebuilt: FlowTable<TickPing, u32> = FlowTable::from_parts(parts.clone(), |_| TickPing);
+        let again = rebuilt.parts();
+        assert_eq!(
+            (
+                again.last_seen,
+                again.departed,
+                again.idle_timeout,
+                again.capacity
+            ),
+            (
+                parts.last_seen,
+                parts.departed,
+                parts.idle_timeout,
+                parts.capacity
+            )
+        );
     }
 }

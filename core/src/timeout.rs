@@ -42,6 +42,7 @@ pub enum Expiry {
 /// Связь между ними названа переводом ([`From<Expiry>`]), а не повторением вариантов: разойтись
 /// молча им теперь нечем — новый вариант `Expiry` уронит перевод сборкой.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Departure {
     /// ПРОЩАНИЕ: машина сказала, что её разговор окончен (`Ended::ended`). Факт о мире, снимаем
     /// мёртвое.
