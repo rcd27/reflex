@@ -218,6 +218,9 @@ pub struct QueueSocket {
     /// Когда счётчик смотрели в последний раз. Читать его на каждом пакете значило бы платить
     /// открытием файла за каждый кадр; предмет же меняется редко и заметен с задержкой в окно.
     pub(crate) looked: Instant,
+    /// Память открытий: возраст разговора от увиденного `SYN`, когда ядро штампа не даёт
+    /// ([`super::Openings`]).
+    pub(crate) openings: super::Openings,
 }
 
 impl QueueSocket {
@@ -263,6 +266,7 @@ impl QueueSocket {
             pending: VecDeque::new(),
             dropped: user_dropped(queue),
             looked: Instant::now(),
+            openings: super::Openings::default(),
         };
         // ПОРЯДОК ЗДЕСЬ ВЫНУЖДЕН, И У НЕГО ЕСТЬ ОКНО. Привязка идёт первой — иначе настраивать
         // нечего, очереди у нас ещё нет; ядро с этого мига уже кладёт в неё пакеты, а ёмкость мы

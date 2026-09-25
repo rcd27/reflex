@@ -24,11 +24,22 @@ use super::wire::{CtMark, Incoming, Packet, SkbMark};
 pub struct Held {
     packet: Packet,
     base: TimeoutBase,
+    /// Возраст разговора по памяти открытий очереди — когда ядро своего не даёт.
+    age: Option<std::time::Duration>,
 }
 
 impl Held {
     pub fn new(packet: Packet, base: TimeoutBase) -> Self {
-        Self { packet, base }
+        Self {
+            packet,
+            base,
+            age: None,
+        }
+    }
+
+    /// С возрастом от увиденного очередью `SYN` ([`super::Openings`]).
+    pub fn aged(self, age: Option<std::time::Duration>) -> Self {
+        Self { age, ..self }
     }
 }
 
@@ -51,7 +62,9 @@ impl Edging for Held {
     /// `SYN` вне таблицы). Клетка §7: «не считали» обязано отличаться от «цель не ответила», и
     /// `map` этого не путает — оборачивает построенный край, не подставляет нулевой.
     fn edge(&self) -> Option<CtEdge> {
-        self.packet.ct.map(|view| CtEdge::seen(view, self.base))
+        self.packet
+            .ct
+            .map(|view| CtEdge::seen(view, self.base).aged_by(self.age))
     }
 }
 
@@ -312,7 +325,15 @@ impl Serves for QueueSocket {
             if let Some((incoming, at)) = self.pending.pop_front() {
                 match taken(incoming) {
                     Taken::Packet(packet) => {
-                        let held = reflex_core::held::Held::new(Held::new(packet, self.base), at);
+                        let (openings, age) = match &packet.ct {
+                            Some(view) => std::mem::take(&mut self.openings).seen(view, at),
+                            None => (std::mem::take(&mut self.openings), None),
+                        };
+                        self.openings = openings;
+                        let held = reflex_core::held::Held::new(
+                            Held::new(packet, self.base).aged(age),
+                            at,
+                        );
                         let edge = held.carrier().edge();
                         let answer = decide(&held, edge);
                         return Served::Answered(self.apply(held.answered(answer)));

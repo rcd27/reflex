@@ -103,6 +103,15 @@ impl CtEdge {
         });
         CtEdge { view, base, age }
     }
+
+    /// Возраст из иного источника — когда ядро своего не дало (памяти открытий очереди,
+    /// [`crate::queue::Openings`]). Штамп ядра старше по праву и не подменяется.
+    pub fn aged_by(self, age: Option<Duration>) -> CtEdge {
+        CtEdge {
+            age: self.age.or(age),
+            ..self
+        }
+    }
 }
 
 impl EdgeView for CtEdge {

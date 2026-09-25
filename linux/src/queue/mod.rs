@@ -3,11 +3,13 @@
 //! пути срезается: он не разбирает `NFQA_CT` и не кладёт его в вердикт (оба PR у апстрима неприняты
 //! с 2023-го), и глушит `ENOBUFS` — а нам переполнение нужно буквой, не молчанием.
 
+mod openings;
 mod socket;
 mod terminal;
 mod wire;
 
 pub use crate::conntrack::TimeoutBase;
+pub use openings::Openings;
 pub use socket::{listened, QueueError, QueueSocket};
 pub use terminal::{Answer, Held};
 pub use wire::{
