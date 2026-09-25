@@ -217,55 +217,71 @@ where
 /// ЧАСТИ ТАБЛИЦЫ — всё её состояние, упорядоченное по ключу: из них таблица собирается заново той
 /// же. Фабрики здесь нет — она настройка, а не состояние, и её даёт собирающий. Потребитель
 /// пишет части в снимок, и переигровка начинает с середины боя с того же, с чего продолжил бой.
+///
+/// Машина и её последний момент — ОДНОЙ тройкой: у живой машины момент есть всегда, и машина без
+/// момента (бессмертная — ни срок, ни потолок её не снимут) формой частей невыразима.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parts<D, K> {
-    pub machines: Vec<(K, D)>,
-    pub last_seen: Vec<(K, Instant)>,
+    pub machines: Vec<(K, D, Instant)>,
     pub idle_timeout: Duration,
     pub capacity: usize,
+    /// В порядке событий, а не ключа: уход — история, и её порядок задан тем, как она шла.
     pub departed: Vec<(K, Departure)>,
 }
 
 impl<D: Clone, K: Eq + Hash + Ord + Clone> FlowTable<D, K> {
-    /// Снять части. Порядок — по ключу: у `HashMap` своего порядка нет, а снимок обязан быть один
-    /// и тот же, в каком бы процессе его ни сняли.
+    /// Снять части. Машины — по ключу: у `HashMap` своего порядка нет, а снимок обязан быть один и
+    /// тот же, в каком бы процессе его ни сняли.
     pub fn parts(&self) -> Parts<D, K> {
         Parts {
-            machines: ordered(
-                self.machines
-                    .iter()
-                    .map(|(key, machine)| (key.clone(), machine.clone())),
-            ),
-            last_seen: ordered(
-                self.last_seen
-                    .iter()
-                    .map(|(key, seen)| (key.clone(), *seen)),
-            ),
+            machines: self
+                .machines
+                .iter()
+                .filter_map(|(key, machine)| {
+                    self.last_seen
+                        .get(key)
+                        .map(|seen| (key.clone(), (machine.clone(), *seen)))
+                })
+                .collect::<std::collections::BTreeMap<K, (D, Instant)>>()
+                .into_iter()
+                .map(|(key, (machine, seen))| (key, machine, seen))
+                .collect(),
             idle_timeout: self.idle_timeout,
             capacity: self.capacity,
             departed: self.departed.clone(),
         }
     }
 
-    /// Собрать таблицу из частей и фабрики.
-    pub fn from_parts(parts: Parts<D, K>, make: impl Fn(&K) -> D + Send + 'static) -> Self {
-        Self {
-            machines: parts.machines.into_iter().collect(),
-            last_seen: parts.last_seen.into_iter().collect(),
-            idle_timeout: parts.idle_timeout,
-            capacity: parts.capacity,
-            departed: parts.departed,
-            make: Box::new(make),
+    /// Собрать таблицу из частей и фабрики. Живых машин больше потолка не бывает — такие части
+    /// подделаны или сняты другой версией, и таблица из них не собирается.
+    pub fn from_parts(
+        parts: Parts<D, K>,
+        make: impl Fn(&K) -> D + Send + 'static,
+    ) -> Result<Self, String> {
+        match parts.machines.len() > parts.capacity {
+            true => Err(format!(
+                "частей таблицы {} при потолке {}",
+                parts.machines.len(),
+                parts.capacity
+            )),
+            false => Ok(Self {
+                last_seen: parts
+                    .machines
+                    .iter()
+                    .map(|(key, _machine, seen)| (key.clone(), *seen))
+                    .collect(),
+                machines: parts
+                    .machines
+                    .into_iter()
+                    .map(|(key, machine, _seen)| (key, machine))
+                    .collect(),
+                idle_timeout: parts.idle_timeout,
+                capacity: parts.capacity,
+                departed: parts.departed,
+                make: Box::new(make),
+            }),
         }
     }
-}
-
-/// Пары по возрастанию ключа.
-fn ordered<K: Ord, V>(pairs: impl Iterator<Item = (K, V)>) -> Vec<(K, V)> {
-    pairs
-        .collect::<std::collections::BTreeMap<K, V>>()
-        .into_iter()
-        .collect()
 }
 
 /// КРИТЕРИЙ ПРОСТОЯ — одним местом на всю таблицу. Свободной функцией, а не методом: обход семьи
@@ -477,27 +493,52 @@ mod tests {
             parts
                 .machines
                 .iter()
-                .map(|(key, _)| *key)
-                .collect::<Vec<u32>>(),
-            vec![4, 6],
-            "части упорядочены по ключу"
+                .map(|(key, _machine, seen)| (*key, *seen))
+                .collect::<Vec<(u32, Instant)>>(),
+            vec![(4, t0 + WINDOW), (6, t0 + WINDOW)],
+            "части упорядочены по ключу, момент — при своей машине"
         );
         assert_eq!(parts.departed, vec![(9, Departure::Ceiling)]);
-        let rebuilt: FlowTable<TickPing, u32> = FlowTable::from_parts(parts.clone(), |_| TickPing);
+        let Ok(rebuilt) = FlowTable::<TickPing, u32>::from_parts(parts.clone(), |_| TickPing)
+        else {
+            panic!("части собственной таблицы собираются")
+        };
         let again = rebuilt.parts();
         assert_eq!(
             (
-                again.last_seen,
+                again
+                    .machines
+                    .iter()
+                    .map(|(key, _machine, seen)| (*key, *seen))
+                    .collect::<Vec<(u32, Instant)>>(),
                 again.departed,
                 again.idle_timeout,
                 again.capacity
             ),
             (
-                parts.last_seen,
+                parts
+                    .machines
+                    .iter()
+                    .map(|(key, _machine, seen)| (*key, *seen))
+                    .collect::<Vec<(u32, Instant)>>(),
                 parts.departed,
                 parts.idle_timeout,
                 parts.capacity
             )
         );
+    }
+
+    /// Невозможная таблица из частей НЕ собирается: живых машин больше потолка не бывает — такие
+    /// части подделаны или сняты другой версией, и собранная из них таблица жила бы вне закона.
+    #[test]
+    fn parts_over_the_ceiling_are_refused() {
+        let t0 = Instant::now();
+        let parts: Parts<TickPing, u32> = Parts {
+            machines: vec![(1, TickPing, t0), (2, TickPing, t0), (3, TickPing, t0)],
+            idle_timeout: IDLE,
+            capacity: 2,
+            departed: Vec::new(),
+        };
+        assert!(FlowTable::from_parts(parts, |_| TickPing).is_err());
     }
 }
