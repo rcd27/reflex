@@ -342,7 +342,9 @@ fn a_record_without_labels_does_not_claim_none_were_set() {
 /// Снимок края несёт метки тем же законом, что марку: один способ снять на все края.
 #[test]
 fn a_snapshot_of_the_edge_carries_its_labels() {
-    let counted = reflex_core::edge::Counted::of(&the_one(labelled_record(&[1])));
+    let counted = reflex_core::edge::Counted::of(&the_one(labelled_record(&[1, 100])));
     assert_eq!(counted.labels.map(|labels| labels.has(1)), Some(true));
     assert_eq!(counted.labels.map(|labels| labels.has(2)), Some(false));
+    assert_eq!(counted.labels.map(|labels| labels.has(100)), Some(true));
+    assert_eq!(counted.labels.map(|labels| labels.has(200)), Some(false));
 }

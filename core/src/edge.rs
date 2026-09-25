@@ -59,18 +59,20 @@ pub trait EdgeView {
     derive(serde::Serialize, serde::Deserialize),
     serde(transparent)
 )]
-pub struct Labels(u128);
+pub struct Labels([u64; 2]);
 
 impl Labels {
+    /// Двумя словами, а не `u128`: выравнивание `u128` раздуло бы снимок, едущий с каждой буквой.
     pub fn of(bits: u128) -> Labels {
-        Labels(bits)
+        Labels([bits as u64, (bits >> 64) as u64])
     }
 
     /// Стоит ли метка `label`. Номер за пределами карты — не стоит.
     pub fn has(self, label: u8) -> bool {
-        self.0
-            .checked_shr(u32::from(label))
-            .is_some_and(|shifted| shifted & 1 == 1)
+        let Labels(words) = self;
+        words
+            .get(usize::from(label / 64))
+            .is_some_and(|word| word >> (label % 64) & 1 == 1)
     }
 }
 
