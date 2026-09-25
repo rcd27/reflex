@@ -11,19 +11,28 @@ use std::time::{Duration, Instant};
 
 use crate::conntrack::{CtTcp, CtView, Tuple};
 
-/// Разговор по слову ядра: номер записи и её кортеж (номер одного ядра переиспользуется).
-type Talk = (u32, u32, u32, u16, u16, u8);
+/// Разговор по слову ядра: номер записи и её кортеж — номер одного ядра переиспользуется.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Talk {
+    id: u32,
+    src: u32,
+    dst: u32,
+    src_port: u16,
+    dst_port: u16,
+    proto: u8,
+}
 
-fn talk_of(view: &CtView) -> Option<Talk> {
-    view.tuple.map(
-        |Tuple {
-             src,
-             dst,
-             src_port,
-             dst_port,
-             proto,
-         }: Tuple| { (view.id, src, dst, src_port, dst_port, proto) },
-    )
+impl Talk {
+    fn of(view: &CtView) -> Option<Talk> {
+        view.tuple.map(|tuple: Tuple| Talk {
+            id: view.id,
+            src: tuple.src,
+            dst: tuple.dst,
+            src_port: tuple.src_port,
+            dst_port: tuple.dst_port,
+            proto: tuple.proto,
+        })
+    }
 }
 
 /// Начало разговора и когда его видели последний раз.
@@ -55,33 +64,30 @@ impl Openings {
     }
 
     /// Пакет разговора пришёл в `at` — память и возраст разговора (`None` — начало неизвестно).
-    pub fn seen(mut self, view: &CtView, at: Instant) -> (Openings, Option<Duration>) {
-        let Some(talk) = talk_of(view) else {
-            return (self, None);
-        };
-        let known = self.0.get_mut(&talk).map(|opened| {
+    pub fn seen(mut self, view: Option<&CtView>, at: Instant) -> (Openings, Option<Duration>) {
+        let talk = view.and_then(Talk::of);
+        let known = talk.and_then(|talk| self.0.get_mut(&talk)).map(|opened| {
             opened.last = at;
             at.saturating_duration_since(opened.at)
         });
-        match (known, view.tcp) {
-            (Some(age), _state) => (self, Some(age)),
-            (None, Some(CtTcp::SynSent)) => {
-                let full = self.0.len() >= Openings::CAPACITY;
-                // Полная память забывает молчащих; живых не вытесняет — новый тогда без начала.
-                full.then(|| {
-                    self.0.retain(|_talk, opened| {
-                        at.saturating_duration_since(opened.last) < Openings::SILENCE
-                    })
-                });
-                match self.0.len() < Openings::CAPACITY {
-                    true => {
-                        let _fresh = self.0.insert(talk, Opened { at, last: at });
-                        (self, Some(Duration::ZERO))
-                    }
-                    false => (self, None),
-                }
-            }
-            (None, _midway) => (self, None),
+        let syn = view.and_then(|view| view.tcp) == Some(CtTcp::SynSent);
+        let age = known.or_else(|| {
+            talk.filter(|_talk| syn)
+                .and_then(|talk| self.opened(talk, at))
+        });
+        (self, age)
+    }
+
+    /// Полная память забывает молчащих; живых не вытесняет — новый тогда без начала.
+    fn opened(&mut self, talk: Talk, at: Instant) -> Option<Duration> {
+        if self.0.len() >= Openings::CAPACITY {
+            self.0.retain(|_talk, opened| {
+                at.saturating_duration_since(opened.last) < Openings::SILENCE
+            });
         }
+        (self.0.len() < Openings::CAPACITY).then(|| {
+            let _fresh = self.0.insert(talk, Opened { at, last: at });
+            Duration::ZERO
+        })
     }
 }

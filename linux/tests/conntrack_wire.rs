@@ -328,7 +328,7 @@ fn the_one(bytes: Vec<u8>) -> reflex_linux::conntrack::Entry {
 fn the_labels_of_a_record_are_read_bit_for_bit() {
     assert_eq!(
         the_one(labelled_record(&[1, 100])).labels,
-        Some([1 << 1, 1 << (100 - 64)])
+        Some(reflex_core::edge::Labels::of(1 << 1 | 1 << 100))
     );
 }
 
@@ -336,7 +336,10 @@ fn the_labels_of_a_record_are_read_bit_for_bit() {
 #[test]
 fn a_record_without_labels_does_not_claim_none_were_set() {
     assert_eq!(the_one(one_record()).labels, None);
-    assert_eq!(the_one(labelled_record(&[])).labels, Some([0, 0]));
+    assert_eq!(
+        the_one(labelled_record(&[])).labels,
+        Some(reflex_core::edge::Labels::of(0))
+    );
 }
 
 /// Снимок края несёт метки тем же законом, что марку: один способ снять на все края.

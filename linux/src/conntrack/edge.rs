@@ -150,9 +150,7 @@ impl EdgeView for CtEdge {
     }
 
     fn labels(&self) -> Option<reflex_core::edge::Labels> {
-        self.view
-            .labels
-            .map(|labels| reflex_core::edge::Labels::of(super::wire::labels_bits(labels)))
+        self.view.labels
     }
 }
 
@@ -188,6 +186,5 @@ impl EdgeView for Entry {
 
     fn labels(&self) -> Option<reflex_core::edge::Labels> {
         self.labels
-            .map(|labels| reflex_core::edge::Labels::of(super::wire::labels_bits(labels)))
     }
 }

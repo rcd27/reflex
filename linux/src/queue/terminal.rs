@@ -325,10 +325,8 @@ impl Serves for QueueSocket {
             if let Some((incoming, at)) = self.pending.pop_front() {
                 match taken(incoming) {
                     Taken::Packet(packet) => {
-                        let (openings, age) = match &packet.ct {
-                            Some(view) => std::mem::take(&mut self.openings).seen(view, at),
-                            None => (std::mem::take(&mut self.openings), None),
-                        };
+                        let (openings, age) =
+                            std::mem::take(&mut self.openings).seen(packet.ct.as_ref(), at);
                         self.openings = openings;
                         let held = reflex_core::held::Held::new(
                             Held::new(packet, self.base).aged(age),
