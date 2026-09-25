@@ -457,6 +457,11 @@ mod tests {
         assert_eq!(out.iter().map(|(_, (w, ()))| w.len()).sum::<usize>(), 1);
     }
 
+    /// Таблица с потолком в две машины — на ней видно вытеснение.
+    fn fed() -> FlowTable<TickPing, u32> {
+        FlowTable::new(IDLE, 2, |_| TickPing)
+    }
+
     /// НИЧЬЯ ВЫТЕСНЕНИЯ РЕШАЕТСЯ КЛЮЧОМ, а не порядком обхода `HashMap`: у каждой таблицы своё
     /// зерно, и два процесса с одной записью вытесняли бы разных — переигровка разошлась бы с боем.
     #[test]
@@ -464,11 +469,13 @@ mod tests {
         let t0 = Instant::now();
         let evicted: Vec<Vec<(u32, Departure)>> = (0..16)
             .map(|_fresh| {
-                let mut ft: FlowTable<TickPing, u32> = FlowTable::new(IDLE, 2, |_| TickPing);
                 [7_u32, 3, 5]
                     .iter()
-                    .for_each(|key| drop(ft.process(*key, &seg(), t0)));
-                ft.departed()
+                    .fold(fed(), |mut ft, key| {
+                        drop(ft.process(*key, &seg(), t0));
+                        ft
+                    })
+                    .departed()
             })
             .collect();
         assert!(
@@ -484,10 +491,12 @@ mod tests {
     #[test]
     fn parts_round_trip_gives_the_same_table() {
         let t0 = Instant::now();
-        let mut ft: FlowTable<TickPing, u32> = FlowTable::new(IDLE, 2, |_| TickPing);
-        drop(ft.process(9, &seg(), t0));
-        drop(ft.process(4, &seg(), t0 + WINDOW));
-        drop(ft.process(6, &seg(), t0 + WINDOW));
+        let ft = [(9_u32, t0), (4, t0 + WINDOW), (6, t0 + WINDOW)]
+            .iter()
+            .fold(fed(), |mut ft, (key, at)| {
+                drop(ft.process(*key, &seg(), *at));
+                ft
+            });
         let parts = ft.parts();
         assert_eq!(
             parts
