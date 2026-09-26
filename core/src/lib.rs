@@ -8,6 +8,7 @@ pub mod backend;
 pub mod capability;
 pub mod certify;
 pub mod checksum;
+pub mod chronology;
 pub mod clock;
 pub mod colimit;
 pub mod command;
