@@ -304,4 +304,57 @@ mod tests {
             "эта машина на узлах молчит — слов без края у неё быть не может"
         );
     }
+
+    /// ПРЕДМЕТ: у слова узла сетки края нет, но есть край ПОСЛЕДНЕГО ПАКЕТА его разговора — под
+    /// какой маркой разговор шёл. Без него потребитель не знает, чьё решение бедствовало, если
+    /// разговор умер между снимками ядра (`hello_muted` на канарейке 26.09, `under=unseen`).
+    #[test]
+    fn a_word_spoken_on_a_grid_node_carries_the_edge_of_its_last_packet() {
+        #[derive(Clone, Copy, Default)]
+        struct OnTheClock;
+
+        impl Mealy for OnTheClock {
+            type In = DetectorEvent<Seen>;
+            type Out = SmallVec<[Distress; 2]>;
+            type Log = ();
+
+            fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
+                match event {
+                    DetectorEvent::Tick { .. } => (self, smallvec![Distress::NoBytes], ()),
+                    DetectorEvent::Packet { .. }
+                    | DetectorEvent::Opaque { .. }
+                    | DetectorEvent::Torn { .. } => (self, SmallVec::new(), ()),
+                }
+            }
+        }
+
+        let heard: Vec<Note> = together()
+            .chain(
+                engine(
+                    Paper::new()
+                        .then_packet(syn(40105))
+                        .then_packet(request(40105))
+                        .silent_for(secs(6))
+                        .then_stop(),
+                )
+                .from(Tcp)
+                .extract(Sni)
+                .detect(own(OnTheClock))
+                .severing_addressed(|_whom: Whom<'_>, _word: &Distress| false),
+            )
+            .heard()
+            .collect();
+
+        assert!(!heard.is_empty(), "машина говорит на узлах");
+        assert!(
+            heard.iter().all(|note| note.edge.is_none()),
+            "у времени края нет — и это не меняется"
+        );
+        assert!(
+            heard
+                .iter()
+                .all(|note| note.last.is_some_and(|last| last.at <= note.at)),
+            "край последнего пакета едет со словом и снят не позже слова: {heard:?}"
+        );
+    }
 }

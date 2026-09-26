@@ -2683,6 +2683,19 @@ pub struct Whom<'a> {
     /// времени края нет. Клетка незнания здесь не украшение: «край не сняли» и «край показал нули»
     /// — разные вещи, и вторая внутри снимка тоже названа `Option`ами (§7).
     pub edge: Option<Counted>,
+    /// КРАЙ ПОСЛЕДНЕГО ПАКЕТА ЭТОГО РАЗГОВОРА — у слова узла сетки края нет, но у его разговора
+    /// он был: под какой маркой разговор шёл, ядро сказало с последним пакетом. `None` — пакетов с
+    /// краем у разговора не было.
+    pub last: Option<LastEdge>,
+}
+
+/// Край, снятый с последнего пакета разговора, и момент этого пакета — не момент слова.
+///
+/// Сторож: `a_word_spoken_on_a_grid_node_carries_the_edge_of_its_last_packet`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastEdge {
+    pub edge: Counted,
+    pub at: Instant,
 }
 
 /// Как реакция принимает адрес. Два способа, и оба — одна дверь `.on`: `|target, слово|` берёт
@@ -2818,6 +2831,8 @@ pub struct Note<S = Distress> {
     pub word: S,
     /// Величины края на момент буквы — то же, что в [`Whom::edge`], и по той же причине `Option`.
     pub edge: Option<Counted>,
+    /// Край последнего пакета разговора — то же, что в [`Whom::last`].
+    pub last: Option<LastEdge>,
     /// МОМЕНТ НАБЛЮДЕНИЯ — тот, что нёс носитель, а не тот, когда потребитель дочитал показание.
     ///
     /// Разница не косметическая (§8, время есть буква входа): на записи семь секунд провода
@@ -2865,6 +2880,7 @@ impl<K, S> Voice<K, S> for Collecting<'_, K, S> {
         self.said.push_back(Note {
             target: whom.target.into(),
             edge: whom.edge,
+            last: whom.last,
             at: whom.at,
             flow: whom.flow,
             word,
@@ -3732,6 +3748,7 @@ where
             layer: Layer::new(),
             targets: HashMap::new(),
             quiet: HashMap::new(),
+            edges: HashMap::new(),
             tape: Tape::new(),
             forgotten: 0,
             certifying,
@@ -4005,6 +4022,8 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// Пишется, только если голос рвёт; уходит вместе с машиной разговора. Не больше
     /// [`QUIET_BYTES`] на ключ: заголовки, а не данные.
     quiet: HashMap<Flow, SmallVec<[u8; QUIET_BYTES]>>,
+    /// Край последнего пакета разговора ([`Whom::last`]); уходит вместе с машиной разговора.
+    edges: HashMap<Flow, LastEdge>,
     /// Окно ленты: пишется, только когда закон предъявляется — даром лента стоила бы клона слова
     /// провода на каждый пакет.
     tape: Recorded<C, T>,
@@ -4124,6 +4143,9 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                     if voice.severs() && seen.len() <= QUIET_BYTES {
                         let _before = self.quiet.insert(*flow, SmallVec::from_slice(seen));
                     }
+                    if let Some(edge) = counted {
+                        let _before = self.edges.insert(*flow, LastEdge { edge, at });
+                    }
                     vec![(key.clone(), *flow, signals, Evidence::Held(seen))]
                 }
                 // ПАКЕТ БЕЗ АДРЕСА — НИКОМУ, и это единственное место, где он рождается. Сегодня
@@ -4172,6 +4194,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             };
             for (key, flow, signals, evidence) in said {
                 let named = label(&key);
+                let last = self.edges.get(&flow).copied();
                 for signal in signals {
                     effects.extend(voice.hears(
                         Whom {
@@ -4179,6 +4202,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
                             flow,
                             at,
                             edge: counted,
+                            last,
                         },
                         signal.clone(),
                         &evidence,
@@ -4258,6 +4282,7 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             T::forget(state, flow);
             self.targets.remove(flow);
             self.quiet.remove(flow);
+            self.edges.remove(flow);
         }
     }
 
