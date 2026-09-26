@@ -229,6 +229,15 @@ impl Relief {
         }
     }
 
+    /// Видна ли мера на крае вообще. `false` — край о ней молчит по построению, и `None` от
+    /// [`Relief::seen`] значит «здесь не судится», а не «не снято».
+    pub fn edged(self) -> bool {
+        match self {
+            Relief::Answered | Relief::Acknowledged | Relief::Delivered => true,
+            Relief::ServerHello | Relief::Unknown => false,
+        }
+    }
+
     /// Снят ли симптом на этом крае — и сколько байт цели за этим стоит.
     pub fn seen<E: EdgeView>(self, edge: &E) -> Option<std::num::NonZeroU64> {
         match self {
