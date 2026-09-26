@@ -285,6 +285,7 @@ impl Transport for Quic {
             flow: datagram.flow,
             key,
             wire: Reading::Udp(wire),
+            reply: None,
         })
     }
     /// У QUIC память разбора СВОЯ и на разговор: куски рукопожатия, счёт повторов, поднятое имя.

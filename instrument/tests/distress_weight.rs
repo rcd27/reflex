@@ -66,8 +66,8 @@ fn each_disease_of_the_opening_is_relieved_by_its_own_measure() {
             after_ms: 400
         }
         .relief(),
-        Relief::Delivered,
-        "подтверждение даёт и заглушённая цель — снятие только данные"
+        Relief::ServerHello,
+        "подтверждение даёт и заглушённая цель — снятие только её приветствие (#348)"
     );
     assert_eq!(Distress::Poisoned.relief(), Relief::Unknown);
 }

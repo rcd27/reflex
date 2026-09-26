@@ -208,6 +208,11 @@ pub enum Relief {
     Acknowledged,
     /// Цель отдала данные сверх порога молчания — [`delivered`].
     Delivered,
+    /// Цель ответила на приветствие своим (`ServerHello`) — снятие беды «приветствие принято, ответ
+    /// заглушён» определено ею самой (#348). Край его не видит: счётчики считают байты вместе с
+    /// заголовками, и отличить приветствие цели от отказа или пустых подтверждений по ним нельзя;
+    /// его видит провод (`reflex::Reply`).
+    ServerHello,
     /// Чем снимается, не знаем: снятием такое не объявляется.
     Unknown,
 }
@@ -219,6 +224,7 @@ impl Relief {
             Relief::Answered => "answered",
             Relief::Acknowledged => "acknowledged",
             Relief::Delivered => "delivered",
+            Relief::ServerHello => "server_hello",
             Relief::Unknown => "unknown",
         }
     }
@@ -239,7 +245,8 @@ impl Relief {
                 .filter(|delivered| *delivered)
                 .and_then(|_delivered| gave(edge))
                 .and_then(std::num::NonZeroU64::new),
-            Relief::Unknown => None,
+            // Приветствие цели край не различает — его свидетель на проводе, не здесь.
+            Relief::ServerHello | Relief::Unknown => None,
         }
     }
 }

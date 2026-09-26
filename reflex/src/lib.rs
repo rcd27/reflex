@@ -395,6 +395,8 @@ pub struct Observed<W> {
     /// терял бы тег, и крафт-SNI, равный записи адреса, схлопнулся бы с безымянной целью.
     pub key: TargetKey<Box<str>>,
     pub wire: W,
+    /// Первая запись ответа цели, если этот кадр её принёс ([`Reply`]).
+    pub reply: Option<Reply>,
 }
 
 /// Транспорт `.from(…)`. Несёт свой широкий словарь провода [`Transport::Wire`], порт сервера и своё
@@ -470,6 +472,8 @@ pub struct Tcp;
 struct Ident {
     dst: Addr,
     naming: Naming<Box<str>>,
+    /// Цель уже ответила на этом разговоре — её первая запись сказана ([`Reply`]).
+    replied: bool,
     /// Куски КЛИЕНТСКОГО приветствия со сдвигами от его начала — пока имя не названо.
     ///
     /// Копятся потому, что `ClientHello` не обязан помещаться в один сегмент: замер на живом
@@ -683,14 +687,22 @@ impl Transport for Tcp {
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
             dst: wire.dst,
             naming: Naming::Awaited,
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         });
         name_from_hello(ident, &wire);
+        // Первая нагрузка ЦЕЛИ на разговоре — её ответ; дальше разговор отвечен.
+        let reply = match (wire.dir, ident.replied) {
+            (reflex_core::types::Dir::Down, false) => Reply::of(wire.payload),
+            (reflex_core::types::Dir::Down, true) | (reflex_core::types::Dir::Up, _) => None,
+        };
+        ident.replied = ident.replied || reply.is_some();
         Observation::Seen(Observed {
             flow: wire.flow,
             key: ident.key(),
             wire: Reading::Tcp(tcp),
+            reply,
         })
     }
 
@@ -778,6 +790,7 @@ impl Transport for Udp {
             flow: datagram.flow,
             key,
             wire: message,
+            reply: None,
         })
     }
 
@@ -1715,6 +1728,7 @@ impl<C: Bordered, T: Transport> Keyed<C, T> {
             telling: None,
             severing: None,
             naming: None,
+            replying: None,
             parting: None,
             certifying: None,
             transport: PhantomData,
@@ -1816,6 +1830,8 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     severing: Option<Severing<C::Carrier, S>>,
     /// Куда говорить имя разговора, если просили ([`Detecting::naming`]).
     naming: Option<reflex_core::Tap<Named>>,
+    /// Куда говорить ответ цели, если просили ([`Detecting::replying`]).
+    replying: Option<reflex_core::Tap<Replied>>,
     /// Куда говорить об уходе разговора, если просили ([`Detecting::parting`]).
     parting: Option<reflex_core::Tap<Parted>>,
     /// Куда говорить свидетельство §10, если просили ([`Detecting::certifying`]). `None` — закона не
@@ -1830,6 +1846,46 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
 pub struct Named {
     pub flow: Flow,
     pub name: Box<str>,
+    pub at: Instant,
+}
+
+/// ЧТО ЦЕЛЬ ПРИСЛАЛА ПЕРВЫМ — первая TLS-запись её ответа на разговоре (#348). Цель, подтвердившая
+/// приветствие, либо отвечает своим (`ServerHello`), либо отказывает (`Alert`), либо шлёт не то;
+/// счётчики ядра этого не различают — они считают байты вместе с заголовками.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reply {
+    ServerHello,
+    Alert {
+        level: u8,
+        description: u8,
+    },
+    /// Запись иного рода — её тип (`content_type`).
+    Other {
+        content: u8,
+    },
+}
+
+impl Reply {
+    /// Разбор начала ответа цели; пусто — не ответ.
+    pub fn of(payload: &[u8]) -> Option<Reply> {
+        payload
+            .first()
+            .map(|content| match (*content, payload.get(5), payload.get(6)) {
+                (0x16, Some(0x02), _) => Reply::ServerHello,
+                (0x15, Some(level), Some(description)) => Reply::Alert {
+                    level: *level,
+                    description: *description,
+                },
+                (content, _handshake, _alert) => Reply::Other { content },
+            })
+    }
+}
+
+/// ОТВЕТ ЦЕЛИ НА РАЗГОВОРЕ — слово наружу, один раз на разговор.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Replied {
+    pub flow: Flow,
+    pub reply: Reply,
     pub at: Instant,
 }
 
@@ -1872,6 +1928,15 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     pub fn naming(self, tap: reflex_core::Tap<Named>) -> Detecting<C, T, H, S> {
         Detecting {
             naming: Some(tap),
+            ..self
+        }
+    }
+
+    /// ГОВОРИТЬ ОТВЕТ ЦЕЛИ — первую запись её ответа на каждом разговоре ([`Reply`]), тем же портом,
+    /// что имя: канал не ждёт, полный канал роняет весть и говорит об этом.
+    pub fn replying(self, tap: reflex_core::Tap<Replied>) -> Detecting<C, T, H, S> {
+        Detecting {
+            replying: Some(tap),
             ..self
         }
     }
@@ -1946,6 +2011,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
             telling: self.telling,
             severing: self.severing,
             naming: self.naming,
+            replying: self.replying,
             parting: self.parting,
             certifying: self.certifying,
             transport: PhantomData,
@@ -2376,6 +2442,13 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
     pub fn naming(self, tap: reflex_core::Tap<Named>) -> Speaking<C, T, H, S> {
         Speaking {
             detecting: self.detecting.naming(tap),
+        }
+    }
+
+    /// ГОВОРИТЬ ОТВЕТ ЦЕЛИ — [`Detecting::replying`] у свёрнутой цепочки.
+    pub fn replying(self, tap: reflex_core::Tap<Replied>) -> Speaking<C, T, H, S> {
+        Speaking {
+            detecting: self.detecting.replying(tap),
         }
     }
 
@@ -3596,6 +3669,7 @@ where
             #[cfg(feature = "telling")]
             telling,
             naming,
+            replying,
             parting,
             certifying,
             ..
@@ -3662,6 +3736,7 @@ where
             chain: name.as_str().into(),
             about,
             naming,
+            replying,
             parting,
             idle,
         };
@@ -3766,6 +3841,19 @@ where
             let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
             let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::PORT)) {
                 Observation::Seen(observed) => {
+                    // Ответ цели — наружу, в момент кадра, что его принёс; полный канал его роняет.
+                    let _lost_when_full =
+                        alive
+                            .replying
+                            .as_ref()
+                            .zip(observed.reply)
+                            .map(|(tap, reply)| {
+                                tap.offer(Replied {
+                                    flow: observed.flow,
+                                    reply,
+                                    at,
+                                })
+                            });
                     let (moved, letters) = grid.saw((observed.wire, edge), at);
                     (moved, letters, Some((observed.flow, observed.key)))
                 }
@@ -3932,6 +4020,8 @@ struct Alive<C: Bordered, T: Transport, S> {
     about: Option<(Fold<S>, TargetVoice<S>)>,
     /// Куда говорить имя разговора — один раз, когда ключ цели впервые стал именем.
     naming: Option<reflex_core::Tap<Named>>,
+    /// Куда говорить ответ цели — один раз на разговор ([`Reply`]).
+    replying: Option<reflex_core::Tap<Replied>>,
     /// Куда говорить об уходе разговора — по разу на снятый ключ, с причиной.
     parting: Option<reflex_core::Tap<Parted>>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
@@ -4333,6 +4423,7 @@ mod tests {
         let awaited = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Awaited,
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4341,6 +4432,7 @@ mod tests {
         let silent = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4349,6 +4441,7 @@ mod tests {
         let named = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("blocked.example".into()),
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4363,12 +4456,14 @@ mod tests {
         let nameless = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         };
         let crafted = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("10.0.0.1".into()),
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4436,6 +4531,7 @@ mod tests {
         Ident {
             dst: Addr(0x5DB8_D822),
             naming: Naming::Awaited,
+            replied: false,
             hello: Vec::new(),
             hello_at: None,
         }

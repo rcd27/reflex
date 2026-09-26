@@ -157,13 +157,15 @@ impl Distress {
             Distress::Blackhole { .. } => Relief::Answered,
             // Приветствие не подтверждено — снятие есть подтверждение, данных не требует.
             Distress::HelloDropped { .. } => Relief::Acknowledged,
-            // Цель не донесла (в том числе подтвердив приветствие) — снятие есть данные.
+            // Приветствие принято, ответ заглушён — снятие есть ответ цели своим приветствием (#348):
+            // байты сверх оценки заголовков — не ответ, 163 таких сошли за лечение 26.09.
+            Distress::HelloMuted { .. } => Relief::ServerHello,
+            // Цель не донесла — снятие есть данные.
             Distress::NoBytes
             | Distress::Rst
             | Distress::Swallowed { .. }
             | Distress::Unreached { .. }
-            | Distress::Dismissed { .. }
-            | Distress::HelloMuted { .. } => Relief::Delivered,
+            | Distress::Dismissed { .. } => Relief::Delivered,
             // Беда об имени, а не о разговоре; и подозрения, у которых снимать нечего.
             Distress::Poisoned
             | Distress::Retransmit { .. }
