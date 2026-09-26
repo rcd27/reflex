@@ -781,6 +781,12 @@ pub fn reply_at(client_port: u16, seq: u32, bytes: usize) -> Vec<u8> {
     from_target_at(client_port, 0x18, seq, &vec![0x41; bytes])
 }
 
+/// Сегмент цели с этой нагрузкой под этим номером: поток цели начинается с 1 (`handshake` — `SYN+ACK`
+/// с номером 0).
+pub fn answer_at(client_port: u16, seq: u32, payload: &[u8]) -> Vec<u8> {
+    from_target_at(client_port, 0x18, seq, payload)
+}
+
 /// Имя, записанное метками DNS: `<длина><байты>…<0>`.
 fn labelled(name: &str) -> Vec<u8> {
     let mut out = Vec::new();

@@ -472,8 +472,8 @@ pub struct Tcp;
 struct Ident {
     dst: Addr,
     naming: Naming<Box<str>>,
-    /// Цель уже ответила на этом разговоре — её первая запись сказана ([`Reply`]).
-    replied: bool,
+    /// Где начинается поток цели и сказана ли её первая запись ([`Reply`]).
+    replying: Replying,
     /// Куски КЛИЕНТСКОГО приветствия со сдвигами от его начала — пока имя не названо.
     ///
     /// Копятся потому, что `ClientHello` не обязан помещаться в один сегмент: замер на живом
@@ -496,6 +496,38 @@ struct Ident {
     hello: Vec<(u64, Vec<u8>)>,
     /// Номер первого байта приветствия — от него считаются сдвиги кусков.
     hello_at: Option<u32>,
+}
+
+/// ОТВЕТ ЦЕЛИ ГЛАЗАМИ РАЗГОВОРА. Первая запись цели — та, что начинается с первого байта её
+/// потока (`ISN+1` из `SYN+ACK`), а не первая пришедшая: потерянный или переставленный сегмент
+/// отдал бы разбору середину полёта сертификатов (`other_243` на канарейке 26.09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replying {
+    /// Начала потока цели не видели: первая запись неразличима, и её не судят.
+    Unanchored,
+    /// Поток цели начнётся с этого номера.
+    From(u32),
+    /// Первая запись разобрана.
+    Said,
+}
+
+impl Replying {
+    /// Шаг на сегменте цели: `SYN+ACK` ставит якорь, сегмент с якоря — первая запись.
+    fn heard(self, wire: &reflex_engine::parse::Wire<'_>) -> (Replying, Option<Reply>) {
+        match (self, wire.dir, wire.handshakes) {
+            (Replying::Unanchored | Replying::From(_), reflex_core::types::Dir::Down, true) => {
+                (Replying::From(wire.header.seq.wrapping_add(1)), None)
+            }
+            (Replying::From(start), reflex_core::types::Dir::Down, false)
+                if wire.header.seq == start && !wire.payload.is_empty() =>
+            {
+                (Replying::Said, Reply::of(wire.payload))
+            }
+            (replying, reflex_core::types::Dir::Down | reflex_core::types::Dir::Up, _) => {
+                (replying, None)
+            }
+        }
+    }
 }
 
 /// Потолок копления приветствия. `ClientHello` — одна запись TLS, а запись не бывает длиннее
@@ -687,17 +719,13 @@ impl Transport for Tcp {
         let ident = state.idents.entry(wire.flow).or_insert(Ident {
             dst: wire.dst,
             naming: Naming::Awaited,
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         });
         name_from_hello(ident, &wire);
-        // Первая нагрузка ЦЕЛИ на разговоре — её ответ; дальше разговор отвечен.
-        let reply = match (wire.dir, ident.replied) {
-            (reflex_core::types::Dir::Down, false) => Reply::of(wire.payload),
-            (reflex_core::types::Dir::Down, true) | (reflex_core::types::Dir::Up, _) => None,
-        };
-        ident.replied = ident.replied || reply.is_some();
+        let (replying, reply) = ident.replying.heard(&wire);
+        ident.replying = replying;
         Observation::Seen(Observed {
             flow: wire.flow,
             key: ident.key(),
@@ -1855,29 +1883,54 @@ pub struct Named {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
     ServerHello,
+    /// `HelloRetryRequest` (RFC 8446 §4.1.3): тот же тип рукопожатия, что у `ServerHello`, но цель
+    /// просит приветствие заново — ответом на то, что прошло, он не является.
+    HelloRetry,
     Alert {
         level: u8,
         description: u8,
     },
+    /// TLS-запись короче собственного заголовка: чем она была, не прочесть.
+    Cut,
     /// Запись иного рода — её тип (`content_type`).
     Other {
         content: u8,
     },
 }
 
+/// `random` у `HelloRetryRequest` — SHA-256 от «HelloRetryRequest» (RFC 8446 §4.1.3).
+const HELLO_RETRY: [u8; 32] = [
+    0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+    0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+];
+
+/// Где в записи лежит `random` приветствия цели: заголовок записи (5), тип и длина сообщения (4),
+/// `legacy_version` (2).
+const HELLO_RANDOM: std::ops::Range<usize> = 11..43;
+
 impl Reply {
-    /// Разбор начала ответа цели; пусто — не ответ.
+    /// Разбор начала ответа цели; пусто — не ответ. TLS — только запись версии 3.x.
     pub fn of(payload: &[u8]) -> Option<Reply> {
-        payload
-            .first()
-            .map(|content| match (*content, payload.get(5), payload.get(6)) {
-                (0x16, Some(0x02), _) => Reply::ServerHello,
-                (0x15, Some(level), Some(description)) => Reply::Alert {
+        payload.first().map(|content| {
+            match (*content, payload.get(1), payload.get(5), payload.get(6)) {
+                (0x16, Some(0x03), Some(0x02), _) => {
+                    payload.get(HELLO_RANDOM).map_or(Reply::Cut, |random| {
+                        match random == HELLO_RETRY {
+                            true => Reply::HelloRetry,
+                            false => Reply::ServerHello,
+                        }
+                    })
+                }
+                (0x15, Some(0x03), Some(level), Some(description)) => Reply::Alert {
                     level: *level,
                     description: *description,
                 },
-                (content, _handshake, _alert) => Reply::Other { content },
-            })
+                (0x15 | 0x16, Some(0x03), None, _) | (0x15, Some(0x03), Some(_), None) => {
+                    Reply::Cut
+                }
+                (content, _version, _handshake, _alert) => Reply::Other { content },
+            }
+        })
     }
 }
 
@@ -2683,9 +2736,9 @@ pub struct Whom<'a> {
     /// времени края нет. Клетка незнания здесь не украшение: «край не сняли» и «край показал нули»
     /// — разные вещи, и вторая внутри снимка тоже названа `Option`ами (§7).
     pub edge: Option<Counted>,
-    /// КРАЙ ПОСЛЕДНЕГО ПАКЕТА ЭТОГО РАЗГОВОРА — у слова узла сетки края нет, но у его разговора
-    /// он был: под какой маркой разговор шёл, ядро сказало с последним пакетом. `None` — пакетов с
-    /// краем у разговора не было.
+    /// КРАЙ ПОСЛЕДНЕГО ПАКЕТА ЭТОГО РАЗГОВОРА — только у слова без края: у слова узла сетки края
+    /// нет, но у его разговора он был, и марку ядро назвало с последним пакетом. У слова пакета —
+    /// `None`: его край в [`Whom::edge`], и двух ответов на один вопрос тип не держит.
     pub last: Option<LastEdge>,
 }
 
@@ -4194,7 +4247,10 @@ impl<C: Bordered, T: Transport, S: Word + Clone + PartialEq + 'static> Alive<C, 
             };
             for (key, flow, signals, evidence) in said {
                 let named = label(&key);
-                let last = self.edges.get(&flow).copied();
+                let last = counted
+                    .is_none()
+                    .then(|| self.edges.get(&flow).copied())
+                    .flatten();
                 for signal in signals {
                     effects.extend(voice.hears(
                         Whom {
@@ -4451,7 +4507,7 @@ mod tests {
         let awaited = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Awaited,
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4460,7 +4516,7 @@ mod tests {
         let silent = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4469,7 +4525,7 @@ mod tests {
         let named = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("blocked.example".into()),
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4484,14 +4540,14 @@ mod tests {
         let nameless = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Silent,
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         };
         let crafted = Ident {
             dst: Addr(0x0A00_0001),
             naming: Naming::Spoken("10.0.0.1".into()),
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         };
@@ -4559,7 +4615,7 @@ mod tests {
         Ident {
             dst: Addr(0x5DB8_D822),
             naming: Naming::Awaited,
-            replied: false,
+            replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
         }

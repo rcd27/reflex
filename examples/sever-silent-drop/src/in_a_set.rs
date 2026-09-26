@@ -356,5 +356,44 @@ mod tests {
                 .all(|note| note.last.is_some_and(|last| last.at <= note.at)),
             "край последнего пакета едет со словом и снят не позже слова: {heard:?}"
         );
+        assert!(
+            heard.iter().all(|note| note
+                .last
+                .is_some_and(|last| last.edge.down_packets == Some(2))),
+            "край ПОСЛЕДНЕГО пакета — после SYN и приветствия, а не после первого: {heard:?}"
+        );
+    }
+
+    /// Слово ПАКЕТА несёт свой край в `edge`, и края последнего пакета ему не дают: два ответа на
+    /// один вопрос тип не держит.
+    #[test]
+    fn a_word_spoken_on_a_packet_carries_no_last_edge() {
+        let heard: Vec<Note> = together()
+            .chain(
+                engine(
+                    Paper::new()
+                        .then_packet(syn(40106))
+                        .then_packet(request(40106))
+                        .then_stop(),
+                )
+                .from(Tcp)
+                .extract(Sni)
+                .detect(Silence::after(secs(0)))
+                .severing_addressed(|_whom: Whom<'_>, _word: &Distress| false),
+            )
+            .heard()
+            .collect();
+
+        assert!(
+            heard.iter().any(|note| note.edge.is_some()),
+            "слова на пакете обязаны быть — иначе проверка ниже пуста: {heard:?}"
+        );
+        assert!(
+            heard
+                .iter()
+                .filter(|note| note.edge.is_some())
+                .all(|note| note.last.is_none()),
+            "{heard:?}"
+        );
     }
 }
