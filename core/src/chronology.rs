@@ -104,6 +104,7 @@ pub fn due<K: Ord + Clone>(
 /// СЕРИИ: сколько неудач подряд у каждого рода с последнего сброса. Сбрасывает только явный
 /// [`Runs::reset`] — у времени правила сброса нет (Т3).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Runs<K: Ord>(BTreeMap<K, u32>);
 
 impl<K: Ord> Default for Runs<K> {
@@ -116,6 +117,19 @@ impl<K: Ord> Runs<K> {
     pub fn bumped(self, kind: K) -> Runs<K> {
         let count = self.of(&kind) + 1;
         Runs(with(self.0, kind, count))
+    }
+
+    /// Серия рода `kind` — ровно `count`; ноль — серии нет.
+    pub fn with(self, kind: K, count: u32) -> Runs<K> {
+        let rest = self.reset(&kind);
+        match count {
+            0 => rest,
+            count => Runs(with(rest.0, kind, count)),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn reset(self, kind: &K) -> Runs<K> {
