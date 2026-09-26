@@ -1881,11 +1881,13 @@ impl Reply {
     }
 }
 
-/// ОТВЕТ ЦЕЛИ НА РАЗГОВОРЕ — слово наружу, один раз на разговор.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// ОТВЕТ ЦЕЛИ НА РАЗГОВОРЕ — слово наружу, один раз на разговор. Край — того кадра, что принёс
+/// ответ: марка разговора в нём уже стоит, а снимков ядра о разговоре может ещё не быть.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replied {
     pub flow: Flow,
     pub reply: Reply,
+    pub edge: Option<Counted>,
     pub at: Instant,
 }
 
@@ -3851,6 +3853,7 @@ where
                                 tap.offer(Replied {
                                     flow: observed.flow,
                                     reply,
+                                    edge: edge.as_ref().map(Counted::of),
                                     at,
                                 })
                             });
