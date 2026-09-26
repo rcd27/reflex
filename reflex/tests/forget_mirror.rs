@@ -42,6 +42,10 @@ impl Transport for Watched {
             .push(flow.src.port());
         Tcp::forget(state, flow);
     }
+
+    fn holding(state: &Self::State, flow: &Flow) -> bool {
+        Tcp::holding(state, flow)
+    }
 }
 
 /// СРОК — второй рубеж уборки (§12.6). Разговор, замолчавший дольше порога, снимается таблицей, и

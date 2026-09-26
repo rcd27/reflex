@@ -269,3 +269,48 @@ pub trait CanAsk: crate::held::Terminal {
 pub trait CanRemember: crate::held::Terminal {
     fn remember(state: u32, accept: bool) -> Self::Answer;
 }
+
+/// ОТЛОЖИТЬ ВЕРДИКТ: пакет остаётся у носителя, ответ ему выносится позже — по знаку, выданному
+/// носителем, и в том порядке, в каком его вынесут. Предмет — приветствие из нескольких кусков, чьё
+/// имя лежит не в первом (#348): кусок, отпущенный до имени, уходит без решения и мимо движка.
+///
+/// Удержать умеет не всякий носитель: запись и сценарий пакета не держат, их знак — пустой тип
+/// ([`std::convert::Infallible`]), и отложить у них непредставимо, а не запрещено. Заявить, не
+/// назвав знака, нельзя:
+///
+/// ```compile_fail,E0046
+/// use reflex_core::capability::CanDefer;
+/// use reflex_core::held::{Answered, Delivered, Refused, Terminal};
+/// struct Hasty;
+/// impl Terminal for Hasty {
+///     type Carrier = ();
+///     type Answer = ();
+///     type Refusal = ();
+///     fn apply(&mut self, answered: Answered<(), ()>)
+///         -> Result<Delivered<()>, Refused<(), ()>> {
+///         Ok(Delivered { at: answered.at, answer: answered.answer })
+///     }
+/// }
+/// impl CanDefer for Hasty {}
+/// ```
+pub trait CanDefer: crate::held::Terminal {
+    /// Чем носитель узнаёт удержанный пакет, когда ответ ему выносят позже.
+    type Token: Clone + std::fmt::Debug;
+
+    /// Удержать этот пакет: знак, по которому ответ ему вынесут позже, и слово, вердикта не
+    /// выносящее. `None` — носитель его не держит, и ответ выносится сразу; слова для удержания,
+    /// которого нет, у такого носителя нет вовсе.
+    fn deferred(carrier: &Self::Carrier) -> Option<(Self::Token, Self::Answer)>;
+
+    /// Вынести удержанному пакету ответ.
+    fn settle(
+        &mut self,
+        token: Self::Token,
+        answer: Self::Answer,
+        at: std::time::Instant,
+    ) -> Settled<Self::Answer, Self::Refusal>;
+}
+
+/// Чем кончился ответ удержанному: мир принял или отказал — те же два значения, что у
+/// [`crate::held::Terminal::apply`].
+pub type Settled<A, E> = Result<crate::held::Delivered<A>, crate::held::Refused<A, E>>;

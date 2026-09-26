@@ -306,6 +306,24 @@ impl CanRemember for NfqueueCarrier {
     }
 }
 
+/// УДЕРЖАТЬ — тем же сокетом: знак и вердикт по нему живут у очереди (#348).
+impl reflex_core::capability::CanDefer for NfqueueCarrier {
+    type Token = <QueueSocket as reflex_core::capability::CanDefer>::Token;
+
+    fn deferred(carrier: &Self::Carrier) -> Option<(Self::Token, Answer)> {
+        <QueueSocket as reflex_core::capability::CanDefer>::deferred(carrier)
+    }
+
+    fn settle(
+        &mut self,
+        token: Self::Token,
+        answer: Answer,
+        at: std::time::Instant,
+    ) -> Result<Delivered<Answer>, Refused<Answer, Self::Refusal>> {
+        self.socket.settle(token, answer, at)
+    }
+}
+
 /// МЕТИТЬ ПАКЕТ и ПЕРЕПИСАТЬ ПАКЕТ — те же слова, что у сокета, тем же делегированием.
 ///
 /// Способность, которую держит сокет и не предъявляет носитель фасада, недостижима ровно так же,

@@ -75,8 +75,8 @@ use reflex_core::backend::Sink;
 /// Тому, кто просто строит цепочку, они не нужны и не мешают: способность требует `Act` в точке
 /// создания, а не потребитель в своей подписи.
 pub use reflex_core::capability::{
-    CanAsk, CanDrop, CanHold, CanInject, CanMark, CanModify, CanObserve, CanRefuse, CanRemember,
-    CanRewrite, CanSever,
+    CanAsk, CanDefer, CanDrop, CanHold, CanInject, CanMark, CanModify, CanObserve, CanRefuse,
+    CanRemember, CanRewrite, CanSever,
 };
 use reflex_core::certify::replays::replays;
 /// Вердикт восьмого закона (§10) — публичен, а не внутреннее имя: он стоит в [`Certified`], то есть
@@ -181,6 +181,7 @@ pub use smallvec::{smallvec, SmallVec};
 /// которого на Windows нет и быть не может (`parse`/`talk` портативны и живут в `reflex-engine`).
 /// Потребитель на Windows пишет `engine(WinDivert::filter(..))` — дверь называет носителя явно,
 /// переносимость даёт всё, что НИЖЕ первой строки.
+mod hold;
 #[cfg(unix)]
 mod nfqueue;
 pub mod pcap;
@@ -310,8 +311,10 @@ pub struct Cause(pub String);
 /// этом жив — внутренним помощником у носителей, которые и правда берут край из сообщения
 /// (`QueueSocket::serve`).
 pub trait IntoCarrier {
-    /// Открытый носитель — то, чем движок будет [`Serves::serve`]ить в ведущем цикле.
-    type Carrier: Serves;
+    /// Открытый носитель — то, чем движок будет [`Serves::serve`]ить в ведущем цикле. Удержать
+    /// пакет он обязан уметь сказать (`CanDefer`), даже если не умеет: носитель без очереди держит
+    /// пустым знаком, и цикл ему отвечает сразу (#348).
+    type Carrier: Serves + CanDefer;
     /// Открыть носитель. Здесь и только здесь читаются его предпосылки (для очереди — база
     /// таймаутов conntrack).
     fn open(self) -> Result<Self::Carrier, Cause>;
@@ -437,6 +440,11 @@ pub trait Transport {
     /// Транспорту без памяти по разговору писать тут нечего, и пустое тело — законный ответ; но
     /// сказать его он ОБЯЗАН, иначе следующий автор транспорта унаследует нынешнюю утечку молча.
     fn forget(state: &mut Self::State, flow: &Flow);
+
+    /// ЛИЧНОСТЬ РАЗГОВОРА ЕЩЁ СОБИРАЕТСЯ ИЗ КУСКОВ — пакеты его носитель удержит, пока она не
+    /// соберётся (#348): кусок, отпущенный до имени, уходит без решения, а решение по имени
+    /// принимает дверь. Транспорту, чья личность не собирается из кусков, держать нечего.
+    fn holding(state: &Self::State, flow: &Flow) -> bool;
 }
 
 /// Исход разбора кадра транспортом. Три клетки, потому что цикл отвечает на них ТРЕМЯ разными
@@ -692,6 +700,44 @@ impl Transport for Tcp {
         state.talks.forget(*flow);
         state.idents.remove(flow);
     }
+
+    /// Приветствие начато, имени в собранном ещё нет, и оно не собрано целиком: целое приветствие
+    /// без SNI имени не даст никогда, и держать его значило бы задержать человека даром.
+    fn holding(state: &TcpState, flow: &Flow) -> bool {
+        state.idents.get(flow).is_some_and(|ident| {
+            matches!(ident.naming, Naming::Awaited)
+                && !ident.hello.is_empty()
+                && !hello_whole(&reflex_core::splice::by_offset(&ident.hello))
+        })
+    }
+}
+
+/// СЛОВО НОСИТЕЛЮ: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и запомнить»
+/// неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший разбор своей рукой,
+/// держал вторую копию таблицы, расходившуюся молча. Памятка прибора и решение потребителя живут в
+/// РАЗНЫХ областях марки и ложатся ОДНИМ словом — тем же, каким пакет отпускается. Разведи их по
+/// двум путям, и вернулась бы та болезнь, от которой уходили: «ответили, но не запомнили». Порядок
+/// наложений безразличен ровно потому, что области не пересекаются — и это проверено при постройке,
+/// а не здесь, на горячем пути. Одно слово на сразу отвеченный пакет и на удержанный (#348).
+fn worded<K: CanHold + CanRemember>(
+    remembered: Option<u32>,
+    decided: Option<reflex_core::mark::Marked>,
+    mark: u32,
+) -> K::Answer {
+    match (remembered, decided) {
+        (Some(remembered), Some(decided)) => K::remember(decided.apply_to(remembered), true),
+        (Some(remembered), None) => K::remember(remembered, true),
+        (None, Some(decided)) => K::remember(decided.apply_to(mark), true),
+        (None, None) => K::release(),
+    }
+}
+
+/// Собрана ли TLS-запись приветствия целиком: длина записи — в её заголовке (RFC 8446 §5.1).
+fn hello_whole(spliced: &[u8]) -> bool {
+    spliced
+        .get(3..5)
+        .map(|length| 5 + usize::from(u16::from_be_bytes([length[0], length[1]])))
+        .is_some_and(|record| spliced.len() >= record)
 }
 
 /// Транспорт UDP: датаграммы, порт 53 (DNS). Имя цели — имя из DNS-запроса (оно в каждом сообщении,
@@ -740,6 +786,11 @@ impl Transport for Udp {
     /// Пустое тело написано, а не унаследовано умолчанием: умолчание в трейте разрешило бы
     /// следующему автору транспорта промолчать НЕ ПО ЭТОЙ причине, и утечка вернулась бы тихо.
     fn forget(_state: &mut UdpState, _flow: &Flow) {}
+
+    /// Имя DNS лежит в каждом сообщении целиком — собирать нечего, держать нечего.
+    fn holding(_state: &UdpState, _flow: &Flow) -> bool {
+        false
+    }
 }
 
 // ─── Приборы: ось `.detect` ───────────────────────────────────────────────────────────────────
@@ -2289,7 +2340,7 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> From<Speaking<C, T, H, S>>
 impl<C, T, H: MarkHome, S> Speaking<C, T, H, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
@@ -2660,7 +2711,7 @@ pub struct Running<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = D
 impl<C, T, F, H: MarkHome, S: Word + Clone + PartialEq + 'static> Running<C, T, F, H, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     // См. докблок `drive`: тождество ассоциированных путей края нужно явным, иначе `drive::<C,…>`
     // ниже не соберётся — компилятор не отождествляет их через сторонний `impl Bordered`.
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
@@ -2775,7 +2826,7 @@ trait Turn<S> {
 impl<C, T, S> Turn<S> for Heard<C, T, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
@@ -2869,7 +2920,7 @@ impl<S: Word + Clone + PartialEq + 'static> Together<S> {
     pub fn chain<C, T, H, D>(mut self, chain: D) -> Together<S>
     where
         C: Bordered + 'static,
-        C::Carrier: CanHold + CanRemember,
+        C::Carrier: CanHold + CanRemember + CanDefer,
         C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
         <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
         T: Transport + 'static,
@@ -3124,7 +3175,7 @@ pub struct Heard<C: Bordered, T: Transport, S = Distress> {
 impl<C, T, S> Heard<C, T, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
@@ -3161,7 +3212,7 @@ where
 impl<C, T, S> Iterator for Heard<C, T, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
@@ -3190,7 +3241,7 @@ where
 impl<C, T, H: MarkHome, S> Detecting<C, T, H, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
     <C::Carrier as Terminal>::Refusal: std::fmt::Debug,
     T: Transport,
@@ -3224,7 +3275,7 @@ pub struct Acting<C: Bordered, T: Transport, F, H: MarkHome = MarkSilent, S = Di
 impl<C, T, F, H: MarkHome, S: Word + Clone + PartialEq + 'static> Acting<C, T, F, H, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember + CanInject,
+    C::Carrier: CanHold + CanRemember + CanDefer + CanInject,
     // См. докблок `drive`: тождество ассоциированных путей края нужно явным, иначе `drive::<C,…>`
     // ниже не соберётся — компилятор не отождествляет их через сторонний `impl Bordered`.
     C::Carrier: Serves<Edge = <C as Bordered>::Edge>,
@@ -3445,7 +3496,7 @@ const MIN_IDLE: Duration = Duration::from_secs(10);
 fn drive<C, T, V, H: MarkHome, S>(chain: Detecting<C, T, H, S>, voice: &mut V) -> Report
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     // `Bordered::Edge` И край, что отдаёт `carrier.serve(...)`, — ОДИН тип по определению
     // блáнкетного `impl Bordered` (`type Edge = <C::Carrier as Serves>::Edge`), но связаны два
     // ассоциированных пути, и без явного тождества здесь компилятор их не отождествит — только
@@ -3507,6 +3558,8 @@ struct Turning<C: Bordered, T: Transport, S> {
     /// его `&mut` и в замыкании держит `&mut` на соседей. Разъятые поля компилятор различает,
     /// разъятые через `self` методы — нет.
     carrier: C::Carrier,
+    /// Пакеты разговоров, чья личность ещё собирается из кусков (#348).
+    holds: hold::Holds<<C::Carrier as CanDefer>::Token>,
     alive: Alive<C, T, S>,
     state: T::State,
     seam: Option<Interleave>,
@@ -3522,7 +3575,7 @@ struct Turning<C: Bordered, T: Transport, S> {
 impl<C, T, S> Turning<C, T, S>
 where
     C: Bordered,
-    C::Carrier: CanHold + CanRemember,
+    C::Carrier: CanHold + CanRemember + CanDefer,
     // `Bordered::Edge` И край, что отдаёт `carrier.serve(...)`, — ОДИН тип по определению
     // блáнкетного `impl Bordered` (`type Edge = <C::Carrier as Serves>::Edge`), но связаны два
     // ассоциированных пути, и без явного тождества здесь компилятор их не отождествит — только
@@ -3622,6 +3675,7 @@ where
 
         Ok(Turning {
             carrier,
+            holds: hold::Holds::default(),
             alive,
             state,
             seam,
@@ -3672,6 +3726,7 @@ where
         }
         let Turning {
             carrier,
+            holds,
             alive,
             state,
             seam,
@@ -3741,29 +3796,49 @@ where
             });
             #[cfg(not(feature = "telling"))]
             let decided: Option<reflex_core::mark::Marked> = None;
+            let flow = whose.as_ref().map(|(flow, _key)| *flow);
             let memo = alive.walk(letters, whose, seen, voice, &mut effects);
-            // Слово носителю: пакет идёт как шёл, а память — ТЕМ ЖЕ словом (§5: «отпустить и
-            // запомнить» неделимо). Разбирать это слово в вердикт — дело носителя: фасад, писавший
-            // разбор своей рукой, держал вторую копию таблицы, расходившуюся молча.
-            // Памятка прибора и решение потребителя живут в РАЗНЫХ областях марки и ложатся ОДНИМ
-            // словом — тем же, каким пакет отпускается. Разведи их по двум путям, и вернулась бы та
-            // болезнь, от которой уходили: «ответили, но не запомнили» (§5, «отпустить и запомнить»
-            // неделимо). Порядок наложений безразличен ровно потому, что области не пересекаются —
-            // и это проверено при постройке, а не здесь, на горячем пути.
-            match (memo, decided) {
-                (Some(memo), Some(decided)) => <C::Carrier as CanRemember>::remember(
-                    decided.apply_to(memo.apply_to(mark)),
-                    true,
-                ),
-                (Some(memo), None) => {
-                    <C::Carrier as CanRemember>::remember(memo.apply_to(mark), true)
+            let remembered = memo.map(|memo| memo.apply_to(mark));
+            // УДЕРЖАТЬ (#348): личность разговора ещё собирается из кусков — или за ним уже
+            // держатся его прежние пакеты, и порядок прихода обязан дожить до вердикта.
+            let holding = flow
+                .filter(|flow| T::holding(state, flow) || holds.holds(flow))
+                .filter(|flow| holds.room(flow));
+            match (holding, <C::Carrier as CanDefer>::deferred(held.carrier())) {
+                (Some(flow), Some((token, deferred))) => {
+                    holds.kept(
+                        flow,
+                        hold::Kept {
+                            token,
+                            remembered,
+                            mark,
+                            at,
+                        },
+                        decided,
+                    );
+                    deferred
                 }
-                (None, Some(decided)) => {
-                    <C::Carrier as CanRemember>::remember(decided.apply_to(mark), true)
+                (Some(_), None) | (None, Some(_) | None) => {
+                    worded::<C::Carrier>(remembered, decided, mark)
                 }
-                (None, None) => <C::Carrier as CanHold>::release(),
             }
         });
+
+        // Удержанное отпускается по порядку прихода ОДНИМ решением — тем, что дверь вынесла на
+        // последнем пакете разговора: к собранному имени оно и относится.
+        holds
+            .released(|flow| T::holding(state, flow), Instant::now())
+            .into_iter()
+            .flat_map(|holding| {
+                let decided = holding.decided;
+                holding.kept.into_iter().map(move |kept| (kept, decided))
+            })
+            .for_each(|(kept, decided)| {
+                let answer = worded::<C::Carrier>(kept.remembered, decided, kept.mark);
+                if let Err(refused) = carrier.settle(kept.token, answer, kept.at) {
+                    report!("удержанному вердикт не ушёл: {:?}", refused.why);
+                }
+            });
 
         // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
         // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.

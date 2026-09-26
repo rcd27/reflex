@@ -207,6 +207,24 @@ impl CanRefuse for PcapFile {
     fn refuse() {}
 }
 
+/// Запись пакета не держит: ответить ей нечем, удержать — тем более.
+impl crate::CanDefer for PcapFile {
+    type Token = std::convert::Infallible;
+
+    fn deferred(_carrier: &Vec<u8>) -> Option<(std::convert::Infallible, ())> {
+        None
+    }
+
+    fn settle(
+        &mut self,
+        token: std::convert::Infallible,
+        _answer: (),
+        _at: std::time::Instant,
+    ) -> Result<Delivered<()>, Refused<(), Never>> {
+        match token {}
+    }
+}
+
 impl Serves for PcapFile {
     /// Своего края у файла нет — его даст `Local` поверх. Не `CtEdge`: conntrack тут неоткуда
     /// взять, а подделывать источник, которого нет, нельзя.

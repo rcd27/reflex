@@ -293,4 +293,9 @@ impl Transport for Quic {
     fn forget(state: &mut QuicState, flow: &Flow) {
         state.talks.remove(flow);
     }
+
+    /// Имя QUIC здесь не собирается из кусков: удержанию нечего ждать.
+    fn holding(_state: &QuicState, _flow: &Flow) -> bool {
+        false
+    }
 }

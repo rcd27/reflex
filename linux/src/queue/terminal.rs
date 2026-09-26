@@ -99,15 +99,20 @@ pub enum Answer {
     /// значит не запомнить, и это довод к хранителю, а не забывчивость: слить их — та же работа,
     /// что слила вердикт с памятью в `Remembered`.
     Rewritten(Vec<u8>),
+    /// Вердикта сейчас нет: пакет остаётся в очереди ядра, ответ ему вынесут по его `id`
+    /// ([`reflex_core::capability::CanDefer`]).
+    Deferred,
 }
 
-/// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре.
-/// Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод слова в байты вердикта свидетельствовало
-/// бы только живое ядро (§9: выше значения, ниже мир). `apply` лишь исполняет это решение сокетом.
-pub(crate) fn asked(answer: &Answer) -> Told<'_> {
+/// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре;
+/// `None` — не уйдёт ничего, пакет удержан. Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод
+/// слова в байты вердикта свидетельствовало бы только живое ядро (§9: выше значения, ниже мир).
+/// `apply` лишь исполняет это решение сокетом.
+pub(crate) fn asked(answer: &Answer) -> Option<Told<'_>> {
     match answer {
-        Answer::Pass => Told::passing(true),
-        Answer::Stop => Told::passing(false),
+        Answer::Deferred => None,
+        Answer::Pass => Some(Told::passing(true)),
+        Answer::Stop => Some(Told::passing(false)),
         // ПАМЯТЬ КЛАДЁТСЯ ОБЕИМИ ДВЕРЬМИ, И ВТОРАЯ — НЕ ИЗБЫТОЧНОСТЬ, А ЕДИНСТВЕННАЯ РАБОТАЮЩАЯ
         // НА УРЕЗАННОМ ЯДРЕ.
         //
@@ -123,23 +128,23 @@ pub(crate) fn asked(answer: &Answer) -> Told<'_> {
         // (`ct mark set meta mark` ниже очереди по приоритету), и память ложится там, где ядро
         // умеет. Обе двери дешевле одной проверки: способность ядра нельзя установить изнутри
         // вердикта, а молчание неотличимо от успеха.
-        Answer::Remembered { accept, state } => Told {
+        Answer::Remembered { accept, state } => Some(Told {
             state: Some(CtMark(*state)),
             skb_mark: Some(SkbMark(*state)),
             ..Told::passing(*accept)
-        },
+        }),
         // Помеченный пакет ОТПУСКАЕТСЯ: метка есть приказ маршрутизатору, а дропнутому пакету
         // маршрут не нужен. Как и у подмены ниже, `accept` здесь следствие слова, не выбор.
-        Answer::Marked(mark) => Told {
+        Answer::Marked(mark) => Some(Told {
             skb_mark: Some(SkbMark(*mark)),
             ..Told::passing(true)
-        },
+        }),
         // Подменённый пакет ОТПУСКАЕТСЯ: дропнуть его и одновременно подменить бессмысленно —
         // выпускать было бы нечего.
-        Answer::Rewritten(bytes) => Told {
+        Answer::Rewritten(bytes) => Some(Told {
             payload: Some(bytes),
             ..Told::passing(true)
-        },
+        }),
     }
 }
 
@@ -178,19 +183,44 @@ impl Terminal for QueueSocket {
         &mut self,
         answered: Answered<Held, Answer>,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
-        let id = answered.carrier.packet.id;
-        let told = asked(&answered.answer);
-        match self.verdict(id, told.accept, told.state, told.payload, told.skb_mark) {
-            Ok(()) => Ok(Delivered {
-                at: answered.at,
-                answer: answered.answer,
-            }),
-            Err(why) => Err(Refused {
-                at: answered.at,
-                answer: answered.answer,
-                why,
-            }),
+        self.answered_by_id(answered.carrier.packet.id, answered.answer, answered.at)
+    }
+}
+
+impl QueueSocket {
+    /// Ответ пакету `id` — сразу или удержанному позже: слово одно, дверь к ядру одна.
+    fn answered_by_id(
+        &self,
+        id: u32,
+        answer: Answer,
+        at: Instant,
+    ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
+        let sent = asked(&answer).map_or(Ok(()), |told| {
+            self.verdict(id, told.accept, told.state, told.payload, told.skb_mark)
+        });
+        match sent {
+            Ok(()) => Ok(Delivered { at, answer }),
+            Err(why) => Err(Refused { at, answer, why }),
         }
+    }
+}
+
+/// УДЕРЖАТЬ ПАКЕТ ОЧЕРЕДЬ УМЕЕТ: ядро держит его, пока не придёт вердикт с его `id`, и отпускает
+/// в порядке вердиктов.
+impl reflex_core::capability::CanDefer for QueueSocket {
+    type Token = u32;
+
+    fn deferred(carrier: &Held) -> Option<(u32, Answer)> {
+        Some((carrier.packet.id, Answer::Deferred))
+    }
+
+    fn settle(
+        &mut self,
+        token: u32,
+        answer: Answer,
+        at: Instant,
+    ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
+        self.answered_by_id(token, answer, at)
     }
 }
 
@@ -393,16 +423,31 @@ mod tests {
                 accept: true,
                 state: 0x1234
             }),
-            Told {
+            Some(Told {
                 accept: true,
                 state: Some(CtMark(0x1234)),
                 payload: None,
                 skb_mark: Some(SkbMark(0x1234))
-            }
+            })
         );
-        assert_eq!(asked(&Answer::Pass).accept, true);
-        assert_eq!(asked(&Answer::Pass).state, None);
-        assert_eq!(asked(&Answer::Stop).accept, false);
+        assert_eq!(verdict(&Answer::Pass).accept, true);
+        assert_eq!(verdict(&Answer::Pass).state, None);
+        assert_eq!(verdict(&Answer::Stop).accept, false);
+    }
+
+    /// Вердикт слова, которое его несёт.
+    fn verdict(answer: &Answer) -> Told<'_> {
+        let Some(told) = asked(answer) else {
+            panic!("слово {answer:?} обязано нести вердикт")
+        };
+        told
+    }
+
+    /// УДЕРЖАННОМУ НИЧЕГО НЕ УХОДИТ: вердикт пакету вынесут позже, по его `id`, — отпусти его
+    /// сейчас, и кусок приветствия уйдёт без решения мимо движка (#348).
+    #[test]
+    fn a_deferred_packet_is_told_nothing() {
+        assert_eq!(asked(&Answer::Deferred), None);
     }
 
     /// МЕТКА ПАКЕТА ДОЕЗЖАЕТ ДО ВЕРДИКТА И НЕ ПУТАЕТСЯ С ПАМЯТЬЮ.
@@ -412,7 +457,7 @@ mod tests {
     /// следующим пакетом, вместо приказа маршрутизатору — и ни одна сборка об этом не скажет.
     #[test]
     fn marking_reaches_the_verdict() {
-        let told = asked(&Answer::Marked(0x00FF_0001));
+        let told = verdict(&Answer::Marked(0x00FF_0001));
 
         assert!(
             told.accept,
@@ -434,7 +479,7 @@ mod tests {
         // приказа маршрутизатору. А память в поле метки — законная ВТОРАЯ ДВЕРЬ: прямая запись
         // `ct mark` требует `CONFIG_NETFILTER_NETLINK_GLUE_CT`, которого на урезанной сборке нет, и
         // там памяти больше положить нечем. Переносит её обратно в разговор правило ниже очереди.
-        let remembered = asked(&Answer::Remembered {
+        let remembered = verdict(&Answer::Remembered {
             accept: true,
             state: 0x00FF_0001,
         });
@@ -457,7 +502,7 @@ mod tests {
     fn rewriting_reaches_the_verdict() {
         let fresh = vec![0x45u8, 0x00, 0xAB, 0xCD];
         let answer = Answer::Rewritten(fresh.clone());
-        let told = asked(&answer);
+        let told = verdict(&answer);
 
         assert!(told.accept, "подменённый пакет отпускается: дропать нечего");
         assert_eq!(

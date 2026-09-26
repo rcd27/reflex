@@ -442,6 +442,29 @@ where
     }
 }
 
+/// Дом в процессе пакета не держит: его вердикт переводится в слово носителя на месте, и удержание
+/// потребовало бы второго закона перевода. Держит носитель с домом в ядре (#348).
+impl<C> crate::capability::CanDefer for Local<C>
+where
+    C: Terminal + CanHold + CanRefuse,
+    C::Carrier: Observed,
+{
+    type Token = std::convert::Infallible;
+
+    fn deferred(_carrier: &C::Carrier) -> Option<(std::convert::Infallible, Answer)> {
+        None
+    }
+
+    fn settle(
+        &mut self,
+        token: std::convert::Infallible,
+        _answer: Answer,
+        _at: std::time::Instant,
+    ) -> Result<crate::held::Delivered<Answer>, crate::held::Refused<Answer, C::Refusal>> {
+        match token {}
+    }
+}
+
 impl<C> Serves for Local<C>
 where
     C: Serves + CanHold + CanRefuse,

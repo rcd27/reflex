@@ -488,6 +488,24 @@ impl CanRefuse for Paper {
     }
 }
 
+/// Сценарий пакета не держит: провод сочинён, и ответ ему никуда не уходит.
+impl crate::CanDefer for Paper {
+    type Token = std::convert::Infallible;
+
+    fn deferred(_carrier: &Self::Carrier) -> Option<(std::convert::Infallible, PaperAnswer)> {
+        None
+    }
+
+    fn settle(
+        &mut self,
+        token: std::convert::Infallible,
+        _answer: PaperAnswer,
+        _at: Instant,
+    ) -> Result<Delivered<PaperAnswer>, Refused<PaperAnswer, Self::Refusal>> {
+        match token {}
+    }
+}
+
 impl CanRemember for Paper {
     fn remember(state: u32, accept: bool) -> PaperAnswer {
         PaperAnswer::Remembered { accept, state }
