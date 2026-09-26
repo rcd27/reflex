@@ -294,13 +294,13 @@ pub trait CanRemember: crate::held::Terminal {
 /// impl CanDefer for Hasty {}
 /// ```
 pub trait CanDefer: crate::held::Terminal {
-    /// Чем носитель узнаёт удержанный пакет, когда ответ ему выносят позже.
-    type Token: Clone + std::fmt::Debug;
+    /// Чем носитель узнаёт удержанный пакет, когда ответ ему выносят позже. Не копируется: ответ
+    /// удержанному выносится ровно раз, и второй вердикт по тому же знаку ушёл бы чужому пакету.
+    type Token: std::fmt::Debug;
 
-    /// Удержать этот пакет: знак, по которому ответ ему вынесут позже, и слово, вердикта не
-    /// выносящее. `None` — носитель его не держит, и ответ выносится сразу; слова для удержания,
-    /// которого нет, у такого носителя нет вовсе.
-    fn deferred(carrier: &Self::Carrier) -> Option<(Self::Token, Self::Answer)>;
+    /// Удержать этот пакет. `None` — носитель его не держит, и ответ выносится сразу; слова для
+    /// удержания, которого нет, у такого носителя нет вовсе.
+    fn deferred(carrier: &Self::Carrier) -> Option<Deferred<Self::Token, Self::Answer>>;
 
     /// Вынести удержанному пакету ответ.
     fn settle(
@@ -309,6 +309,14 @@ pub trait CanDefer: crate::held::Terminal {
         answer: Self::Answer,
         at: std::time::Instant,
     ) -> Settled<Self::Answer, Self::Refusal>;
+}
+
+/// УДЕРЖАНИЕ ПАКЕТА: знак, по которому ответ ему вынесут позже, и слово носителю, вердикта не
+/// выносящее.
+#[derive(Debug)]
+pub struct Deferred<T, A> {
+    pub token: T,
+    pub answer: A,
 }
 
 /// Чем кончился ответ удержанному: мир принял или отказал — те же два значения, что у

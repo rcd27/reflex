@@ -124,8 +124,11 @@ impl CanRemember for Queue {
 impl CanDefer for Queue {
     type Token = u32;
 
-    fn deferred(carrier: &Frame) -> Option<(u32, Word)> {
-        Some((carrier.id, Word::Held))
+    fn deferred(carrier: &Frame) -> Option<reflex_core::capability::Deferred<u32, Word>> {
+        Some(reflex_core::capability::Deferred {
+            token: carrier.id,
+            answer: Word::Held,
+        })
     }
 
     fn settle(
@@ -228,6 +231,23 @@ fn verdicts(frames: Vec<Vec<u8>>, idle: u32) -> Vec<(u32, Word, When)> {
     verdicts
 }
 
+/// Вердикты прогона без двери решений.
+fn verdicts_without_a_door(frames: Vec<Vec<u8>>, idle: u32) -> Vec<(u32, Word, When)> {
+    let journal: Verdicts = Arc::new(Mutex::new(Vec::new()));
+    engine(Queued {
+        frames,
+        verdicts: journal.clone(),
+        idle,
+    })
+    .from(Tcp)
+    .extract(Sni)
+    .detect(own(Always))
+    .on(|_target: &str, _distress: Distress| {})
+    .run();
+    let verdicts = journal.lock().expect("журнал").clone();
+    verdicts
+}
+
 /// Решение двери, которое несёт вердикт.
 fn decided(word: &Word) -> Option<u32> {
     match word {
@@ -322,6 +342,84 @@ fn a_whole_hello_without_a_name_is_not_held() {
     assert_eq!(
         when(&verdicts),
         [(0, When::Now), (1, When::Now)],
+        "{verdicts:?}"
+    );
+}
+
+/// Приветствие мелкими кусками, больше, чем помещается: место кончилось — удержанное отпускается, и
+/// порядок вердиктов остаётся порядком прихода (прежде кусок сверх места обгонял удержанных).
+#[test]
+fn pieces_beyond_the_room_keep_their_order() {
+    let hello = hello();
+    let piece = hello.len().div_ceil(12);
+    let frames: Vec<Vec<u8>> = std::iter::once(syn(40001))
+        .chain(
+            hello
+                .chunks(piece)
+                .enumerate()
+                .map(|(nth, chunk)| segment(40001, 1 + (nth * piece) as u32, chunk)),
+        )
+        .collect();
+    let arrived: Vec<u32> = (0..frames.len() as u32).collect();
+    let verdicts = verdicts(frames, 2);
+
+    let told: Vec<u32> = verdicts.iter().map(|(id, _word, _when)| *id).collect();
+    assert_eq!(told, arrived, "вердикты — в порядке прихода: {verdicts:?}");
+}
+
+/// Хвост приветствия пришёл раньше головы и ушёл неудержанным: имени без него не собрать, и голову
+/// не держат — иначе человек ждал бы срок ни за что.
+#[test]
+fn a_tail_ahead_of_the_head_does_not_hold_the_head() {
+    let hello = hello();
+    let (head, tail) = hello.split_at(20);
+    let verdicts = verdicts(
+        vec![
+            syn(40001),
+            segment(40001, 1 + head.len() as u32, tail),
+            segment(40001, 1, head),
+        ],
+        2,
+    );
+
+    assert_eq!(
+        when(&verdicts),
+        [(0, When::Now), (1, When::Now), (2, When::Now)],
+        "{verdicts:?}"
+    );
+}
+
+/// Без двери решений не держат: решения, ради которого держат, взяться неоткуда.
+#[test]
+fn without_a_door_nothing_is_held() {
+    let hello = hello();
+    let (first, second) = hello.split_at(20);
+    let verdicts = verdicts_without_a_door(
+        vec![
+            syn(40001),
+            segment(40001, 1, first),
+            segment(40001, 1 + first.len() as u32, second),
+        ],
+        2,
+    );
+
+    assert_eq!(
+        when(&verdicts),
+        [(0, When::Now), (1, When::Now), (2, When::Now)],
+        "{verdicts:?}"
+    );
+}
+
+/// Источник кончился раньше срока — удержанное отпускается до ухода, а не бросается ядру.
+#[test]
+fn what_is_held_is_released_when_the_source_ends() {
+    let hello = hello();
+    let (first, _lost) = hello.split_at(20);
+    let verdicts = verdicts(vec![syn(40001), segment(40001, 1, first)], 0);
+
+    assert_eq!(
+        when(&verdicts),
+        [(0, When::Now), (1, When::Later)],
         "{verdicts:?}"
     );
 }

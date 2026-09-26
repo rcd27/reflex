@@ -211,7 +211,9 @@ impl CanRefuse for PcapFile {
 impl crate::CanDefer for PcapFile {
     type Token = std::convert::Infallible;
 
-    fn deferred(_carrier: &Vec<u8>) -> Option<(std::convert::Infallible, ())> {
+    fn deferred(
+        _carrier: &Vec<u8>,
+    ) -> Option<reflex_core::capability::Deferred<std::convert::Infallible, ()>> {
         None
     }
 

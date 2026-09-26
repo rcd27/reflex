@@ -451,7 +451,9 @@ where
 {
     type Token = std::convert::Infallible;
 
-    fn deferred(_carrier: &C::Carrier) -> Option<(std::convert::Infallible, Answer)> {
+    fn deferred(
+        _carrier: &C::Carrier,
+    ) -> Option<crate::capability::Deferred<std::convert::Infallible, Answer>> {
         None
     }
 

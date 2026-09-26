@@ -10,7 +10,7 @@ mod wire;
 
 pub use crate::conntrack::TimeoutBase;
 pub use openings::Openings;
-pub use socket::{listened, QueueError, QueueSocket};
+pub use socket::{listened, QueueError, QueueSocket, QUEUE_MAXLEN};
 pub use terminal::{Answer, Held};
 pub use wire::{
     bind_request, cmd_body, flags_request, incoming_of, params_body, params_request, verdict_body,

@@ -492,7 +492,9 @@ impl CanRefuse for Paper {
 impl crate::CanDefer for Paper {
     type Token = std::convert::Infallible;
 
-    fn deferred(_carrier: &Self::Carrier) -> Option<(std::convert::Infallible, PaperAnswer)> {
+    fn deferred(
+        _carrier: &Self::Carrier,
+    ) -> Option<reflex_core::capability::Deferred<std::convert::Infallible, PaperAnswer>> {
         None
     }
 

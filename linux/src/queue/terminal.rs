@@ -100,9 +100,19 @@ pub enum Answer {
     /// что слила вердикт с памятью в `Remembered`.
     Rewritten(Vec<u8>),
     /// Вердикта сейчас нет: пакет остаётся в очереди ядра, ответ ему вынесут по его `id`
-    /// ([`reflex_core::capability::CanDefer`]).
-    Deferred,
+    /// ([`reflex_core::capability::CanDefer`]). Свидетельство строит только удержание: иначе
+    /// слово, поданное в `apply` мимо него, оставило бы пакет в ядре навсегда без знака.
+    Deferred(Deferral),
 }
+
+/// Свидетельство удержания — строится только [`reflex_core::capability::CanDefer::deferred`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deferral(());
+
+/// ЗНАК УДЕРЖАННОГО ПАКЕТА — его номер в очереди ядра. Строится только удержанием и не
+/// копируется: вердикт по нему выносится ровно раз.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Pending(u32);
 
 /// Что уйдёт ядру по слову ответа: пропустить ли пакет и какое состояние оставить на разговоре;
 /// `None` — не уйдёт ничего, пакет удержан. Чистое решение, ОТДЕЛЁННОЕ от отправки — иначе перевод
@@ -110,7 +120,7 @@ pub enum Answer {
 /// `apply` лишь исполняет это решение сокетом.
 pub(crate) fn asked(answer: &Answer) -> Option<Told<'_>> {
     match answer {
-        Answer::Deferred => None,
+        Answer::Deferred(_held) => None,
         Answer::Pass => Some(Told::passing(true)),
         Answer::Stop => Some(Told::passing(false)),
         // ПАМЯТЬ КЛАДЁТСЯ ОБЕИМИ ДВЕРЬМИ, И ВТОРАЯ — НЕ ИЗБЫТОЧНОСТЬ, А ЕДИНСТВЕННАЯ РАБОТАЮЩАЯ
@@ -208,19 +218,23 @@ impl QueueSocket {
 /// УДЕРЖАТЬ ПАКЕТ ОЧЕРЕДЬ УМЕЕТ: ядро держит его, пока не придёт вердикт с его `id`, и отпускает
 /// в порядке вердиктов.
 impl reflex_core::capability::CanDefer for QueueSocket {
-    type Token = u32;
+    type Token = Pending;
 
-    fn deferred(carrier: &Held) -> Option<(u32, Answer)> {
-        Some((carrier.packet.id, Answer::Deferred))
+    fn deferred(carrier: &Held) -> Option<reflex_core::capability::Deferred<Pending, Answer>> {
+        Some(reflex_core::capability::Deferred {
+            token: Pending(carrier.packet.id),
+            answer: Answer::Deferred(Deferral(())),
+        })
     }
 
     fn settle(
         &mut self,
-        token: u32,
+        token: Pending,
         answer: Answer,
         at: Instant,
     ) -> Result<Delivered<Answer>, Refused<Answer, QueueError>> {
-        self.answered_by_id(token, answer, at)
+        let Pending(id) = token;
+        self.answered_by_id(id, answer, at)
     }
 }
 
@@ -447,7 +461,7 @@ mod tests {
     /// сейчас, и кусок приветствия уйдёт без решения мимо движка (#348).
     #[test]
     fn a_deferred_packet_is_told_nothing() {
-        assert_eq!(asked(&Answer::Deferred), None);
+        assert_eq!(asked(&Answer::Deferred(Deferral(()))), None);
     }
 
     /// МЕТКА ПАКЕТА ДОЕЗЖАЕТ ДО ВЕРДИКТА И НЕ ПУТАЕТСЯ С ПАМЯТЬЮ.

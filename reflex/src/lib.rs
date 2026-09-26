@@ -496,6 +496,12 @@ struct Ident {
     hello: Vec<(u64, Vec<u8>)>,
     /// Номер первого байта приветствия — от него считаются сдвиги кусков.
     hello_at: Option<u32>,
+    /// Склейка кусков — вся запись приветствия, а имени в ней нет: ждать больше нечего. Считается
+    /// там, где кусок кладётся, а не при каждом вопросе «держать ли».
+    whole: bool,
+    /// Кусок клиента пришёл раньше головы приветствия и ушёл неудержанным: имя без него не
+    /// соберётся, а держать голову значит заставить человека ждать срок ни за что.
+    tail_ahead: bool,
 }
 
 /// ОТВЕТ ЦЕЛИ ГЛАЗАМИ РАЗГОВОРА. Первая запись цели — та, что начинается с первого байта её
@@ -595,10 +601,12 @@ fn name_from_hello(ident: &mut Ident, wire: &reflex_engine::parse::Wire<'_>) {
         if ident.hello_at != Some(wire.header.seq) {
             ident.hello_at = Some(wire.header.seq);
             ident.hello = Vec::new();
+            ident.whole = false;
         }
     }
     let Some(starts) = ident.hello_at else {
         // Начала ещё не видели: копить не от чего. Это НЕ «имени нет» — это «мы не с начала».
+        ident.tail_ahead = true;
         return;
     };
     // Сдвиг от начала приветствия. Байты РАНЬШЕ начала (повтор прошлого) сюда не лягут — обёртка
@@ -645,9 +653,13 @@ fn name_from_hello(ident: &mut Ident, wire: &reflex_engine::parse::Wire<'_>) {
             ident.hello.push((at, wire.payload.to_vec()));
         }
     }
-    if let Some(sni) = tls::extract_sni(&reflex_core::splice::by_offset(&ident.hello)) {
-        ident.naming = Naming::Spoken(sni.into());
-        ident.hello = Vec::new();
+    let spliced = reflex_core::splice::by_offset(&ident.hello);
+    match tls::extract_sni(&spliced) {
+        Some(sni) => {
+            ident.naming = Naming::Spoken(sni.into());
+            ident.hello = Vec::new();
+        }
+        None => ident.whole = hello_whole(&spliced),
     }
 }
 
@@ -722,6 +734,8 @@ impl Transport for Tcp {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         });
         name_from_hello(ident, &wire);
         let (replying, reply) = ident.replying.heard(&wire);
@@ -747,7 +761,8 @@ impl Transport for Tcp {
         state.idents.get(flow).is_some_and(|ident| {
             matches!(ident.naming, Naming::Awaited)
                 && !ident.hello.is_empty()
-                && !hello_whole(&reflex_core::splice::by_offset(&ident.hello))
+                && !ident.whole
+                && !ident.tail_ahead
         })
     }
 }
@@ -764,12 +779,28 @@ fn worded<K: CanHold + CanRemember>(
     decided: Option<reflex_core::mark::Marked>,
     mark: u32,
 ) -> K::Answer {
-    match (remembered, decided) {
-        (Some(remembered), Some(decided)) => K::remember(decided.apply_to(remembered), true),
-        (Some(remembered), None) => K::remember(remembered, true),
-        (None, Some(decided)) => K::remember(decided.apply_to(mark), true),
-        (None, None) => K::release(),
-    }
+    remembered
+        .or(decided.map(|_decided| mark))
+        .map(|state| decided.map_or(state, |decided| decided.apply_to(state)))
+        .map_or_else(K::release, |state| K::remember(state, true))
+}
+
+/// Удержанное — носителю, по порядку прихода ОДНИМ решением: тем, что дверь вынесла на последнем
+/// пакете разговора, — к собранному имени оно и относится.
+fn settled<K: CanDefer + CanHold + CanRemember>(
+    carrier: &mut K,
+    released: Vec<hold::Released<K::Token>>,
+) where
+    K::Refusal: std::fmt::Debug,
+{
+    released
+        .into_iter()
+        .for_each(|hold::Released { kept, decided }| {
+            let answer = worded::<K>(kept.remembered, decided, kept.mark);
+            if let Err(refused) = carrier.settle(kept.token, answer, kept.at) {
+                report!("удержанному вердикт не ушёл: {:?}", refused.why);
+            }
+        });
 }
 
 /// Собрана ли TLS-запись приветствия целиком: длина записи — в её заголовке (RFC 8446 §5.1).
@@ -3861,6 +3892,9 @@ where
             // Источник кончился — судим по набранному окну, даже неполному. Иначе на КОНЕЧНОМ
             // носителе закон молчал бы обо всём прогоне, и молчание читалось бы как согласие.
             self.alive.certified(&self.seeds, true);
+            // Удержанное — до ухода: с закрытием носителя ядро сбросило бы его, и клиенту остался
+            // бы повтор.
+            settled(&mut self.carrier, self.holds.drain());
             return false;
         }
         // ВНЕПОЛОСНОЕ ЗНАНИЕ ЗАБИРАЕТСЯ ПЕРЕД РАБОТОЙ, а не после: решение, положенное автором до
@@ -3957,49 +3991,53 @@ where
             });
             #[cfg(not(feature = "telling"))]
             let decided: Option<reflex_core::mark::Marked> = None;
+            #[cfg(feature = "telling")]
+            let door = home.is_some();
+            #[cfg(not(feature = "telling"))]
+            let door = false;
             let flow = whose.as_ref().map(|(flow, _key)| *flow);
             let memo = alive.walk(letters, whose, seen, voice, &mut effects);
             let remembered = memo.map(|memo| memo.apply_to(mark));
-            // УДЕРЖАТЬ (#348): личность разговора ещё собирается из кусков — или за ним уже
-            // держатся его прежние пакеты, и порядок прихода обязан дожить до вердикта.
-            let holding = flow
-                .filter(|flow| T::holding(state, flow) || holds.holds(flow))
-                .filter(|flow| holds.room(flow));
-            match (holding, <C::Carrier as CanDefer>::deferred(held.carrier())) {
-                (Some(flow), Some((token, deferred))) => {
-                    holds.kept(
+            // УДЕРЖАТЬ (#348) — только при двери решений: без неё решения, ради которого держат,
+            // взяться неоткуда. Держат, пока личность собирается из кусков или за разговором уже
+            // держатся его прежние пакеты: порядок прихода обязан дожить до вердикта.
+            let deferred = flow
+                .filter(|_door| door)
+                .filter(|flow| (T::holding(state, flow) || holds.holds(flow)) && holds.room(flow))
+                .and_then(|flow| {
+                    <C::Carrier as CanDefer>::deferred(held.carrier())
+                        .map(|deferred| (flow, deferred))
+                });
+            match deferred {
+                Some((flow, deferred)) => {
+                    holds.hold(
                         flow,
                         hold::Kept {
-                            token,
+                            token: deferred.token,
                             remembered,
                             mark,
                             at,
                         },
                         decided,
                     );
-                    deferred
+                    deferred.answer
                 }
-                (Some(_), None) | (None, Some(_) | None) => {
-                    worded::<C::Carrier>(remembered, decided, mark)
-                }
+                None => worded::<C::Carrier>(remembered, decided, mark),
             }
         });
 
-        // Удержанное отпускается по порядку прихода ОДНИМ решением — тем, что дверь вынесла на
-        // последнем пакете разговора: к собранному имени оно и относится.
-        holds
-            .released(|flow| T::holding(state, flow), Instant::now())
-            .into_iter()
-            .flat_map(|holding| {
-                let decided = holding.decided;
-                holding.kept.into_iter().map(move |kept| (kept, decided))
-            })
-            .for_each(|(kept, decided)| {
-                let answer = worded::<C::Carrier>(kept.remembered, decided, kept.mark);
-                if let Err(refused) = carrier.settle(kept.token, answer, kept.at) {
-                    report!("удержанному вердикт не ушёл: {:?}", refused.why);
-                }
-            });
+        // Срок удержания — временем НОСИТЕЛЯ: момент ответа или дыры, а у тишины — срок, который
+        // он обязался выждать. Стенные часы внутри решения сделали бы его непроверяемым.
+        let moment = match &outcome {
+            Served::Answered(Ok(delivered)) => delivered.at,
+            Served::Answered(Err(refused)) => refused.at,
+            Served::Torn(at) => *at,
+            Served::Idle | Served::Blind => until,
+        };
+        settled(
+            carrier,
+            holds.release(|flow| T::holding(state, flow), moment),
+        );
 
         // Ответ уже прошёл сквозь приборы внутри решения; безответный исход рождает буквы здесь, и
         // рождает их ОДНА дверь шва на исход — гоняет же их тот же `walk`, что и пакет.
@@ -4510,6 +4548,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         };
         assert_eq!(label(&awaited.key()), "10.0.0.1");
 
@@ -4519,6 +4559,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         };
         assert_eq!(label(&silent.key()), "10.0.0.1");
 
@@ -4528,6 +4570,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         };
         assert_eq!(label(&named.key()), "blocked.example");
     }
@@ -4543,6 +4587,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         };
         let crafted = Ident {
             dst: Addr(0x0A00_0001),
@@ -4550,6 +4596,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         };
 
         assert_eq!(nameless.key(), TargetKey::Unnamed(Addr(0x0A00_0001)));
@@ -4618,6 +4666,8 @@ mod tests {
             replying: Replying::Unanchored,
             hello: Vec::new(),
             hello_at: None,
+            whole: false,
+            tail_ahead: false,
         }
     }
 

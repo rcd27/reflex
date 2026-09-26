@@ -310,7 +310,9 @@ impl CanRemember for NfqueueCarrier {
 impl reflex_core::capability::CanDefer for NfqueueCarrier {
     type Token = <QueueSocket as reflex_core::capability::CanDefer>::Token;
 
-    fn deferred(carrier: &Self::Carrier) -> Option<(Self::Token, Answer)> {
+    fn deferred(
+        carrier: &Self::Carrier,
+    ) -> Option<reflex_core::capability::Deferred<Self::Token, Answer>> {
         <QueueSocket as reflex_core::capability::CanDefer>::deferred(carrier)
     }
 

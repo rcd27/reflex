@@ -13,15 +13,22 @@ use reflex_core::types::Flow;
 /// повторит его сам. Дольше — человек платит задержкой разговора, который мы всё равно не назвали.
 pub(crate) const HOLD: Duration = Duration::from_secs(1);
 
-/// Сколько разговоров держать разом. Сверх — пакет отвечается сразу, как без удержания: держать
-/// всё значило бы переполнить очередь ядра, а она при переполнении роняет пакеты человека.
-pub(crate) const HOLDING: usize = 1_024;
+/// Сколько разговоров держать разом. Сверх — пакет отвечается сразу, как без удержания.
+pub(crate) const HOLDING: usize = 512;
 
-/// Сколько пакетов одного разговора держать — столько, сколько кусков приветствия копит склейка.
-pub(crate) const PIECES: usize = crate::HELLO_PIECES;
+/// Сколько пакетов одного разговора держать: приветствие с ключом kyber (~1,8 КБ) — два-три куска
+/// при MSS 1400, до восьми при MSS 536. Разговор, заполнивший место, отпускается в том же обороте,
+/// и следующий его пакет встаёт за отпущенными — порядок переживает переполнение.
+pub(crate) const PIECES: usize = 8;
+
+/// Всё удержание в пакетах — вдвое меньше очереди ядра: при её переполнении `bypass` пускает
+/// пакеты человека мимо движка, а место нужно и живому потоку.
+#[cfg(unix)]
+const _FITS_THE_QUEUE: () =
+    assert!(HOLDING * PIECES * 2 <= reflex_linux::queue::QUEUE_MAXLEN as usize);
 
 /// Удержанный пакет: знак носителя и всё, из чего собирается его ответ, кроме решения двери.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Kept<K> {
     pub token: K,
     /// Память приборов, уже наложенная на марку разговора; `None` — приборам нечего помнить.
@@ -31,12 +38,19 @@ pub(crate) struct Kept<K> {
     pub at: Instant,
 }
 
-/// Удержанное одного разговора.
-#[derive(Debug, Clone)]
-pub(crate) struct Holding<K> {
-    pub kept: Vec<Kept<K>>,
-    /// Решение двери на последнем пакете — оно и выносится всем удержанным.
+/// Отпущенный пакет и решение двери, которым отпущен весь его разговор.
+#[derive(Debug)]
+pub(crate) struct Released<K> {
+    pub kept: Kept<K>,
     pub decided: Option<Marked>,
+}
+
+/// Удержанное одного разговора.
+#[derive(Debug)]
+struct Holding<K> {
+    kept: Vec<Kept<K>>,
+    /// Решение двери на последнем пакете — оно и выносится всем удержанным.
+    decided: Option<Marked>,
     since: Instant,
 }
 
@@ -65,7 +79,7 @@ impl<K> Holds<K> {
     }
 
     /// Удержать пакет. Решение двери — последнее виденное: к имени оно и относится.
-    pub fn kept(&mut self, flow: Flow, kept: Kept<K>, decided: Option<Marked>) {
+    pub fn hold(&mut self, flow: Flow, kept: Kept<K>, decided: Option<Marked>) {
         let since = kept.at;
         let holding = self.0.entry(flow).or_insert(Holding {
             kept: Vec::new(),
@@ -76,16 +90,40 @@ impl<K> Holds<K> {
         holding.decided = decided;
     }
 
-    /// Разговоры, которые пора отпустить: личность собралась (`holding` ложь) или срок вышел.
-    pub fn released(&mut self, holding: impl Fn(&Flow) -> bool, now: Instant) -> Vec<Holding<K>> {
+    /// Отпустить разговоры, которые пора: личность собралась (`holding` ложь), срок вышел к
+    /// моменту носителя `now` или место кончилось.
+    pub fn release(&mut self, holding: impl Fn(&Flow) -> bool, now: Instant) -> Vec<Released<K>> {
         let due: Vec<Flow> = self
             .0
             .iter()
             .filter(|(flow, held)| {
-                !holding(flow) || now.saturating_duration_since(held.since) >= HOLD
+                !holding(flow)
+                    || now.saturating_duration_since(held.since) >= HOLD
+                    || held.kept.len() >= PIECES
             })
             .map(|(flow, _held)| *flow)
             .collect();
-        due.iter().filter_map(|flow| self.0.remove(flow)).collect()
+        due.iter()
+            .filter_map(|flow| self.0.remove(flow))
+            .flat_map(Holding::released)
+            .collect()
+    }
+
+    /// Отпустить всё: носитель уходит, и ядро сбросило бы удержанное вместе с ним.
+    pub fn drain(&mut self) -> Vec<Released<K>> {
+        self.0
+            .drain()
+            .flat_map(|(_flow, holding)| holding.released())
+            .collect()
+    }
+}
+
+impl<K> Holding<K> {
+    /// Удержанное разговора — по порядку прихода, с решением, которым отпущен весь разговор.
+    fn released(self) -> impl Iterator<Item = Released<K>> {
+        let decided = self.decided;
+        self.kept
+            .into_iter()
+            .map(move |kept| Released { kept, decided })
     }
 }

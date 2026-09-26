@@ -20,7 +20,7 @@ const NETLINK_NETFILTER: c_int = 12;
 const COPY_RANGE: u16 = 0xFFFF;
 /// Ёмкость очереди в пакетах — подушка на время, пока потребитель думает над показанием. Довод и
 /// числа при заявке (`open`).
-const QUEUE_MAXLEN: u32 = 8192;
+pub const QUEUE_MAXLEN: u32 = 8192;
 const BUFFER: usize = 64 * 1024;
 
 /// Мутант ЗАМЕРА №1 (Д8, T13): сузить ёмкость очереди, чтобы `queue_dropped` мог доказанно уйти
