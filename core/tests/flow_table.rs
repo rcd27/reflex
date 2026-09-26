@@ -342,9 +342,8 @@ fn a_machine_that_holds_a_decision_outlives_the_idle_timeout() {
 
     let t0 = Instant::now();
     let idle = Duration::from_secs(600);
-    let mut table: FlowTable<Holder, u16> = FlowTable::new(idle, 1024, |port: &u16| Holder {
-        holds: *port == 1,
-    });
+    let mut table: FlowTable<Holder, u16> =
+        FlowTable::new(idle, 1024, |port: &u16| Holder { holds: *port == 1 });
     let seen = make_segment(40000, 443, TcpFlags::ACK);
     table.process(1, &seen, t0);
     table.process(2, &seen, t0);
