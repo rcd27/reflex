@@ -314,6 +314,55 @@ fn a_machine_that_declared_the_end_leaves_without_waiting_out_the_idle_timeout()
     );
 }
 
+/// МАШИНА, ДЕРЖАЩАЯ РЕШЕНИЕ В МИРЕ, ПРОСТОЕМ НЕ СНИМАЕТСЯ (#352): её слово стоит у двери и
+/// действует без неё, и сними её простой — решение осталось бы без судьи. Не держащая уходит, как
+/// уходила.
+#[test]
+fn a_machine_that_holds_a_decision_outlives_the_idle_timeout() {
+    #[derive(Debug, Clone, Default)]
+    struct Holder {
+        holds: bool,
+    }
+
+    impl reflex_core::detector::Ended for Holder {
+        fn holds(&self) -> bool {
+            self.holds
+        }
+    }
+
+    impl Mealy for Holder {
+        type In = DetectorEvent<TcpSegment>;
+        type Out = SmallVec<[Count; 2]>;
+        type Log = ();
+
+        fn step(self, _event: Self::In) -> (Self, Self::Out, ()) {
+            (self, SmallVec::new(), ())
+        }
+    }
+
+    let t0 = Instant::now();
+    let idle = Duration::from_secs(600);
+    let mut table: FlowTable<Holder, u16> = FlowTable::new(idle, 1024, |port: &u16| Holder {
+        holds: *port == 1,
+    });
+    let seen = make_segment(40000, 443, TcpFlags::ACK);
+    table.process(1, &seen, t0);
+    table.process(2, &seen, t0);
+
+    let _spoken = table.each(DetectorEvent::Tick {
+        node: 0,
+        at: t0 + idle + Duration::from_secs(1),
+    });
+
+    assert!(table.get(&1).is_some(), "держащая решение пережила простой");
+    assert!(table.get(&2).is_none(), "не держащая ушла по простою");
+    assert_eq!(
+        table.departed(),
+        vec![(2, Departure::Idle)],
+        "уход объявлен только у не держащей"
+    );
+}
+
 /// ПОТОЛОК ДЕРЖИТ ПАМЯТЬ КОНЕЧНОЙ ДАЖЕ ТОГДА, КОГДА НИКТО НЕ МОЛЧИТ.
 ///
 /// Срок снимает ЗАМОЛЧАВШИХ, и против потока говорящих он бессилен: скан портов, раздача торрента,

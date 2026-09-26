@@ -186,7 +186,8 @@ where
         for (key, machine) in machines.drain() {
             let (machine, said, noted) = machine.step(letter.clone());
             spoken.push((key.clone(), (said, noted)));
-            match idle_by(last_seen, *idle_timeout, &key, at) {
+            // Держащая решение машина простоем не снимается ([`Ended::holds`]).
+            match idle_by(last_seen, *idle_timeout, &key, at) && !machine.holds() {
                 true => {
                     last_seen.remove(&key);
                     departed.push((key, Departure::Idle));
