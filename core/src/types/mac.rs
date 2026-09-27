@@ -10,8 +10,8 @@ impl std::str::FromStr for Mac {
     fn from_str(text: &str) -> Result<Mac, ()> {
         text.split(':')
             .map(|byte| {
-                (1..=2)
-                    .contains(&byte.len())
+                // Знак `+` `from_str_radix` принимает — цифры проверяются сами.
+                ((1..=2).contains(&byte.len()) && byte.bytes().all(|b| b.is_ascii_hexdigit()))
                     .then(|| u8::from_str_radix(byte, 16).ok())
                     .flatten()
                     .ok_or(())
@@ -50,6 +50,7 @@ mod tests {
             "60:e3:27:f7:bb:af:00",
             "60:e3:27:f7:bb:aff",
             "60:e3:27:f7:bb:zz",
+            "+1:+2:+3:+4:+5:+6",
             "",
         ]
         .iter()

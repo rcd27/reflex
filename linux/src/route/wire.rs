@@ -76,8 +76,9 @@ pub(crate) fn neighbour_withdrawal(index: u32, hop: Ipv4Addr, seq: u32) -> Vec<u
 pub(crate) fn settled_of(reply: &[u8]) -> Settled {
     match portion_of(reply, |_kind, _body| None::<()>) {
         Portion::Done(_) => Settled::Acked,
+        // Обрезанный `NLMSG_ERROR` обход читает кодом 0 — это не отказ, а нечитаемый ответ.
+        Portion::Failed(0) | Portion::More(_) => Settled::Unread,
         Portion::Failed(code) => Settled::Refused(code.saturating_neg()),
-        Portion::More(_) => Settled::Unread,
     }
 }
 
@@ -308,6 +309,13 @@ mod tests {
         assert_eq!(settled_of(&error(0)), Settled::Acked);
         assert_eq!(settled_of(&error(-1)), Settled::Refused(1));
         assert_eq!(settled_of(&[]), Settled::Unread);
+        let truncated: Vec<u8> = (HDR as u32)
+            .to_ne_bytes()
+            .into_iter()
+            .chain(NLMSG_ERROR.to_ne_bytes())
+            .chain([0u8; 10])
+            .collect();
+        assert_eq!(settled_of(&truncated), Settled::Unread);
     }
 
     fn address_reply(attr: u16, octets: [u8; 4]) -> Vec<u8> {
