@@ -4,7 +4,7 @@
 
 use std::net::Ipv4Addr;
 
-use reflex_core::types::{IpProtocol, Protocol};
+use reflex_core::types::{IpProtocol, Mac, Protocol};
 
 use crate::netlink::{attrs, portion_of, tlv, u32_at, Portion, HDR};
 
@@ -26,6 +26,60 @@ const RTA_DPORT: u16 = 29;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const RTN_LOCAL: u8 = 2;
+const RTM_NEWNEIGH: u16 = 28;
+const RTM_DELNEIGH: u16 = 29;
+const NLM_F_ACK: u16 = 0x004;
+const NLM_F_REPLACE: u16 = 0x100;
+const NLM_F_CREATE: u16 = 0x400;
+const NDA_DST: u16 = 1;
+const NDA_LLADDR: u16 = 2;
+const NUD_PERMANENT: u16 = 0x80;
+
+/// Чем кончилась запись в таблицу соседей.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Settled {
+    Acked,
+    /// Положительный errno отказа.
+    Refused(i32),
+    /// Ни подтверждения, ни отказа.
+    Unread,
+}
+
+fn ndmsg(index: u32, state: u16) -> impl Iterator<Item = u8> {
+    [AF_INET, 0, 0, 0]
+        .into_iter()
+        .chain(index.to_ne_bytes())
+        .chain(state.to_ne_bytes())
+        .chain([0, 0])
+}
+
+/// Постоянный сосед `hop` → `mac` на устройстве `index`.
+pub(crate) fn neighbour_request(index: u32, hop: Ipv4Addr, mac: Mac, seq: u32) -> Vec<u8> {
+    let body: Vec<u8> = ndmsg(index, NUD_PERMANENT)
+        .chain(tlv(NDA_DST, &hop.octets()))
+        .chain(tlv(NDA_LLADDR, &mac.0))
+        .collect();
+    message(
+        RTM_NEWNEIGH,
+        NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE,
+        seq,
+        &body,
+    )
+}
+
+/// Снять соседа `hop` с устройства `index`.
+pub(crate) fn neighbour_withdrawal(index: u32, hop: Ipv4Addr, seq: u32) -> Vec<u8> {
+    let body: Vec<u8> = ndmsg(index, 0).chain(tlv(NDA_DST, &hop.octets())).collect();
+    message(RTM_DELNEIGH, NLM_F_REQUEST | NLM_F_ACK, seq, &body)
+}
+
+pub(crate) fn settled_of(reply: &[u8]) -> Settled {
+    match portion_of(reply, |_kind, _body| None::<()>) {
+        Portion::Done(_) => Settled::Acked,
+        Portion::Failed(code) => Settled::Refused(code.saturating_neg()),
+        Portion::More(_) => Settled::Unread,
+    }
+}
 
 /// Куда ядро повело бы пакет. Алфавит закрыт: всякий ответ маршрутизатора ложится в клетку, и
 /// нечитаемый — тоже (`Unread`), а не в «ушёл в ногу» по умолчанию.
@@ -204,6 +258,56 @@ mod tests {
         assert!(found.contains(&(RTA_MARK, 0x10000u32.to_ne_bytes().to_vec())));
         assert!(found.contains(&(RTA_IP_PROTO, vec![17])));
         assert!(found.contains(&(RTA_DPORT, vec![0x01, 0xBB])));
+    }
+
+    /// Сосед ставится постоянным и ЗАМЕНЯЕТ прежнего: шлюз за мостом бывает переучен, и отказ ядра
+    /// «уже есть» оставил бы впрыск на старом MAC. Подтверждение просится явно — без него запись,
+    /// отвергнутая ядром, выглядела бы поставленной.
+    #[test]
+    fn a_neighbour_is_permanent_replaces_the_old_one_and_asks_for_an_ack() {
+        const NDMSG: usize = 12;
+        let asked = neighbour_request(
+            7,
+            Ipv4Addr::new(169, 254, 34, 9),
+            Mac([0x02, 0x81, 0, 0, 0, 1]),
+            3,
+        );
+        assert_eq!(u16_at(&asked, 4), Some(RTM_NEWNEIGH));
+        assert_eq!(
+            u16_at(&asked, 6),
+            Some(NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE)
+        );
+        assert_eq!(asked[HDR], AF_INET);
+        assert_eq!(u32_at(&asked, HDR + 4), Some(7));
+        assert_eq!(u16_at(&asked, HDR + 8), Some(NUD_PERMANENT));
+        let found: Vec<(u16, Vec<u8>)> = attrs(&asked[HDR + NDMSG..])
+            .map(|(k, v)| (k, v.to_vec()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (NDA_DST, vec![169, 254, 34, 9]),
+                (NDA_LLADDR, vec![0x02, 0x81, 0, 0, 0, 1])
+            ]
+        );
+        let withdrawn = neighbour_withdrawal(7, Ipv4Addr::new(169, 254, 34, 9), 4);
+        assert_eq!(u16_at(&withdrawn, 4), Some(RTM_DELNEIGH));
+        assert_eq!(u16_at(&withdrawn, 6), Some(NLM_F_REQUEST | NLM_F_ACK));
+    }
+
+    /// Ответ на запись — подтверждение, отказ или ничего; «ничего» не читается успехом.
+    #[test]
+    fn a_neighbour_answer_is_an_ack_a_refusal_or_unread() {
+        let error = |code: i32| {
+            (((HDR + 4) as u32).to_ne_bytes().into_iter())
+                .chain(NLMSG_ERROR.to_ne_bytes())
+                .chain([0u8; 10])
+                .chain(code.to_ne_bytes())
+                .collect::<Vec<u8>>()
+        };
+        assert_eq!(settled_of(&error(0)), Settled::Acked);
+        assert_eq!(settled_of(&error(-1)), Settled::Refused(1));
+        assert_eq!(settled_of(&[]), Settled::Unread);
     }
 
     fn address_reply(attr: u16, octets: [u8; 4]) -> Vec<u8> {

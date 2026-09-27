@@ -8,7 +8,7 @@ use libc::{
 };
 use reflex_core::types::Protocol;
 
-use super::wire::{locals_of, locals_request, route_request, went_of, Went};
+use super::wire::{locals_of, locals_request, route_request, settled_of, went_of, Settled, Went};
 use crate::netlink::{errno, Portion};
 
 const BUFFER: usize = 64 * 1024;
@@ -42,6 +42,12 @@ impl Router {
     ) -> Result<Went, i32> {
         self.ask(&route_request(dst, mark, l4, port, 1))?;
         self.portion().map(|reply| went_of(&reply))
+    }
+
+    /// Записать в таблицу соседей и прочитать, чем кончилось.
+    pub(crate) fn written(&self, request: &[u8]) -> Result<Settled, i32> {
+        self.ask(request)?;
+        self.portion().map(|reply| settled_of(&reply))
     }
 
     /// Свои адреса. Конец объявляет ядро (`NLMSG_DONE`); пустое чтение — тоже конец, иначе обход
