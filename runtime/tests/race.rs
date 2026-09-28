@@ -75,6 +75,26 @@ async fn the_deadline_ends_the_race_without_a_winner() {
     );
 }
 
+/// Пустой список — не частный случай «все отказали»: `flight` не наполнится НИКОГДА, событий для
+/// `select!` не будет вовсе, и единственный будильник, способный его разбудить, — срок. Гонка обязана
+/// увидеть это ДО того, как сядет ждать: рассвет проверяется по `Instant`, а не по факту возврата —
+/// возврат случился бы и после полного `deadline`, только с опозданием на 4,5 с.
+#[tokio::test(start_paused = true)]
+async fn an_empty_candidate_list_returns_at_once_not_at_the_deadline() {
+    let started = tokio::time::Instant::now();
+    let raced = race(Vec::<u8>::new(), ms(500), 3, ms(4500), |k| async move {
+        Ok::<u8, String>(k)
+    })
+    .await;
+    assert_eq!(raced.won, None);
+    assert!(raced.tried.is_empty());
+    assert_eq!(
+        started.elapsed(),
+        Duration::ZERO,
+        "пустой список не должен досиживать deadline"
+    );
+}
+
 /// Ширина держит число одновременных попыток.
 #[tokio::test(start_paused = true)]
 async fn no_more_than_width_attempts_fly_at_once() {
