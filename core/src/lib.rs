@@ -35,6 +35,9 @@ pub mod notice;
 pub mod parse;
 pub mod remedy;
 pub mod serves;
+// SOCKS5 UDP (RFC 1928 §7) — грамматика заголовка `UDP ASSOCIATE` для впрыска звонков Telegram
+// через xray. Не под фичей: зависимостей нет, только `std::net`.
+pub mod socks_udp;
 // СКЛЕЙКА ПО СДВИГАМ — один закон на QUIC и на TLS поверх TCP. Не под фичей: зависимостей нет, а
 // нужен он обоим.
 pub mod splice;
