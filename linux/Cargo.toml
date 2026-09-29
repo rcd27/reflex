@@ -44,7 +44,10 @@ tracing = "0.1"
 futures = "0.3"
 # ФИЧА `process` СНЯТА ВМЕСТЕ С ЗАПУСКОМ ЧУЖОГО ДВИЖКА ОБХОДА (05.09.2026): она стояла только ради
 # него, и после его выноса в дереве не осталось ни одного `tokio::process`.
-tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "io-util", "net"] }
+# `macros` — ЗАДАЧА 3 (#355): клиент SOCKS5 UDP ASSOCIATE ждёт закрытие TCP-связки управления И
+# приём датаграммы ОДНИМ ожиданием (`tokio::select!`); без фичи в ОСНОВНЫХ зависимостях макрос был
+# виден только тестам (фича стояла в dev-dependencies) — обычная сборка библиотеки не собралась бы.
+tokio = { version = "1", features = ["time", "sync", "rt", "rt-multi-thread", "io-util", "net", "macros"] }
 libc = "0.2"
 aya = { version = "0.13", optional = true }
 reflex-linux-common = { path = "../linux-common", optional = true }
