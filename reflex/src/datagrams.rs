@@ -10,6 +10,7 @@
 
 use reflex_core::types::Flow;
 use reflex_core::word::TargetKey;
+use reflex_core::Reads;
 
 use crate::{Observation, Observed, Read, Sides, Transport, Unread};
 
@@ -26,6 +27,17 @@ pub struct DatagramWire {
     pub flow: Flow,
     /// Полезная нагрузка UDP, без заголовков.
     pub payload: Box<[u8]>,
+}
+
+/// Сужение из ПАРЫ «провод и вид края» (§4): прибор датаграмм читает саму датаграмму, край ему
+/// безразличен. Проекция первого множителя, точечная по тому же доводу, что у `DnsMessage`:
+/// общий закон «читается из пары, если читается из половины» конфликтует с рефлексивным
+/// `Reads<A> for A`. Без неё свой прибор над `Datagrams` обязан был бы читать пару целиком и
+/// тащить параметр края, о котором ничего не знает.
+impl<V> Reads<(DatagramWire, V)> for DatagramWire {
+    fn read(wide: &(DatagramWire, V)) -> Option<DatagramWire> {
+        Some(wide.0.clone())
+    }
 }
 
 impl Transport for Datagrams {

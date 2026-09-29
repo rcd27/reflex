@@ -8,44 +8,40 @@
 
 use std::net::SocketAddr;
 
-use reflex::scenario::{log, taken, Log, Paper, PaperEdge};
+use reflex::scenario::{log, taken, Log, Paper};
 use reflex::*;
 
 const PHONE: [u8; 4] = [192, 168, 1, 100];
 const PHONE_PORT: u16 = 54209;
 
-/// Четвёрка разговора, как её видит прибор: концы и протокол ПЕЧАТЬЮ. Протокол печатью, потому что
-/// тип его фасад не отдаёт, а сверять надо ровно то, что увидит потребитель.
-type Ends = (SocketAddr, SocketAddr, String);
-
 /// Что дошло до прибора. Четвёрка и груз — у датаграммы, причина — у непрочитанного кадра.
+/// Четвёрка — сам [`Flow`], а не её печать: фасад отдаёт и его, и [`Protocol`], так что сверяется
+/// ровно то, что увидит потребитель.
 #[derive(Debug, Clone, PartialEq)]
 enum Heard {
-    Datagram(Ends, Vec<u8>),
+    Datagram(Flow, Vec<u8>),
     Opaque(String),
 }
 
 /// Прибор-свидетель: пишет каждую дошедшую букву. Встаёт публичной дверью `own(…)`, как встанет
-/// прибор потребителя, — своей двери для теста не заводим.
+/// прибор потребителя, — своей двери для теста не заводим. Алфавит — голая датаграмма, без края:
+/// так свидетель заодно держит сужение пары `(DatagramWire, край)` до провода, которым встаёт
+/// любой прибор над `Datagrams`.
 #[derive(Clone, Copy)]
 struct Witness {
     heard: Log<Heard>,
 }
 
 impl Mealy for Witness {
-    type In = DetectorEvent<(DatagramWire, Option<PaperEdge>)>;
+    type In = DetectorEvent<DatagramWire>;
     type Out = SmallVec<[Distress; 2]>;
     type Log = ();
 
     fn step(self, event: Self::In) -> (Self, Self::Out, ()) {
         let heard = match event {
-            DetectorEvent::Packet {
-                input: (wire, _edge),
-                ..
-            } => Some(Heard::Datagram(
-                (wire.flow.src, wire.flow.dst, wire.flow.protocol.to_string()),
-                wire.payload.to_vec(),
-            )),
+            DetectorEvent::Packet { input: wire, .. } => {
+                Some(Heard::Datagram(wire.flow, wire.payload.to_vec()))
+            }
             DetectorEvent::Opaque { why, .. } => Some(Heard::Opaque(format!("{why:?}"))),
             DetectorEvent::Tick { .. } | DetectorEvent::Torn { .. } => None,
         };
@@ -91,12 +87,12 @@ fn tcp(dst: [u8; 4], dst_port: u16) -> Vec<u8> {
 }
 
 /// Четвёрка, которую обязан увидеть прибор: телефон — клиент, рефлектор — сервер, протокол UDP.
-fn flow(dst: [u8; 4], dst_port: u16) -> Ends {
-    (
-        SocketAddr::from((PHONE, PHONE_PORT)),
-        SocketAddr::from((dst, dst_port)),
-        "UDP".to_string(),
-    )
+fn flow(dst: [u8; 4], dst_port: u16) -> Flow {
+    Flow {
+        src: SocketAddr::from((PHONE, PHONE_PORT)),
+        dst: SocketAddr::from((dst, dst_port)),
+        protocol: Protocol::Udp,
+    }
 }
 
 /// Прогнать бумагу через цепочку датаграмм и отдать всё, что услышал прибор.
