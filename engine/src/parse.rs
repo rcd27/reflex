@@ -234,13 +234,37 @@ pub fn framed(frame: &[u8]) -> Framed<'_> {
     }
 }
 
-/// Правило сторон по порту — то, которым живёт очередь. `Some(true)` — к серверу, `Some(false)` — от
-/// него; `None` — порт сторон не разводит (оба конца чужие или оба свои). Не отказ разбора, а отказ
+/// Правило сторон по порту — то, которым живёт очередь соединений ([`Sides::ByServerPort`]).
+/// `Some(true)` — к серверу, `Some(false)` — от него; `None` — порт сторон не разводит (оба конца чужие или оба свои). Не отказ разбора, а отказ
 /// ПРАВИЛА (оттого `Option`): у другого входа на том же кадре правило своё и работает.
 pub fn upward(ends: &Ends, server_port: u16) -> Option<bool> {
     match (ends.dst_port == server_port, ends.src_port == server_port) {
         (false, false) | (true, true) => None,
         (up, _down) => Some(up),
+    }
+}
+
+/// ПРАВИЛО СТОРОН ОЧЕРЕДИ — кто называет, какой из концов сервер. Закрытым типом, а не портом со
+/// значением «любой»: у звонка сервер слушает какой угодно порт (рефлектор Telegram — 596–599,
+/// 1400, …), и порт тогда сторону не называет вовсе — её называет правило ядра, положившее в
+/// очередь только путь к серверу. Два источника знания — два варианта; порт-заглушка слил бы их в
+/// одно число, и «к серверу на порт 0» читалось бы наравне с настоящим портом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sides {
+    /// Сторону называет порт сервера: очередь несёт оба направления и чужой трафик вперемешку.
+    ByServerPort(u16),
+    /// Сторону назвала ОЧЕРЕДЬ: правило ядра кладёт в неё только путь клиента к серверу, значит всё
+    /// пришедшее идёт вверх, и сервер — адресат кадра.
+    NamedByQueue,
+}
+
+impl Sides {
+    /// К серверу ли идёт кадр с этими концами. `None` — правило сторон его не разводит.
+    pub fn upward(self, ends: &Ends) -> Option<bool> {
+        match self {
+            Sides::ByServerPort(port) => upward(ends, port),
+            Sides::NamedByQueue => Some(true),
+        }
     }
 }
 
@@ -297,13 +321,13 @@ pub fn datagrammed(payload: Payload<'_>, upward: bool) -> Datagram<'_> {
     }
 }
 
-pub fn read(frame: &[u8], server_port: u16) -> Read<'_> {
+pub fn read(frame: &[u8], sides: Sides) -> Read<'_> {
     match framed(frame) {
-        Framed::Tcp(segment) => match upward(&segment.header.ends, server_port) {
+        Framed::Tcp(segment) => match sides.upward(&segment.header.ends) {
             None => Read::NotOurPort,
             Some(up) => Read::Tcp(wired(segment, up)),
         },
-        Framed::Udp(payload) => match upward(&payload.ends, server_port) {
+        Framed::Udp(payload) => match sides.upward(&payload.ends) {
             None => Read::NotOurPort,
             Some(up) => Read::Udp(datagrammed(payload, up)),
         },

@@ -97,7 +97,7 @@ use std::collections::HashMap;
 use reflex_core::types::Flow;
 use reflex_core::word::TargetKey;
 
-use crate::{Observation, Observed, Read, Reading, Seen, Transport, Unread};
+use crate::{Observation, Observed, Read, Reading, Seen, Sides, Transport, Unread};
 
 /// Транспорт QUIC: датаграммы на 443, имя цели из `Initial`.
 pub struct Quic;
@@ -183,7 +183,7 @@ impl Transport for Quic {
     /// у всех остальных.
     type Wire = Reading;
     /// 443/UDP. Тот же порт, что у TCP-двойника цели, и это не совпадение: браузер пробует оба.
-    const PORT: u16 = 443;
+    const SIDES: Sides = Sides::ByServerPort(443);
     type State = QuicState;
 
     fn observe(state: &mut QuicState, read: Read<'_>) -> Observation<Reading> {

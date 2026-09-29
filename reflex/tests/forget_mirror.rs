@@ -28,7 +28,7 @@ struct Watched;
 
 impl Transport for Watched {
     type Wire = <Tcp as Transport>::Wire;
-    const PORT: u16 = <Tcp as Transport>::PORT;
+    const SIDES: Sides = <Tcp as Transport>::SIDES;
     type State = <Tcp as Transport>::State;
 
     fn observe(state: &mut Self::State, read: Read<'_>) -> Observation<Self::Wire> {

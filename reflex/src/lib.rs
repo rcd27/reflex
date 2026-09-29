@@ -190,6 +190,9 @@ pub mod pcap;
 mod quic;
 #[cfg(feature = "quic")]
 pub use quic::{Quic, QuicState};
+// ТРАНСПОРТ ДАТАГРАММ, чью сторону называет очередь, — звонки. Без фичи: зависимостей не тянет.
+mod datagrams;
+pub use datagrams::{DatagramWire, Datagrams};
 // СОЧИНЁННЫЙ ПРОВОД — третий носитель: сценарий вместо мира. В умолчании, см. манифест.
 #[cfg(feature = "scenario")]
 pub mod scenario;
@@ -275,6 +278,9 @@ pub use reflex_core::parse::Unread;
 /// строится им (`TargetKey::Unnamed(Addr(..))`), а построить значение, не назвав типа, нельзя.
 /// Это и есть граница закона: выставляется то, что обязан назвать, а не то, что может упомянуть.
 pub use reflex_core::types::Addr;
+/// ПРАВИЛО СТОРОН — реэкспорт по тому же закону, что [`Read`]: оно стоит в подписи
+/// [`Transport::SIDES`], и без него свой транспорт снаружи не написать.
+pub use reflex_engine::parse::Sides;
 pub use reflex_engine::parse::{Datagram, Read};
 
 /// Алфавит беды, на который реагирует потребитель. Реэкспорт: это МИР, а не кишки фреймворка.
@@ -405,8 +411,9 @@ pub struct Observed<W> {
 pub trait Transport {
     /// Широкий словарь наблюдений этого транспорта (из него приборы сужают свой алфавит).
     type Wire: Clone + 'static;
-    /// Порт сервера: очередь ядра приносит и другой трафик.
-    const PORT: u16;
+    /// Кто называет сторону сервера: его порт (очередь ядра приносит и другой трафик) или сама
+    /// очередь, в которую правило ядра положило только путь к серверу ([`Sides`]).
+    const SIDES: Sides;
     /// Состояние разбора (память разговоров, личность цели) — своё у каждого транспорта.
     type State: Default;
     /// Что вышло из кадра. ТРИ исхода, не два: наблюдение, ПРОПАВШЕЕ наблюдение и чужой кадр.
@@ -681,7 +688,7 @@ pub struct TcpState {
 
 impl Transport for Tcp {
     type Wire = Reading;
-    const PORT: u16 = 443;
+    const SIDES: Sides = Sides::ByServerPort(443);
     type State = TcpState;
 
     fn observe(state: &mut TcpState, read: Read<'_>) -> Observation<Reading> {
@@ -821,7 +828,7 @@ pub struct UdpState;
 
 impl Transport for Udp {
     type Wire = DnsMessage;
-    const PORT: u16 = 53;
+    const SIDES: Sides = Sides::ByServerPort(53);
     type State = UdpState;
 
     fn observe(_state: &mut UdpState, read: Read<'_>) -> Observation<DnsMessage> {
@@ -3945,7 +3952,7 @@ where
             // целы. Края нет — писать не во что, и ноль тут значит «нечего перезаписывать».
             let mark = edge.as_ref().map(EdgeView::mark).unwrap_or(0);
             let grid = seam.get_or_insert_with(|| Interleave::started(at, TICK));
-            let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::PORT)) {
+            let (moved, letters, whose) = match T::observe(state, parse::read(seen, T::SIDES)) {
                 Observation::Seen(observed) => {
                     // Ответ цели — наружу, в момент кадра, что его принёс; полный канал его роняет.
                     let _lost_when_full =

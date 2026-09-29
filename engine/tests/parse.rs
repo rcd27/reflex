@@ -1,5 +1,8 @@
-use reflex_engine::parse::{head_of, read, Head, Read, SERVER_PORT};
+use reflex_engine::parse::{head_of, read, Head, Read, Sides, SERVER_PORT};
 use reflex_engine::{Addr, Dir};
+
+/// Правило сторон очереди, которой живут соединения: сторону называет порт сервера.
+const ON_PORT: Sides = Sides::ByServerPort(SERVER_PORT);
 
 const CLIENT: u32 = 0xC0A8_0164;
 const SERVER: u32 = 0x8EFA_BD0E;
@@ -148,7 +151,7 @@ fn both_directions_of_one_conversation_share_a_single_flow_key() {
     let up = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x18, b"hi");
     let down = frame(SERVER, CLIENT, SERVER_PORT, 51000, 0x18, b"ho");
 
-    match (read(&up, SERVER_PORT), read(&down, SERVER_PORT)) {
+    match (read(&up, ON_PORT), read(&down, ON_PORT)) {
         (Read::Tcp(upward), Read::Tcp(downward)) => {
             assert_eq!(upward.flow, downward.flow);
             assert_eq!(upward.dir, Dir::Up);
@@ -163,7 +166,7 @@ fn the_target_is_the_server_in_both_directions() {
     let up = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x18, b"hi");
     let down = frame(SERVER, CLIENT, SERVER_PORT, 51000, 0x18, b"ho");
 
-    match (read(&up, SERVER_PORT), read(&down, SERVER_PORT)) {
+    match (read(&up, ON_PORT), read(&down, ON_PORT)) {
         (Read::Tcp(upward), Read::Tcp(downward)) => {
             assert_eq!(upward.dst, Addr(SERVER));
             assert_eq!(downward.dst, Addr(SERVER));
@@ -179,9 +182,9 @@ fn different_clients_behind_one_box_do_not_share_a_cursor() {
     let same_client_other_port = frame(CLIENT, SERVER, 51001, SERVER_PORT, 0x02, b"");
 
     match (
-        read(&one, SERVER_PORT),
-        read(&other, SERVER_PORT),
-        read(&same_client_other_port, SERVER_PORT),
+        read(&one, ON_PORT),
+        read(&other, ON_PORT),
+        read(&same_client_other_port, ON_PORT),
     ) {
         (Read::Tcp(first), Read::Tcp(second), Read::Tcp(third)) => {
             assert_ne!(first.flow, second.flow);
@@ -198,9 +201,9 @@ fn flags_are_read_as_the_events_the_law_reacts_to() {
     let rst = frame(SERVER, CLIENT, SERVER_PORT, 51000, 0x04, b"");
 
     match (
-        read(&syn, SERVER_PORT),
-        read(&fin, SERVER_PORT),
-        read(&rst, SERVER_PORT),
+        read(&syn, ON_PORT),
+        read(&fin, ON_PORT),
+        read(&rst, ON_PORT),
     ) {
         (Read::Tcp(opened), Read::Tcp(closed), Read::Tcp(reset)) => {
             assert!(opened.opens && !opened.closes && !opened.resets);
@@ -217,10 +220,10 @@ fn traffic_that_is_not_ours_is_named_rather_than_silently_dropped() {
     // ICMP: не TCP и не UDP — разбирать нечем.
     let icmpish = [&frame(CLIENT, SERVER, 1, 2, 0, b"")[..9], &[1u8][..]].concat();
 
-    assert_eq!(read(&elsewhere, SERVER_PORT), Read::NotOurPort);
-    assert_eq!(read(&icmpish, SERVER_PORT), Read::NotOurProtocol);
-    assert_eq!(read(&[0x60], SERVER_PORT), Read::NotIpv4);
-    assert_eq!(read(&[], SERVER_PORT), Read::Truncated);
+    assert_eq!(read(&elsewhere, ON_PORT), Read::NotOurPort);
+    assert_eq!(read(&icmpish, ON_PORT), Read::NotOurProtocol);
+    assert_eq!(read(&[0x60], ON_PORT), Read::NotIpv4);
+    assert_eq!(read(&[], ON_PORT), Read::Truncated);
 }
 
 /// ОБРЕЗАННЫЙ КАДР НАЗЫВАЕТСЯ ОБРЕЗАННЫМ, А НЕ ЧУЖИМ.
@@ -232,14 +235,14 @@ fn a_truncated_frame_of_our_protocol_is_named_truncated() {
     let full = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x18, b"hello");
     [14usize, 16, 18].into_iter().for_each(|cut| {
         assert_eq!(
-            read(&full[..cut], SERVER_PORT),
+            read(&full[..cut], ON_PORT),
             Read::Truncated,
             "кадр TCP, обрезанный на {cut} байтах"
         );
     });
 
     let datagram = udp_frame(CLIENT, SERVER, 51000, SERVER_PORT, b"initial");
-    assert_eq!(read(&datagram[..16], SERVER_PORT), Read::Truncated);
+    assert_eq!(read(&datagram[..16], ON_PORT), Read::Truncated);
 }
 
 /// ДАТАГРАММА РАЗБИРАЕТСЯ КАК СОЕДИНЕНИЕ И ВЕДЁТ К ТОЙ ЖЕ ЦЕЛИ, но разговором остаётся ДРУГИМ:
@@ -253,7 +256,7 @@ fn a_datagram_leads_to_the_same_target_but_is_another_conversation() {
     let quic = udp_frame(CLIENT, SERVER, 51000, SERVER_PORT, b"initial");
     let tcp = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x18, b"hello");
 
-    match (read(&quic, SERVER_PORT), read(&tcp, SERVER_PORT)) {
+    match (read(&quic, ON_PORT), read(&tcp, ON_PORT)) {
         (Read::Udp(datagram), Read::Tcp(wire)) => {
             assert_ne!(
                 datagram.flow, wire.flow,
@@ -275,7 +278,7 @@ fn a_datagram_leads_to_the_same_target_but_is_another_conversation() {
 #[test]
 fn a_datagram_from_the_target_goes_downward() {
     let back = udp_frame(SERVER, CLIENT, SERVER_PORT, 51000, b"reply");
-    match read(&back, SERVER_PORT) {
+    match read(&back, ON_PORT) {
         Read::Udp(datagram) => {
             assert_eq!(datagram.dir, Dir::Down);
             assert_eq!(datagram.dst, Addr(SERVER), "цель — та же сторона");
@@ -288,7 +291,29 @@ fn a_datagram_from_the_target_goes_downward() {
 #[test]
 fn a_datagram_on_a_foreign_port_is_not_ours() {
     let dns = udp_frame(CLIENT, SERVER, 51000, 53, b"query");
-    assert_eq!(read(&dns, SERVER_PORT), Read::NotOurPort);
+    assert_eq!(read(&dns, ON_PORT), Read::NotOurPort);
+}
+
+/// СТОРОНУ НАЗВАЛА ОЧЕРЕДЬ: правило ядра кладёт в неё только путь к серверу, и порт сервера любой —
+/// рефлектор звонка слушает 596 и 1400 одинаково. Та же датаграмма по правилу порта чужая, по
+/// правилу очереди — идёт вверх, и сервер в ней — её адресат.
+#[test]
+fn when_the_queue_names_the_side_every_datagram_goes_upward() {
+    let reflector = 0x5B6C_0944;
+    [1400u16, 596].iter().for_each(|&port| {
+        let call = udp_frame(CLIENT, reflector, 54209, port, b"voice");
+        assert_eq!(read(&call, ON_PORT), Read::NotOurPort, "порт {port}");
+        match read(&call, Sides::NamedByQueue) {
+            Read::Udp(datagram) => {
+                assert_eq!(datagram.dir, Dir::Up, "порт {port}");
+                assert_eq!(datagram.dst, Addr(reflector));
+                assert_eq!(datagram.flow.dst.port(), port);
+                assert_eq!(datagram.flow.src.port(), 54209);
+                assert_eq!(datagram.payload, b"voice");
+            }
+            other => panic!("датаграмма к порту {port} не разобрана: {other:?}"),
+        }
+    });
 }
 
 #[test]
@@ -296,7 +321,7 @@ fn the_servers_syn_ack_is_not_counted_as_the_client_opening_a_conversation() {
     let syn = frame(CLIENT, SERVER, 51000, SERVER_PORT, 0x02, b"");
     let syn_ack = frame(SERVER, CLIENT, SERVER_PORT, 51000, 0x12, b"");
 
-    match (read(&syn, SERVER_PORT), read(&syn_ack, SERVER_PORT)) {
+    match (read(&syn, ON_PORT), read(&syn_ack, ON_PORT)) {
         (Read::Tcp(client), Read::Tcp(server)) => {
             assert!(client.opens);
             assert!(!server.opens);
