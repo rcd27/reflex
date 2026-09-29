@@ -132,10 +132,14 @@ impl Association {
     /// модуля) — сюрпризом это станет только на потоке чистого мусора, которого от `xray`
     /// не ожидается. Гонка со смертью связки — [`tokio::select!`], а не последовательные попытки:
     /// иначе `recv` мог бы ждать вечно уже ПОСЛЕ того, как связка умерла.
+    ///
+    /// Ждёт ГОТОВНОСТИ сокета, а читает уже без ожидания ([`Self::read_ready`]): буфер датаграммы
+    /// живёт только в миг чтения. Будь он объявлен до `select!`, 64 КиБ лежали бы в состоянии
+    /// этого будущего всё время ожидания — у моста звонков (#355) это сотни ассоциаций, почти
+    /// всегда ждущих ответа (сторож — `a_waiting_receive_does_not_hold_a_datagram_buffer`).
     pub async fn received(&self) -> Result<(SocketAddr, Vec<u8>), String> {
         let mut closed = self.closed.clone();
         loop {
-            let mut buf = [0u8; MAX_DATAGRAM];
             tokio::select! {
                 biased;
                 _ = closed.changed() => {
@@ -143,22 +147,36 @@ impl Association {
                         "SOCKS5: TCP-связка управления закрыта — ассоциация мертва".to_string(),
                     );
                 }
-                received = self.socket.recv(&mut buf) => {
-                    let n = received
-                        .map_err(|err| format!("SOCKS5 UDP: приём от релея упал: {err}"))?;
-                    match decapsulated(&buf[..n]) {
-                        Decapsulated::Datagram { from, payload } => {
-                            return Ok((from, payload.to_vec()));
-                        }
-                        Decapsulated::Fragmented => {
-                            tracing::debug!("SOCKS5 UDP: фрагмент датаграммы пропущен");
-                        }
-                        Decapsulated::Malformed => {
-                            tracing::debug!("SOCKS5 UDP: заголовок датаграммы не прочитан, пропущен");
-                        }
+                ready = self.socket.readable() => {
+                    ready.map_err(|err| format!("SOCKS5 UDP: ожидание релея упало: {err}"))?;
+                    match self.read_ready()? {
+                        Some(datagram) => return Ok(datagram),
+                        None => continue,
                     }
                 }
             }
+        }
+    }
+
+    /// Прочитать готовую датаграмму без ожидания. `None` — читать нечего: готовность оказалась
+    /// ложной (`WouldBlock`, штатно по контракту `readable`), либо датаграмма пропущена как
+    /// [`Decapsulated::Fragmented`]/[`Decapsulated::Malformed`] (см. докблок модуля).
+    fn read_ready(&self) -> Result<Option<(SocketAddr, Vec<u8>)>, String> {
+        let mut buf = [0u8; MAX_DATAGRAM];
+        match self.socket.try_recv(&mut buf) {
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(err) => Err(format!("SOCKS5 UDP: приём от релея упал: {err}")),
+            Ok(n) => Ok(match decapsulated(&buf[..n]) {
+                Decapsulated::Datagram { from, payload } => Some((from, payload.to_vec())),
+                Decapsulated::Fragmented => {
+                    tracing::debug!("SOCKS5 UDP: фрагмент датаграммы пропущен");
+                    None
+                }
+                Decapsulated::Malformed => {
+                    tracing::debug!("SOCKS5 UDP: заголовок датаграммы не прочитан, пропущен");
+                    None
+                }
+            }),
         }
     }
 

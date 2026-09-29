@@ -223,3 +223,29 @@ async fn association_reaches_a_real_stun_server_through_xray() {
         "magic cookie обязан вернуться как есть"
     );
 }
+
+/// ОЖИДАЮЩИЙ ПРИЁМ НЕ ДЕРЖИТ БУФЕР ДАТАГРАММЫ (#355, край звонков). Мост держит сотни ассоциаций,
+/// и каждая почти всё время ЖДЁТ ответа рефлектора. Буфер на 64 КиБ, живущий через ожидание, лежал
+/// бы в состоянии каждого такого будущего: 256 ассоциаций — 16 МБ коробки на одно ожидание. Буфер
+/// нужен только в миг чтения — и живёт только в нём.
+#[tokio::test]
+async fn a_waiting_receive_does_not_hold_a_datagram_buffer() {
+    let (proxy, relay, control_listener) = fake_server().await;
+    let relay_port = relay.local_addr().expect("relay addr").port();
+    let accepted = tokio::spawn(async move {
+        let (control, _peer) = control_listener.accept().await.expect("accept control");
+        handshake(control, relay_port).await
+    });
+    let association = tokio::time::timeout(Duration::from_secs(2), Association::opened(proxy))
+        .await
+        .expect("opened() не должен висеть")
+        .expect("opened() обязан открыть ассоциацию");
+    let _control = accepted.await.expect("сервер поднял связку");
+
+    let waiting = association.received();
+    assert!(
+        std::mem::size_of_val(&waiting) < 1024,
+        "ожидание приёма весит {} байт — буфер датаграммы живёт через ожидание",
+        std::mem::size_of_val(&waiting)
+    );
+}
