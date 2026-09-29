@@ -61,14 +61,23 @@ pub enum Decapsulated<'a> {
 /// `RSV` не проверяется отдельно: RFC требует нулей, но эти два байта ни на что не влияют дальше
 /// — заголовок с мусорным `RSV`, но осмысленными `FRAG`/`ATYP`/адресом, разбирается так же, как
 /// назвал бы его сам `xray`, если бы вдруг не занулил резерв. Судить о содержимом по резерву,
-/// который никто не читает, — ложная строгость.
+/// который никто не читает, — ложная строгость. Это СОЗНАТЕЛЬНОЕ отступление от буквы RFC 1928
+/// (там `RSV = 0x0000` предписан), названное здесь явно, а не молчаливое послабление.
+///
+/// Ветки — по `Option<[u8; 2]>` (`FRAG`, `ATYP`), а не по `Option<&[u8]>`: exhaustiveness-чекер
+/// доказывает покрытие ПО ТИПУ по каждому из 256×256 значений байтовой пары, `None` — ровно
+/// случай «в датаграмме нет этих двух байт». Катч-всё именем вместо этого стоял бы за `None`, но
+/// синтаксически ловил бы и `Some` любой длины — сила проверки держалась бы на тесте, не на типе.
 pub fn decapsulated(datagram: &[u8]) -> Decapsulated<'_> {
-    match datagram.get(2..4) {
+    match datagram
+        .get(2..4)
+        .and_then(|frag_atyp| <[u8; 2]>::try_from(frag_atyp).ok())
+    {
         Some([0, 0x01]) => v4_datagram(datagram).unwrap_or(Decapsulated::Malformed),
         Some([0, 0x04]) => v6_datagram(datagram).unwrap_or(Decapsulated::Malformed),
         Some([0, _domain_or_unknown_atyp]) => Decapsulated::Malformed,
         Some([_nonzero_frag, _any_atyp]) => Decapsulated::Fragmented,
-        _too_short_for_frag_and_atyp => Decapsulated::Malformed,
+        None => Decapsulated::Malformed,
     }
 }
 
