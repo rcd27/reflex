@@ -49,6 +49,23 @@ impl<T> Tap<T> {
     pub fn lost(&self) -> u64 {
         self.lost.load(Ordering::Relaxed)
     }
+
+    /// Счёт потерь БЕЗ права писать в канал. Читающему потери нужен счёт, а не кран: клон крана
+    /// держит канал открытым, и читатель, сосчитавший потери, не узнал бы, что пишущий кончился.
+    pub fn lost_counter(&self) -> Lost {
+        Lost(Arc::clone(&self.lost))
+    }
+}
+
+/// Потери крана глазами читателя — только счёт, канал не держит (см. [`Tap::lost_counter`]).
+#[derive(Debug, Clone)]
+pub struct Lost(Arc<AtomicU64>);
+
+impl Lost {
+    /// Сколько уронено на полном канале с рождения крана.
+    pub fn count(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 impl<T> Clone for Tap<T> {
@@ -121,6 +138,22 @@ mod tests {
         drop(rx);
         let _gone = tap.offer(1);
         assert_eq!(tap.lost(), 0);
+    }
+
+    /// Счёт потерь видит то же, что кран, но канал не держит: когда уходит последний кран,
+    /// читатель узнаёт об этом, даже если у кого-то остался счёт.
+    #[test]
+    fn a_lost_counter_counts_without_keeping_the_channel_open() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let tap = Tap::new(tx);
+        let lost = tap.lost_counter();
+        let _taken = tap.offer(1);
+        let _full = tap.offer(2);
+        assert_eq!(lost.count(), 1);
+        drop(tap);
+        assert_eq!(rx.recv(), Ok(1));
+        assert!(rx.recv().is_err(), "канал закрыт — счёт его не держит");
+        assert_eq!(lost.count(), 1);
     }
 
     /// Клоны одного крана делят счёт: пайп роняет в свой клон, потребитель читает свой.

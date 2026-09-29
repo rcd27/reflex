@@ -56,7 +56,7 @@ pub mod types;
 pub mod watch;
 pub mod word;
 
-pub use tap::{Offered, Tap};
+pub use tap::{Lost, Offered, Tap};
 pub use tempo::Tempo;
 
 #[cfg(feature = "dns")]
