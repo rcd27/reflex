@@ -89,7 +89,7 @@ impl Association {
             .write_all(&associate_request())
             .await
             .map_err(|err| format!("SOCKS5 ASSOCIATE: запрос не отправлен: {err}"))?;
-        let relay = read_associate_reply(&mut control, *proxy.ip()).await?;
+        let relay = read_reply(&mut control, *proxy.ip(), "ASSOCIATE").await?;
 
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
             .await
@@ -215,13 +215,13 @@ async fn watch_control(mut control: TcpStream, closed: watch::Sender<bool>) {
 }
 
 /// `VER=5, NMETHODS=1, METHODS=[NO_AUTH]` (RFC 1928 §3).
-fn greeting() -> [u8; 3] {
+pub(crate) fn greeting() -> [u8; 3] {
     [VERSION, 1, METHOD_NO_AUTH]
 }
 
 /// Ответ на greeting обязан принять именно no-auth: другого метода мы не предлагали, и сервер,
 /// требующий что-то ещё, не наш случай (`xray` без пароля отвечает `[5, 0]` всегда).
-fn accepted_no_auth(reply: [u8; 2]) -> Result<(), String> {
+pub(crate) fn accepted_no_auth(reply: [u8; 2]) -> Result<(), String> {
     match reply {
         [VERSION, METHOD_NO_AUTH] => Ok(()),
         [version, method] => Err(format!(
@@ -240,35 +240,37 @@ fn associate_request() -> Vec<u8> {
         .collect()
 }
 
-/// Прочитать и разобрать ответ на UDP ASSOCIATE (RFC 1928 §6). IO — read_exact заголовка, затем,
-/// только для успеха с IPv4-адресом, ещё шести байт адрес+порт: длина полей зависит от `ATYP`,
-/// поэтому решить, сколько читать дальше, можно только после первых четырёх байт.
-async fn read_associate_reply(
+/// Прочитать и разобрать ответ на запрос `command` (RFC 1928 §6) — один разбор на `ASSOCIATE` и
+/// `CONNECT`: у ответа одна форма. IO — read_exact заголовка, затем, только для успеха с
+/// IPv4-адресом, ещё шести байт адрес+порт: длина полей зависит от `ATYP`, поэтому решить, сколько
+/// читать дальше, можно только после первых четырёх байт.
+pub(crate) async fn read_reply(
     control: &mut TcpStream,
     proxy: Ipv4Addr,
+    command: &str,
 ) -> Result<SocketAddrV4, String> {
     let mut header = [0u8; 4];
     control
         .read_exact(&mut header)
         .await
-        .map_err(|err| format!("SOCKS5 ASSOCIATE: заголовок ответа не прочитан: {err}"))?;
+        .map_err(|err| format!("SOCKS5 {command}: заголовок ответа не прочитан: {err}"))?;
     match header {
         [VERSION, REPLY_SUCCEEDED, _reserved, ATYP_V4] => {
             let mut body = [0u8; 6];
             control
                 .read_exact(&mut body)
                 .await
-                .map_err(|err| format!("SOCKS5 ASSOCIATE: адрес релея не прочитан: {err}"))?;
+                .map_err(|err| format!("SOCKS5 {command}: адрес ответа не прочитан: {err}"))?;
             Ok(granted_relay(body, proxy))
         }
         [VERSION, REPLY_SUCCEEDED, _reserved, other_atyp] => Err(format!(
-            "SOCKS5 ASSOCIATE: сервер ответил адресом вида {other_atyp:#x}, клиент понимает только IPv4"
+            "SOCKS5 {command}: сервер ответил адресом вида {other_atyp:#x}, клиент понимает только IPv4"
         )),
         [VERSION, rep, _reserved, _atyp] => {
-            Err(format!("SOCKS5 ASSOCIATE отказан сервером, REP={rep:#x}"))
+            Err(format!("SOCKS5 {command} отказан сервером, REP={rep:#x}"))
         }
         [version, _rep, _reserved, _atyp] => Err(format!(
-            "SOCKS5: неожиданная версия протокола в ответе ASSOCIATE ({version})"
+            "SOCKS5: неожиданная версия протокола в ответе {command} ({version})"
         )),
     }
 }
