@@ -462,6 +462,7 @@ fn a_repeated_syn_without_handshake_is_named_blackhole_through_the_facade() {
     let paper = Paper::new()
         .then_packet(syn(40001))
         .then_packet_after(Duration::from_secs(1), syn(40001))
+        .then_packet_after(Duration::from_secs(2), syn(40001))
         .then_stop();
 
     engine(paper)
@@ -495,6 +496,7 @@ fn a_repeated_syn_without_an_edge_is_still_named_blackhole() {
         .edging(None)
         .then_packet(syn(40001))
         .then_packet_after(Duration::from_secs(1), syn(40001))
+        .then_packet_after(Duration::from_secs(2), syn(40001))
         .then_stop();
 
     engine(paper)

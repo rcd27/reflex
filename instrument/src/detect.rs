@@ -1390,6 +1390,12 @@ mod rst_tests {
     }
 }
 
+/// СКОЛЬКО ПОВТОРОВ СТУКА ДЕЛАЮТ БЛОК. Один повтор — обычная потеря, которую клиент исправляет сам
+/// (RTO 1 с); слово на нём давало суду адресов свидетелей против живого адреса: у Лизы и Арсения
+/// 09.10 так был приговорён iCloud, отвечавший с их линии 5 из 5. Два подряд — путь мёртв: второй
+/// повтор приходит через ≈3 с от первого стука.
+pub const SYN_REPEATS_TO_BLACKHOLE: u8 = 2;
+
 /// Детектор IP-blackhole. Читает `SeenTcp` (там `Syn`/`Handshaken`) — `Seen`-приборам это
 /// невыразимо: соединения ещё нет. `SYN` ушёл, `SYN+ACK` не пришёл, клиент повторяет `SYN` — блок по
 /// АДРЕСУ, до всякого имени. Отдельный прибор, отдельный пайп: через `SilentBlock` не выразить.
@@ -1401,6 +1407,8 @@ pub struct SynDropInstrument {
     asked: Option<Instant>,
     /// `SYN+ACK` пришёл — путь жив, подозрение снято навсегда.
     handshaken: bool,
+    /// Сколько раз стук повторён без рукопожатия.
+    repeats: u8,
     fired: bool,
     /// Буква спрятала наблюдения этого разговора — отсутствие перестало быть свидетельством.
     /// Снимать нечем: утверждение прибора историческое, а положительное наблюдение и так снимает
@@ -1447,16 +1455,25 @@ impl reflex_core::mealy::Mealy for SynDropInstrument {
                     ),
                     // Путь жив либо уже сообщали.
                     (Some(_), true) => (self, smallvec::SmallVec::new()),
-                    // Повторил стук, а рукопожатия так и нет — IP-blackhole.
-                    (Some(asked), false) => (
-                        Self {
-                            fired: true,
-                            ..self
-                        },
-                        smallvec::smallvec![Distress::Blackhole {
-                            after_ms: at.saturating_duration_since(asked).as_millis() as u32,
-                        }],
-                    ),
+                    // Повторил стук дважды, а рукопожатия так и нет — IP-blackhole.
+                    (Some(asked), false) => {
+                        let repeats = self.repeats.saturating_add(1);
+                        let fired = repeats >= SYN_REPEATS_TO_BLACKHOLE;
+                        (
+                            Self {
+                                repeats,
+                                fired,
+                                ..self
+                            },
+                            fired
+                                .then(|| Distress::Blackhole {
+                                    after_ms: at.saturating_duration_since(asked).as_millis()
+                                        as u32,
+                                })
+                                .into_iter()
+                                .collect(),
+                        )
+                    }
                 },
                 // Цель ответила на стук — путь жив, подозрение снято.
                 SeenTcp::Handshaken => (
@@ -1561,11 +1578,32 @@ mod syn_drop_tests {
             .1
     }
 
-    /// Повтор стука без рукопожатия — IP-blackhole, и величина от первого стука.
+    /// Второй повтор стука без рукопожатия — IP-blackhole, и величина от первого стука (RTO клиента:
+    /// 1 с, потом ещё 2 с).
     #[test]
-    fn a_repeated_syn_without_handshake_is_a_blackhole() {
-        let said = run(vec![(Some(SeenTcp::Syn), 0), (Some(SeenTcp::Syn), 1_000)]);
-        assert_eq!(said, vec![Distress::Blackhole { after_ms: 1_000 }]);
+    fn a_twice_repeated_syn_without_handshake_is_a_blackhole() {
+        let said = run(vec![
+            (Some(SeenTcp::Syn), 0),
+            (Some(SeenTcp::Syn), 1_000),
+            (Some(SeenTcp::Syn), 3_000),
+        ]);
+        assert_eq!(said, vec![Distress::Blackhole { after_ms: 3_000 }]);
+    }
+
+    /// ОДНА ПОТЕРЯ — НЕ БЛОК: первый стук утонул, повтор получил рукопожатие. Слово на первом повторе
+    /// давало суду адресов свидетеля против живого адреса — у Лизы и Арсения 09.10 так был приговорён
+    /// iCloud, отвечавший с их линии 5 из 5.
+    #[test]
+    fn one_lost_syn_answered_on_repeat_is_not_a_blackhole() {
+        let said = run(vec![
+            (Some(SeenTcp::Syn), 0),
+            (Some(SeenTcp::Syn), 1_000),
+            (Some(SeenTcp::Handshaken), 1_040),
+        ]);
+        assert!(
+            said.is_empty(),
+            "одна потеря, исправленная повтором, названа блоком: {said:?}"
+        );
     }
 
     /// Рукопожатие состоялось — путь жив, повтор потом беды не даёт.
