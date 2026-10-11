@@ -192,6 +192,71 @@ impl DnsMessage {
     }
 }
 
+/// Адрес `A` из ответа и сколько ему верить.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolved {
+    pub address: std::net::Ipv4Addr,
+    pub ttl: std::time::Duration,
+}
+
+const TYPE_A: u16 = 1;
+const CLASS_IN: u16 = 1;
+/// Самое длинное имя на проводе (RFC 1035 §2.3.4) — без завершающей точки.
+const NAME_MOST: usize = 253;
+const LABEL_MOST: usize = 63;
+
+impl DnsMessage {
+    /// Адреса `A` ответа по порядку. `CNAME` и прочее пропускается: адрес у цепочки — в её конце,
+    /// и рекурсор кладёт его в тот же ответ. Запись `A` с длиной не 4 — не адрес.
+    pub fn addresses(&self) -> Vec<Resolved> {
+        self.answers
+            .iter()
+            .filter(|answer| answer.rtype == TYPE_A && answer.rclass == CLASS_IN)
+            .filter_map(|answer| {
+                <[u8; 4]>::try_from(answer.rdata.as_slice())
+                    .ok()
+                    .map(|octets| Resolved {
+                        address: std::net::Ipv4Addr::from(octets),
+                        ttl: std::time::Duration::from_secs(u64::from(answer.ttl)),
+                    })
+            })
+            .collect()
+    }
+}
+
+/// ВОПРОС `A` О ИМЕНИ в форме провода (RFC 1035 §4.1): заголовок с `RD` и одна запись вопроса.
+/// Имя, которое провод не несёт (пустой ярлык, ярлык длиннее 63 байт, имя длиннее 253), —
+/// `None`: вопрос, который рекурсор отвергнет, лучше не задавать. Рамка транспорта (длина перед
+/// сообщением у TCP) — дело края, не вопроса.
+pub fn asked(id: u16, name: &str) -> Option<Vec<u8>> {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    let labels: Vec<&str> = name.split('.').collect();
+    let carried = name.len() <= NAME_MOST
+        && labels
+            .iter()
+            .all(|label| !label.is_empty() && label.len() <= LABEL_MOST);
+    carried.then(|| {
+        let header = [
+            &id.to_be_bytes()[..],
+            // Флаги: стандартный вопрос, `RD` — рекурсия желательна.
+            &[0x01, 0x00],
+            // QDCOUNT = 1, ANCOUNT = NSCOUNT = ARCOUNT = 0.
+            &[0, 1, 0, 0, 0, 0, 0, 0],
+        ]
+        .concat();
+        let qname = labels
+            .iter()
+            .flat_map(|label| std::iter::once(label.len() as u8).chain(label.bytes()))
+            .chain([0]);
+        header
+            .into_iter()
+            .chain(qname)
+            .chain(TYPE_A.to_be_bytes())
+            .chain(CLASS_IN.to_be_bytes())
+            .collect()
+    })
+}
+
 /// Сужение из ПАРЫ «провод и вид края» (§4): прибору DNS край безразличен — его предмет содержимое
 /// сообщения, которого conntrack не читает вовсе. Проекция первого множителя, как у приборов провода
 /// в `instrument`; общего закона «читается из пары, если читается из половины» не написать —
