@@ -48,6 +48,14 @@ fn nfgen() -> Vec<u8> {
 }
 
 fn tuple_orig(src: u32, dst: u32, sport: u16, dport: u16) -> Vec<u8> {
+    tuple(1, src, dst, sport, dport)
+}
+
+fn tuple_reply(src: u32, dst: u32, sport: u16, dport: u16) -> Vec<u8> {
+    tuple(2, src, dst, sport, dport)
+}
+
+fn tuple(kind: u16, src: u32, dst: u32, sport: u16, dport: u16) -> Vec<u8> {
     let ip = nested(
         1,
         attr(1, &src.to_be_bytes())
@@ -63,7 +71,7 @@ fn tuple_orig(src: u32, dst: u32, sport: u16, dport: u16) -> Vec<u8> {
             .chain(attr(3, &dport.to_be_bytes()))
             .collect::<Vec<u8>>(),
     );
-    nested(1, ip.into_iter().chain(proto).collect())
+    nested(kind, ip.into_iter().chain(proto).collect())
 }
 
 fn counters(kind: u16, packets: u64, bytes: u64) -> Vec<u8> {
@@ -108,6 +116,32 @@ fn a_record_is_parsed_whole() {
         }
         other => panic!("ждали Done с одной записью, вышло {:?}", other),
     }
+}
+
+/// РАЗГОВОР, УВЕДЁННЫЙ `dnat`: `orig` помнит, куда звал человек, ответ — кому отдан на деле.
+/// Кортеж ответа вложен тем же видом, что исходный, — путать их значило бы назвать ногу целью.
+#[test]
+fn a_rewritten_talk_names_whom_it_was_given_to() {
+    let rewritten = message(
+        CT_NEW,
+        nfgen()
+            .into_iter()
+            .chain(tuple_orig(0xC0A80264, 0xACA600E3, 51000, 443))
+            .chain(tuple_reply(0xA9FE220D, 0xC0A80264, 13445, 51000))
+            .collect(),
+    );
+    let entry = the_one(rewritten);
+    assert_eq!((entry.orig.dst, entry.orig.dst_port), (0xACA600E3, 443));
+    assert_eq!(
+        entry.reply.map(|reply| (reply.src, reply.src_port)),
+        Some((0xA9FE220D, 13445))
+    );
+}
+
+/// Записи без кортежа ответа «ответа нет» не сочиняется нулями.
+#[test]
+fn a_record_without_a_reply_tuple_does_not_invent_one() {
+    assert_eq!(the_one(one_record()).reply, None);
 }
 
 /// ПОРЦИЯ БЕЗ `NLMSG_DONE` — НЕ КОНЕЦ. Дамп приходит несколькими порциями, и остановка по пустоте

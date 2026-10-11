@@ -13,6 +13,7 @@ fn view(down: u64, up: u64, expires_in_secs: u64, tcp: Option<CtTcp>) -> CtView 
         id: 0,
         ends: CtEnds::Unknown,
         tuple: None,
+        reply: None,
         down: reflex_linux::conntrack::Counts {
             packets: down,
             bytes: 0,

@@ -29,6 +29,10 @@ pub use reflex_engine::parse::Tuple;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Entry {
     pub orig: Tuple,
+    /// Четвёрка ОТВЕТА — каким ядро ждёт обратный путь. После `dnat` её источник — тот, кому
+    /// разговор на деле отдан (слушатель на коробке), тогда как `orig` хранит, куда звал человек.
+    /// `None` — кортежа ответа в записи не было (IPv6, обрыв).
+    pub reply: Option<Tuple>,
     pub orig_counts: Counts,
     pub reply_counts: Counts,
     pub mark: u32,
@@ -124,6 +128,8 @@ pub struct CtView {
     pub id: u32,
     pub ends: CtEnds,
     pub tuple: Option<Tuple>,
+    /// Четвёрка ответа (`CTA_TUPLE_REPLY`), только V4 — как у [`CtView::tuple`].
+    pub reply: Option<Tuple>,
     pub down: Counts,
     pub up: Counts,
     pub started_at: Option<u64>,
@@ -137,6 +143,7 @@ pub struct CtView {
 
 const NFGEN: usize = 4;
 const CTA_TUPLE_ORIG: u16 = 1;
+const CTA_TUPLE_REPLY: u16 = 2;
 const CTA_STATUS: u16 = 3;
 /// `IPS_DST_NAT_BIT = 5` в `enum ip_conntrack_status` (`nf_conntrack_common.h`).
 const IPS_DST_NAT: u32 = 1 << 5;
@@ -326,6 +333,10 @@ pub fn view_of(body: &[u8]) -> CtView {
                 ..built
             }
         }
+        CTA_TUPLE_REPLY => CtView {
+            reply: tuple_of(&ends_of(value)),
+            ..built
+        },
         CTA_COUNTERS_ORIG => CtView {
             down: counted(value),
             ..built
@@ -394,6 +405,7 @@ pub fn entry_of(payload: &[u8]) -> Option<Entry> {
     payload.get(NFGEN..).map(view_of).and_then(|view| {
         Some(Entry {
             orig: view.tuple?,
+            reply: view.reply,
             orig_counts: view.down,
             reply_counts: view.up,
             mark: view.mark,
