@@ -85,6 +85,10 @@ impl<T> Clone for Tap<T> {
 /// рождается из слова источника, и источник о читателе не знает ничего.
 ///
 /// Свой кран годится как есть: `Tap<T>` переводит `T` в `T` тем же правилом (`From<T> for T`).
+///
+/// Счёт уроненного — СВОЙ у источника: ящик общий, а «сколько имён не влезло» и «сколько ящик
+/// уронил всего» — разные величины. Кран ящика считает всё, `Spout` — только своё; клоны одного
+/// `Spout` делят его счёт.
 pub struct Spout<T> {
     offer: Arc<dyn Fn(T) -> Offered + Send + Sync>,
     lost: Lost,
@@ -96,7 +100,7 @@ impl<T> Spout<T> {
         (self.offer)(value)
     }
 
-    /// Сколько уронено на полном канале — общий счёт с краном, из которого кран рождён.
+    /// Сколько СЛОВ ЭТОГО ИСТОЧНИКА уронено на полном канале.
     pub fn lost(&self) -> u64 {
         self.lost.count()
     }
@@ -113,10 +117,16 @@ impl<T> Clone for Spout<T> {
 
 impl<T: 'static, L: From<T> + Send + 'static> From<Tap<L>> for Spout<T> {
     fn from(tap: Tap<L>) -> Spout<T> {
-        let lost = tap.lost_counter();
+        let own = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&own);
         Spout {
-            offer: Arc::new(move |value: T| tap.offer(L::from(value))),
-            lost,
+            offer: Arc::new(move |value: T| {
+                let offered = tap.offer(L::from(value));
+                let _counted = matches!(offered, Offered::Full)
+                    .then(|| counted.fetch_add(1, Ordering::Relaxed));
+                offered
+            }),
+            lost: Lost(own),
         }
     }
 }
@@ -236,16 +246,21 @@ mod tests {
 
     /// Полный ящик и мёртвый читатель называются, как у крана, и счёт потерь общий с ним.
     #[test]
-    fn a_spout_names_its_refusals_and_shares_the_count() {
+    fn a_spout_names_its_refusals_and_counts_its_own() {
         let (tx, rx) = mpsc::sync_channel::<Letter>(1);
         let tap = Tap::new(tx);
         let spout: Spout<Spoken> = tap.clone().into();
+        let neighbour: Spout<Spoken> = tap.clone().into();
         assert_eq!(spout.offer(Spoken(1)), Offered::Taken);
         assert_eq!(spout.offer(Spoken(2)), Offered::Full);
-        assert_eq!(tap.lost(), 1);
-        assert_eq!(spout.lost(), 1);
+        assert_eq!(neighbour.offer(Spoken(3)), Offered::Full);
+        assert_eq!(spout.lost(), 1, "свой счёт — только свои слова");
+        assert_eq!(spout.clone().lost(), 1, "клоны делят счёт источника");
+        assert_eq!(neighbour.lost(), 1);
+        assert_eq!(tap.lost(), 2, "кран ящика считает всё");
         drop(rx);
-        assert_eq!(spout.offer(Spoken(3)), Offered::Gone);
+        assert_eq!(spout.offer(Spoken(4)), Offered::Gone);
+        assert_eq!(spout.lost(), 1, "мёртвый читатель — не полный ящик");
     }
 
     /// Два источника — один ящик: порядок в нём — порядок подношения, а не очередь кранов.
