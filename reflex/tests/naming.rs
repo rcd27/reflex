@@ -38,6 +38,40 @@ fn a_conversation_is_named_once() {
     );
 }
 
+/// Слово читателя: у него один ящик на много источников, имя — лишь одно из слов.
+#[derive(Debug, PartialEq)]
+enum Letter {
+    Named(String),
+}
+
+impl From<Named> for Letter {
+    fn from(named: Named) -> Letter {
+        Letter::Named(named.name.to_string())
+    }
+}
+
+/// Имя уходит в ящик читателя его словом: пайп переводит при отправке и о читателе не знает.
+#[test]
+fn a_name_is_spoken_in_the_readers_word() {
+    let (tx, heard) = std::sync::mpsc::sync_channel::<Letter>(16);
+    engine(
+        Paper::new()
+            .then_packet(dns_query(40001, "youtubei.googleapis.com"))
+            .then_stop(),
+    )
+    .from(Udp)
+    .extract(Sni)
+    .detect(Resolve::names())
+    .naming(Tap::new(tx))
+    .on(|_name, _resolved| {})
+    .run();
+
+    assert_eq!(
+        heard.try_iter().collect::<Vec<Letter>>(),
+        vec![Letter::Named("youtubei.googleapis.com".to_string())]
+    );
+}
+
 #[test]
 fn another_conversation_is_named_again() {
     let names = named(

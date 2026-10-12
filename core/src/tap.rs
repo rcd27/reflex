@@ -77,6 +77,50 @@ impl<T> Clone for Tap<T> {
     }
 }
 
+/// КРАН С ПЕРЕВОДОМ: пишущий подносит СВОЁ слово, в канал уходит слово ЧИТАТЕЛЯ.
+///
+/// Зачем: источник (пайп, прибор) знает только своё слово, а у читателя один входящий ящик на
+/// много источников — без перевода у него столько каналов, сколько источников, и порядок между
+/// ними держит комментарий, а не тип. Перевод — `From`: читатель объявляет, как его слово
+/// рождается из слова источника, и источник о читателе не знает ничего.
+///
+/// Свой кран годится как есть: `Tap<T>` переводит `T` в `T` тем же правилом (`From<T> for T`).
+pub struct Spout<T> {
+    offer: Arc<dyn Fn(T) -> Offered + Send + Sync>,
+    lost: Lost,
+}
+
+impl<T> Spout<T> {
+    /// Не ждёт никогда, как и [`Tap::offer`], и говорит, дошло ли.
+    pub fn offer(&self, value: T) -> Offered {
+        (self.offer)(value)
+    }
+
+    /// Сколько уронено на полном канале — общий счёт с краном, из которого кран рождён.
+    pub fn lost(&self) -> u64 {
+        self.lost.count()
+    }
+}
+
+impl<T> Clone for Spout<T> {
+    fn clone(&self) -> Self {
+        Self {
+            offer: Arc::clone(&self.offer),
+            lost: self.lost.clone(),
+        }
+    }
+}
+
+impl<T: 'static, L: From<T> + Send + 'static> From<Tap<L>> for Spout<T> {
+    fn from(tap: Tap<L>) -> Spout<T> {
+        let lost = tap.lost_counter();
+        Spout {
+            offer: Arc::new(move |value: T| tap.offer(L::from(value))),
+            lost,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +198,69 @@ mod tests {
         assert_eq!(rx.recv(), Ok(1));
         assert!(rx.recv().is_err(), "канал закрыт — счёт его не держит");
         assert_eq!(lost.count(), 1);
+    }
+
+    /// Слово источника.
+    #[derive(Debug, PartialEq)]
+    struct Spoken(u32);
+
+    /// Слово читателя: ящик один на много источников, у каждого своё слово.
+    #[derive(Debug, PartialEq)]
+    enum Letter {
+        Spoken(u32),
+    }
+
+    impl From<Spoken> for Letter {
+        fn from(spoken: Spoken) -> Letter {
+            Letter::Spoken(spoken.0)
+        }
+    }
+
+    /// Источник подносит своё слово — в ящик уходит слово читателя.
+    #[test]
+    fn a_spout_speaks_the_readers_word() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        let spout: Spout<Spoken> = Tap::new(tx).into();
+        assert_eq!(spout.offer(Spoken(7)), Offered::Taken);
+        assert_eq!(rx.try_recv(), Ok(Letter::Spoken(7)));
+    }
+
+    /// Свой кран — тот же кран: перевод `T` в `T`.
+    #[test]
+    fn a_tap_of_the_same_word_is_a_spout_as_is() {
+        let (tx, rx) = mpsc::sync_channel::<u32>(4);
+        let spout: Spout<u32> = Tap::new(tx).into();
+        assert_eq!(spout.offer(5), Offered::Taken);
+        assert_eq!(rx.try_recv(), Ok(5));
+    }
+
+    /// Полный ящик и мёртвый читатель называются, как у крана, и счёт потерь общий с ним.
+    #[test]
+    fn a_spout_names_its_refusals_and_shares_the_count() {
+        let (tx, rx) = mpsc::sync_channel::<Letter>(1);
+        let tap = Tap::new(tx);
+        let spout: Spout<Spoken> = tap.clone().into();
+        assert_eq!(spout.offer(Spoken(1)), Offered::Taken);
+        assert_eq!(spout.offer(Spoken(2)), Offered::Full);
+        assert_eq!(tap.lost(), 1);
+        assert_eq!(spout.lost(), 1);
+        drop(rx);
+        assert_eq!(spout.offer(Spoken(3)), Offered::Gone);
+    }
+
+    /// Два источника — один ящик: порядок в нём — порядок подношения, а не очередь кранов.
+    #[test]
+    fn two_spouts_share_one_box_in_the_order_they_spoke() {
+        let (tx, rx) = mpsc::sync_channel::<Letter>(4);
+        let tap = Tap::new(tx);
+        let first: Spout<Spoken> = tap.clone().into();
+        let second: Spout<Spoken> = tap.into();
+        let _taken = second.offer(Spoken(2));
+        let _taken = first.offer(Spoken(1));
+        assert_eq!(
+            rx.try_iter().collect::<Vec<Letter>>(),
+            vec![Letter::Spoken(2), Letter::Spoken(1)]
+        );
     }
 
     /// Клоны одного крана делят счёт: пайп роняет в свой клон, потребитель читает свой.

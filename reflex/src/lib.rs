@@ -118,7 +118,7 @@ use reflex_core::serves::Served;
 /// крейта» был фасад сам. [`Offered`] рядом: им и только им отличается потеря наблюдения (полный
 /// канал, мёртвый читатель) от его отсутствия. [`Lost`] — счёт потерь для читателя, не держащий
 /// канал открытым.
-pub use reflex_core::tap::{Lost, Offered, Tap};
+pub use reflex_core::tap::{Lost, Offered, Spout, Tap};
 use reflex_core::tape::{Mode, Tape, TapeLetter, To};
 /// ПРИЧИНА УХОДА — реэкспорт: она стоит публичным полем [`Parted::why`], и потребитель, считающий
 /// утрату в телеметрию, обязан её назвать, чтобы отличить снятое живое от снятого мёртвого.
@@ -1904,9 +1904,9 @@ pub struct Detecting<C: Bordered, T: Transport, H: MarkHome = MarkSilent, S = Di
     /// остаются чистым наблюдением.
     severing: Option<Severing<C::Carrier, S>>,
     /// Куда говорить имя разговора, если просили ([`Detecting::naming`]).
-    naming: Option<reflex_core::Tap<Named>>,
+    naming: Option<Spout<Named>>,
     /// Куда говорить ответ цели, если просили ([`Detecting::replying`]).
-    replying: Option<reflex_core::Tap<Replied>>,
+    replying: Option<Spout<Replied>>,
     /// Куда говорить об уходе разговора, если просили ([`Detecting::parting`]).
     parting: Option<reflex_core::Tap<Parted>>,
     /// Куда говорить свидетельство §10, если просили ([`Detecting::certifying`]). `None` — закона не
@@ -2026,19 +2026,20 @@ pub struct Certified {
 impl<C: Bordered, T: Transport, H: MarkHome, S> Detecting<C, T, H, S> {
     /// ГОВОРИТЬ ИМЯ РАЗГОВОРА. Разбор имени уже в горячем пути; дверь отдаёт его тому, кто
     /// видит разговор иначе — conntrack знает путь и байты, но не знает, кому они. Канал не ждёт:
-    /// полный канал теряет имя, а не задерживает пакет.
-    pub fn naming(self, tap: reflex_core::Tap<Named>) -> Detecting<C, T, H, S> {
+    /// полный канал теряет имя, а не задерживает пакет. Кран — любого слова, рождаемого из
+    /// [`Named`] ([`Spout`]): у читателя один ящик на много источников.
+    pub fn naming(self, tap: impl Into<Spout<Named>>) -> Detecting<C, T, H, S> {
         Detecting {
-            naming: Some(tap),
+            naming: Some(tap.into()),
             ..self
         }
     }
 
     /// ГОВОРИТЬ ОТВЕТ ЦЕЛИ — первую запись её ответа на каждом разговоре ([`Reply`]), тем же портом,
     /// что имя: канал не ждёт, полный канал роняет весть и говорит об этом.
-    pub fn replying(self, tap: reflex_core::Tap<Replied>) -> Detecting<C, T, H, S> {
+    pub fn replying(self, tap: impl Into<Spout<Replied>>) -> Detecting<C, T, H, S> {
         Detecting {
-            replying: Some(tap),
+            replying: Some(tap.into()),
             ..self
         }
     }
@@ -2541,14 +2542,14 @@ impl<C: Bordered, T: Transport, H: MarkHome, S> Speaking<C, T, H, S> {
     }
 
     /// ГОВОРИТЬ ИМЯ РАЗГОВОРА — [`Detecting::naming`] у свёрнутой цепочки; довод тот же, что выше.
-    pub fn naming(self, tap: reflex_core::Tap<Named>) -> Speaking<C, T, H, S> {
+    pub fn naming(self, tap: impl Into<Spout<Named>>) -> Speaking<C, T, H, S> {
         Speaking {
             detecting: self.detecting.naming(tap),
         }
     }
 
     /// ГОВОРИТЬ ОТВЕТ ЦЕЛИ — [`Detecting::replying`] у свёрнутой цепочки.
-    pub fn replying(self, tap: reflex_core::Tap<Replied>) -> Speaking<C, T, H, S> {
+    pub fn replying(self, tap: impl Into<Spout<Replied>>) -> Speaking<C, T, H, S> {
         Speaking {
             detecting: self.detecting.replying(tap),
         }
@@ -4148,9 +4149,9 @@ struct Alive<C: Bordered, T: Transport, S> {
     /// что зовётся на закрытии узла — среди букв, а не после них.
     about: Option<(Fold<S>, TargetVoice<S>)>,
     /// Куда говорить имя разговора — один раз, когда ключ цели впервые стал именем.
-    naming: Option<reflex_core::Tap<Named>>,
+    naming: Option<Spout<Named>>,
     /// Куда говорить ответ цели — один раз на разговор ([`Reply`]).
-    replying: Option<reflex_core::Tap<Replied>>,
+    replying: Option<Spout<Replied>>,
     /// Куда говорить об уходе разговора — по разу на снятый ключ, с причиной.
     parting: Option<reflex_core::Tap<Parted>>,
     /// Срок, после которого затихший разговор снимается: им же судит и слой.
